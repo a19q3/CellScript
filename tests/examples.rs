@@ -524,6 +524,8 @@ fn token_amm_bootstrap_docs_cover_builder_friction_boundary() {
         "launch_token` materialises the Pool and LP receipt topology directly",
         "Do not rely on \"the first action runs on creation\" as a protocol rule",
         "Cell-bound inputs and outputs are transaction Cells, not witness payload args",
+        "place the payload in `input_type` before any lock-script signer runs",
+        "Never submit the raw `CSARGv1` payload as a transaction witness",
         "Strict v0.16 ProofPlan checks compile the bundled token, AMM, and launch actions as original scoped entries",
     ] {
         assert!(bootstrap_text.contains(needle), "bootstrap guide should contain `{needle}`");
@@ -536,6 +538,10 @@ fn token_amm_bootstrap_docs_cover_builder_friction_boundary() {
     ] {
         assert!(bootstrap.contains(needle), "bootstrap guide should contain `{needle}`");
     }
+    assert!(
+        !bootstrap.contains("Do not wrap it in `WitnessArgs.input_type`"),
+        "bootstrap guide must not reintroduce the retired raw-witness placement guidance"
+    );
 
     let flows = std::fs::read_to_string(
         Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs").join("CELLSCRIPT_EXAMPLE_BUSINESS_FLOWS.md"),
