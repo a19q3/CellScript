@@ -1,6 +1,6 @@
 # CellScript Gate Redundancy Audit
 
-Status: 2026-07-04
+Status: 2026-08-09
 
 This report audits redundant or overly repetitive work in the CellScript gate
 stack. It covers the unified gate entry point, lower-level audit runners,
@@ -24,12 +24,13 @@ acceptance coverage itself.
 | Area | Previous behaviour | Updated behaviour | Risk |
 | --- | --- | --- | --- |
 | Release auxiliary checks | `release` and `release-quick` run `run_ci_gate`, then repeated `cellscript-tools check-skill-pack`, `check_script_syntax`, and `check_trailing_whitespace` inside `run_release_auxiliary_checks`. | Release modes now inherit those checks from the embedded CI gate and keep release auxiliary checks focused on release-only docs, CKB, NovaSeal, and VS Code evidence. | Low. The checks still run before release-only checks. |
-| Website build in the unified gate | `run_website_build_check` ran `npm --prefix website run prepare:registry`, checked generated data, then ran `npm --prefix website run build`; the `build` script ran `prepare:registry` again. | The gate still prepares and checks registry data once, then directly runs `astro check` and `astro build` from `website/`. | Low. The same Astro checks and build still run. |
-| Website build workflow | `.github/workflows/website-build.yml` ran automatically on PRs and pushes, duplicating the website build already covered by the unified CI gate. It also ran `npm --prefix website run build`, which generated registry data again. | The workflow is now manual-only via `workflow_dispatch`, keeping the `website/dist` artifact path available on demand. It also generates and checks registry data once, then directly runs `astro check` and `astro build`. | Low. Automatic merge-readiness coverage remains in the unified CI gate. |
+| Website build in the unified gate | `run_website_build_check` ran `npm --prefix website run prepare:registry`, checked generated data, then ran `npm --prefix website run build`; the `build` script ran `prepare:registry` again. An intermediate optimisation called Astro directly but accidentally bypassed website regression suites. | The gate prepares and checks registry data once, then runs `npm --prefix website run build:ci`. That target runs the full Registry, playground, visual, homepage, preference, docs, dist, and deploy regression sequence before Astro output is accepted. | Low. Registry generation remains single-pass and the previously bypassed regression evidence is restored. |
+| Website build workflow | `.github/workflows/website-build.yml` ran automatically on PRs and pushes, duplicating the website build already covered by the unified CI gate. It also ran `npm --prefix website run build`, which generated registry data again. | The workflow is manual-only via `workflow_dispatch`, keeping the `website/dist` artifact path available on demand. It generates and checks registry data once, then runs the same `build:ci` regression contract as the unified gate. | Low. Automatic merge-readiness coverage remains in the unified CI gate, and manual artifacts cannot bypass the website regressions. |
 | VS Code release path | Release auxiliary checks ran `npm run validate`, which built the extension, then `npm run publish:dry-run`, which explicitly built again and then let `vsce package` run `vscode:prepublish`, building again. | The gate directly runs `vsce package --no-dependencies`, letting `vsce` perform the one required prepublish build, then runs `node scripts/validate.mjs` directly against the built output. | Low. The VSIX dry-run and manifest validation still run. |
 
-The release tooling validator was updated to enforce the new direct-call
-contract so this optimisation does not drift silently.
+The release tooling validator enforces the `build:ci` call and its ordered
+regression sequence so the optimisation cannot drift into a direct-Astro
+bypass.
 
 ## Intentional Overlap Kept
 
@@ -64,10 +65,10 @@ then validates actual package construction. They should remain separate.
 
 ## Cross-Workflow Result
 
-The PR/push path now has one automatic website build source: the unified CI
-gate. The standalone website workflow remains available for manual artifact
-generation only, so it no longer duplicates merge-readiness checks on every PR
-or push.
+The PR/push path has one automatic website build source: the unified CI gate.
+The standalone website workflow remains available for manual artifact
+generation only. Both paths use the same Node 22 `build:ci` contract, while
+only the unified gate determines automatic merge readiness.
 
 ## Validation
 
@@ -79,11 +80,11 @@ cargo run --quiet --locked -p cellscript-tools --bin cellscript-tools -- \
   --root . validate-tooling-release
 git diff --check
 npm --prefix website run prepare:registry
-(cd website && npm exec -- astro check && npm exec -- astro build)
+npm --prefix website run build:ci
 (cd editors/vscode-cellscript && npm exec -- vsce package --no-dependencies --out /tmp/cellscript-vscode-dry-run.vsix)
 node editors/vscode-cellscript/scripts/validate.mjs
 ```
 
-Observed website diagnostics were non-fatal existing hints in
-`website/public/wasm/cellscript_wasm.js` for unused generated bindings. The
-Astro check and build completed successfully.
+Node 22 is the supported runtime for both the website and Registry API. CI and
+release workflows install it explicitly, and the unified `ci` gate rejects a
+different Node major before running Node-backed checks.

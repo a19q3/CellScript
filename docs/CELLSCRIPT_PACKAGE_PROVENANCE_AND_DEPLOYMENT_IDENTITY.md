@@ -4,7 +4,9 @@
 Phase 1 landed in the 0.19 line; Phase 2 source-package, generated-builder,
 deployment identity, and trust-metadata checks extend through 0.20 and the
 0.21 RC. The 0.23 line deploys the public read/write service and makes its
-accepted package status the default CLI resolution authority.
+accepted package status the default CLI resolution authority. The 0.24
+development line adds compiler-independent structural admission for complete
+CellScript CKB artifact bundles without changing source-package resolution.
 
 **Scope**: Source package registry, deployment registry, lockfile binding, and
 builder verification for CellScript on CKB
@@ -84,6 +86,15 @@ Resolution is profile-specific.
 No resolver may coerce one profile into another.
 ```
 
+The 0.24 verified-artifact boundary is an additional admission contract, not a
+new dependency profile. A CKB ELF build binds `artifact`, `metadata`,
+`lowering_record`, and `source_map`. Registry bundles that opt into this
+boundary must provide the complete verified sidecar set; the least-privilege
+artifact worker runs the standalone checker and records
+`structurally_verified` evidence. Generic source/executable/ABI bundles remain
+`hash_bound`, and neither result proves deployment, chain acceptance, or a
+security audit.
+
 Edition 2026 does not infer a missing compatibility profile. It identifies
 source semantics only. Current CellScript source packages must declare
 `edition = "2026"`, while registry, lockfile, deployment, and builder records
@@ -94,46 +105,42 @@ but the selected profile must remain explicit.
 
 ## Publisher Identity Model
 
-CellScript Registry uses a **JoyID-rooted publisher identity** without a
-separate registry account system. The current accepted publisher principal type
-is `joyid_ckb`; ordinary publish operations use a delegated local credential:
+CellScript Registry uses a **wallet-rooted publisher identity** without a
+separate registry account system. It accepts JoyID and standard recoverable CKB
+secp256k1 message-signing principals; ordinary publish operations use a
+delegated local credential:
 
 ```text
-principal_type = joyid_ckb
-principal_id = <normalized JoyID-CKB identity binding>
+principal_type = joyid_ckb | ckb_secp256k1
+principal_id = <normalized signer public-key binding>
 
-JoyID identity
+CKB wallet identity
   -> root publisher principal
   -> authorises local publisher credential
   -> credential signs scoped registry requests
 ```
 
-The data model stays principal-typed instead of hard-coding product policy into
-every record. The current registry policy accepts only `joyid_ckb`, while the
-record shape still names the principal type and concrete principal id.
+The data model stays principal-typed instead of hard-coding wallet-product
+policy into every record. `principal_id` is derived from the signer key, and
+the Registry verifies that signature scheme, key type, recovered or supplied
+public key, and principal binding agree. Display addresses are presentation
+data only.
 
-The preferred `principal_id` is derived from the JoyID signer key as a
-normalized JoyID-CKB identity binding. The registry verifies that the JoyID
-signature's key type and public key match the `principal_id` in capability and
-revocation payloads; display addresses are presentation data only.
-
-The intended interactive flow is:
+The preferred interactive flow is:
 
 ```text
-cellc auth capability create --principal-id <principal_id> \
-  --scope publish:namespace/package \
-  --scope deployment:namespace/package \
-  --scope availability:namespace/package \
-  --expires 90d --json > capability-payload.json
-  -> CLI creates a registry signing key and stores it in the OS keychain
-  -> CLI prints an authorize_capability payload with capability_pubkey and requested scopes
-  -> browser/CCC/JoyID signs that exact payload
-cellc auth capability submit --payload capability-payload.json --joyid-signature joyid-signature.json
-  -> signed payload is submitted to the registry write API
-  -> registry records principal_type, principal_id, scopes, expiry, and revocation status
+cellc publish --authorise
+  -> CLI creates a P-256 publishing key as pending in the OS keychain
+  -> CLI opens a 15-minute exact-coordinate browser session
+  -> browser/CCC wallet signs the Registry-built challenge
+  -> Registry atomically registers the key, claims/reviews the namespace,
+     completes the session, and records audit events
+  -> CLI activates only the matching returned key ID and resumes publishing
 ```
 
-Daily publishing then avoids JoyID signing prompts and never exposes root
+The explicit `auth capability create/submit` plus `auth namespace claim`
+commands remain the CI, recovery, and external-wallet path. Daily publishing
+then avoids wallet signing prompts and never exposes root
 publisher authority to CI:
 
 ```text
@@ -143,14 +150,14 @@ cellc publish
   -> registry accepts the entry and returns its canonical URL
 ```
 
-The JoyID authorisation payload must bind the local capability key:
+The wallet authorisation payload must bind the local capability key:
 
 ```text
 protocol: cellscript-registry-auth-v1
 action: authorize_capability
 registry_origin: https://api.registry.cellscript.dev
-principal_type: joyid_ckb
-principal_id: <normalized JoyID-CKB identity binding>
+principal_type: joyid_ckb | ckb_secp256k1
+principal_id: <normalized signer public-key binding>
 capability_pubkey: ...
 requested_scopes:
   - publish:cellscript/amm_pool
@@ -199,9 +206,9 @@ The actions are independent. `publish` admits an immutable release,
 `availability` deprecates, yanks, or restores a release. Namespace wildcards
 are accepted, but granting one action never grants another.
 
-This keeps the user-facing identity simple — "my JoyID is my CellScript
-publisher identity" — while the engineering surface remains revocable, scoped,
-CI-safe, and auditable.
+This keeps the user-facing identity simple — "my connected CKB wallet is my
+CellScript publisher identity" — while the engineering surface remains
+revocable, scoped, CI-safe, and auditable.
 
 ## Three-Layer Identity Model
 
@@ -269,10 +276,12 @@ maintainer action that preserves exact-pin warning metadata.
 
 The same source package version may have zero, one, or many deployment
 bindings. For example, `amm@1.2.0` may start as a source-only package and later
-gain one or more CKB mainnet deployment bindings. Local or private tooling may
-track testnet deployments separately, but the public Registry accepts only
-mainnet deployment evidence. These are separate deployment records attached to the same source/package identity,
-not separate source packages.
+gain one or more CKB mainnet deployment bindings. The production Registry
+accepts only mainnet deployment evidence. The isolated Pudge Registry accepts
+only testnet evidence under separate origins, storage, signing state, wallet
+state, RPC identity, and retention policy. These are separate deployment
+records attached to the same source/package identity, not separate source
+packages.
 
 ```
 amm@1.2.0
@@ -779,18 +788,14 @@ identify the already locked bytes.
 The developer publishes a new version:
 
 ```bash
-cellc auth capability create --principal-id <principal_id> \
-  --scope publish:cellscript/amm_pool \
-  --scope deployment:cellscript/amm_pool \
-  --scope availability:cellscript/amm_pool \
-  --expires 90d --json > capability-payload.json
-cellc auth capability submit --payload capability-payload.json --joyid-signature joyid-signature.json
-cellc publish
+cellc publish --authorise  # first interactive publish
+cellc publish              # later publishes with the active delegated key
 ```
 
 This automatically:
 
-1. Registers a JoyID-authorised delegated capability key with the write API.
+1. For `--authorise`, registers a wallet-authorised delegated capability key
+   and claims or reviews the namespace through the short-lived browser session.
 2. Reads `Cell.toml` -> gets `name`, `namespace`, `version`.
 3. Computes `source_hash` from the current source tree.
 4. Reads build artifacts for `artifact_hash`, `abi_hash`, `schema_hash`, etc.
@@ -802,11 +807,11 @@ This automatically:
 8. Creates a canonical registry entry in `source_published` or
    `indexed_pending` state.
 
-Capability revocation is also JoyID-bound:
+Capability revocation is also wallet-bound:
 
 ```bash
 cellc auth capability revoke --principal-id <principal_id> --capability-key-id <capability_key_id> --json > revoke-payload.json
-cellc auth capability revoke --payload revoke-payload.json --joyid-signature joyid-signature.json --reason "rotate delegated key"
+cellc auth capability revoke --payload revoke-payload.json --wallet-signature wallet-signature.json --reason "rotate delegated key"
 ```
 
 The explicit signing flow is:
@@ -853,7 +858,7 @@ git tag v1.2.0
 git push --tags
 ```
 
-No separate registry account is needed. The JoyID-rooted publisher identity
+No separate registry account is needed. The wallet-rooted publisher identity
 authorises the local credential, and the registry ACL decides whether that
 credential may publish to the namespace/package. No PR to the
 `cellscript-registry` discovery index is needed for ordinary version updates;
@@ -1188,15 +1193,10 @@ a separate archive storage layer.
 ### Publishing Flow
 
 ```bash
-# First use, or after credential expiry/revocation
-cellc auth capability create --principal-id <principal_id> \
-  --scope publish:cellscript/amm_pool \
-  --scope deployment:cellscript/amm_pool \
-  --scope availability:cellscript/amm_pool \
-  --expires 90d --json > capability-payload.json
-cellc auth capability submit --payload capability-payload.json --joyid-signature joyid-signature.json
+# Interactive first use, or after credential expiry/revocation
+cellc publish --authorise
 
-# Publish a new version to the registry
+# Later publish with an active delegated key
 cellc publish
 # → reads Cell.toml
 # → computes source_hash from current source tree
@@ -1292,7 +1292,7 @@ Synchronous publish checks must remain cheap:
 - manifest/schema validation;
 - `source_hash` / `manifest_hash` sanity and duplicate-hash rejection;
 - idempotency keys for retry-safe publishes;
-- per IP, ASN, JoyID principal, credential, namespace, and package quotas.
+- per IP, ASN, wallet principal, credential, namespace, and package quotas.
 
 Expensive work is asynchronous:
 
@@ -1303,7 +1303,7 @@ Expensive work is asynchronous:
 - chain RPC reads;
 - search indexing and ranking.
 
-JoyID signatures are identity evidence, not an anti-spam mechanism by
+Wallet signatures are identity evidence, not an anti-spam mechanism by
 themselves. New namespace claims, high-volume publishing, typosquatting-risk
 names, and on-chain deployment attestations may require cooldown, review, or
 community challenge. The first production source-package write path does not
@@ -1315,16 +1315,17 @@ deleted, so exact pins and incident reviews remain reproducible.
 ### CLI Integration
 
 ```bash
-# Authorise a local publisher credential with JoyID-rooted identity
-cellc auth capability create --principal-id <principal_id> \
+# Manual/CI authorisation path for either supported principal type
+cellc auth capability create --principal-type <joyid_ckb|ckb_secp256k1> --principal-id <principal_id> \
   --scope publish:cellscript/amm \
   --scope deployment:cellscript/amm \
   --scope availability:cellscript/amm \
   --expires 90d --json > capability-payload.json
-cellc auth capability submit --payload capability-payload.json --joyid-signature joyid-signature.json
+cellc auth capability submit --payload capability-payload.json --wallet-signature wallet-signature.json
+cellc auth namespace claim --namespace cellscript --payload capability-payload.json --wallet-signature wallet-signature.json
 
-# Publish a new version to the registry
-cellc publish
+# Or use the short interactive path, which resumes the publish automatically
+cellc publish --authorise
 
 # Optional local/offline discovery mirror
 cellc registry add --namespace cellscript --name amm --source https://github.com/cellscript/amm
@@ -1917,10 +1918,10 @@ package history, audit record, actor identity, reason, and timestamps.
 
 - Do not replace CCC. The Action Builder consumes deployment records; it does
   not become a wallet, indexer, or chain submission layer.
-- Do not introduce a separate registry account system alongside JoyID-rooted
+- Do not introduce a separate registry account system alongside wallet-rooted
   publisher identity.
-- Do not require an interactive JoyID signature for every `cellc publish`;
-  JoyID authorises scoped publisher credentials, and credentials sign daily
+- Do not require an interactive wallet signature for every `cellc publish`;
+  the wallet authorises scoped publisher credentials, and credentials sign daily
   publish payloads.
 - Do not introduce hidden signer authority or hidden sighash defaults.
 - Do not infer transaction semantics from protocol/action names.

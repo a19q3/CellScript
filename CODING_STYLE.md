@@ -37,6 +37,9 @@ Its release binary is part of the Registry trust boundary, not a host utility.
   `build_reproducible_release.sh`; the script path-remaps sources, strips the
   RISC-V ELF, and verifies both SHA-256 and CKB data hash against the tracked
   release manifest.
+- Keep host checksum tooling portable: reproducible scripts may use GNU
+  `sha256sum` or Perl `shasum`, must select one explicitly, and must fail closed
+  when neither exists.
 - Keep Script args equal to the 32-byte custody Lock Script hash and the
   accepted Cell data exactly `CSREGv1 || 32-byte commitment hash`. Every group
   Cell must use that Lock and every transition must consume a Cell using it;
@@ -117,6 +120,42 @@ implicit backend contracts more implicit.
 - Do not add domain-specific verifier rules by matching action/function names in
   codegen. Business rules must be explicit in DSL source, structured IR, or
   metadata before the backend lowers them.
+
+## Verified Artifact Boundary Rules
+
+- Treat the ELF, compile metadata, canonical lowering record, and canonical
+  source map as one build bundle. A change to any identity, schema, mapping, or
+  structural claim must update all producers, consumers, tests, docs, and gate
+  checks in the same change.
+- Keep `cellscript-artifact-checker` independent of the parser, resolver, type
+  checker, IR, optimizer, assembler, and code generator. Production
+  dependencies may provide only bounded parsing, versioned schema, canonical
+  hashing, stable diagnostics, and minimal ELF utilities.
+- Checker traversal must be preceded by byte/count budgets. Unknown schemas or
+  fields, malformed ranges, path escape, mismatched identities, and budget
+  exhaustion fail closed with one stable `V24xx` rejection code and bounded
+  diagnostics.
+- Do not label structural validation semantic equivalence. Keep binding,
+  structural, lowering-record, CKB-VM, and chain evidence as separate fields.
+- Any new checker invariant requires a deterministic negative mutation and a
+  valid compiler-produced fixture. ELF/codegen changes also require the
+  `backend` gate because mapped ranges, block digests, control flow, stack
+  discipline, or instruction policy may change.
+
+## Executable Package Scenario Rules
+
+- `cellc test` success must name and run `simulator`, `ckb-vm`, or `all` unless
+  `--no-run` is explicitly selected. Compile-only discovery is never described
+  as executed test evidence.
+- Scenario and report schemas reject unknown fields. Source/oracle paths are
+  relative and confined; Cell names, replacement edges, scripts, witnesses,
+  runtime errors, and declared limits are validated before execution.
+- Simulator results remain `development-non-consensus`. CKB-VM results remain
+  runtime evidence. Neither may be promoted to RPC admission, deployment,
+  commitment, confirmation, or complete source equivalence.
+- The v1 local live-Cell model proves bookkeeping only; it does not inject
+  scenario Cells into CKB syscalls. Transaction-shaped cases continue to cite
+  the stateful CKB oracle until a syscall harness is explicitly promoted.
 
 ## CKB Semantics
 

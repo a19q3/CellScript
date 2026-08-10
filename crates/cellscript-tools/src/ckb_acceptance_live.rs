@@ -16,6 +16,23 @@ use crate::ckb_devnet::{
 use crate::production_evidence::{ACTION_RUNS, EXPECTED_END_TO_END_STATEFUL_SCENARIOS, EXPECTED_EXAMPLES, LOCKS};
 
 const RECIPES: &str = include_str!("../fixtures/ckb_acceptance/transactions-v0.23.json");
+const PINNED_CKB_CXXFLAGS: &str = "-include cstdint";
+const PINNED_CKB_CXX_COMPATIBILITY: &str = "ckb-librocksdb-sys-8.5.4-explicit-cstdint-v1";
+
+fn production_ckb_build_command(ckb_repo: &Path, target: &Path) -> Command {
+    let mut command = Command::new("cargo");
+    command
+        .args(["build", "--locked", "--bin", "ckb", "--target-dir"])
+        .arg(target)
+        .current_dir(ckb_repo)
+        // The CKB 0.207.0 pin resolves ckb-librocksdb-sys 8.5.4. Its
+        // trace_record.h uses fixed-width integers without including
+        // <cstdint>; current C++ toolchains no longer provide that header
+        // transitively. Inject the missing standard header without patching
+        // the clean, pinned CKB checkout.
+        .env("CXXFLAGS", PINNED_CKB_CXXFLAGS);
+    command
+}
 
 fn command_stdout(root: &Path, program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program).args(args).current_dir(root).output()?;
@@ -42,11 +59,7 @@ fn build_ckb(root: &Path, ckb_repo: &Path, ckb_bin: Option<&Path>, mode: &str, r
         bail!("production acceptance does not accept --ckb-bin; the pinned source must be rebuilt");
     }
     let target = run_dir.join(".ckb-build-target");
-    let output = Command::new("cargo")
-        .args(["build", "--locked", "--bin", "ckb", "--target-dir"])
-        .arg(&target)
-        .current_dir(ckb_repo)
-        .output()?;
+    let output = production_ckb_build_command(ckb_repo, &target).output()?;
     if !output.status.success() {
         bail!(
             "fresh pinned CKB build failed:\n{}\n{}",
@@ -591,6 +604,8 @@ fn runtime_provenance(
         "repo_dirty":!command_stdout(ckb_repo,"git",&["status","--porcelain","--untracked-files=all"])?.is_empty(),
         "version":pin["version"], "version_output":version,
         "build_mode":if mode=="production" {"fresh-dedicated-cargo-target"} else {"bounded-existing-binary"},
+        "cxxflags":if mode=="production" {PINNED_CKB_CXXFLAGS} else {"not-applied-bounded-existing-binary"},
+        "cxx_compatibility_contract":if mode=="production" {PINNED_CKB_CXX_COMPATIBILITY} else {"not-applied-bounded-existing-binary"},
         "binary_archived_with_report":mode=="production", "binary_path":ckb_bin,
         "binary_sha256":file_sha256(ckb_bin)?, "source_template_path":source_config,
         "source_template_sha256":file_sha256(&source_config)?, "source_spec_path":source_spec,
@@ -762,9 +777,20 @@ pub(crate) fn run(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
     use ckb_types::{packed::WitnessArgs, prelude::*};
 
     use super::*;
+
+    #[test]
+    fn production_ckb_build_injects_the_pinned_cstdint_compatibility_flag() {
+        let command = production_ckb_build_command(Path::new("/tmp/pinned-ckb"), Path::new("/tmp/pinned-ckb-target"));
+        let cxxflags = command.get_envs().find_map(|(key, value)| (key == OsStr::new("CXXFLAGS")).then_some(value)).flatten();
+
+        assert_eq!(cxxflags, Some(OsStr::new(PINNED_CKB_CXXFLAGS)));
+        assert_eq!(PINNED_CKB_CXX_COMPATIBILITY, "ckb-librocksdb-sys-8.5.4-explicit-cstdint-v1");
+    }
 
     fn assert_entry_witnesses(transaction: &Value, label: &str, count: &mut usize) {
         for witness in transaction["witnesses"].as_array().expect("transaction witnesses") {

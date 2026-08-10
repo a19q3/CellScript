@@ -4114,7 +4114,7 @@ export function validatePromotionEvidence(
 
   if (kind === "verified_build") {
     const level = requireEvidenceString(evidence, "verification_level", 1, 80);
-    if (!(["compiled", "hash_bound", "evidence_required"] as const).includes(level as any)) {
+    if (!(["compiled", "hash_bound", "evidence_required", "structurally_verified"] as const).includes(level as any)) {
       throw new ApiError(400, "invalid_verification_level", "verification_level is not recognised");
     }
     if (version.artifact.profile !== "copy_material") {
@@ -4126,6 +4126,11 @@ export function validatePromotionEvidence(
     }
     requireEvidenceHash(evidence, "metadata_hash");
     if (version.artifact.profile === "cellscript_source") requireEvidenceString(evidence, "compiler_version", 1, 80);
+    if (level === "structurally_verified") {
+      requireEvidenceString(evidence, "checker_version", 1, 80);
+      requireEvidenceString(evidence, "checker_policy_schema", 1, 120);
+      requireEvidenceHash(evidence, "checker_report_hash");
+    }
   } else if (kind === "reproduced_build") {
     const verified = latestEvidence(previous, "verified_build");
     requireEvidenceReference(evidence, "verified_build_evidence_hash", verified);

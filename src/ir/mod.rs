@@ -376,6 +376,7 @@ pub struct IrBlock {
     pub id: BlockId,
     pub instructions: Vec<IrInstruction>,
     pub terminator: IrTerminator,
+    pub runtime_error: Option<CellScriptRuntimeError>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2897,7 +2898,7 @@ impl IrGenerator {
 
     fn push_block(&mut self, blocks: &mut Vec<IrBlock>) -> BlockId {
         let id = self.new_block();
-        blocks.push(IrBlock { id, instructions: Vec::new(), terminator: IrTerminator::Return(None) });
+        blocks.push(IrBlock { id, instructions: Vec::new(), terminator: IrTerminator::Return(None), runtime_error: None });
         id
     }
 
@@ -3308,6 +3309,7 @@ impl IrGenerator {
         let fail_block = self.push_block(blocks);
         self.block_mut(blocks, active).terminator = IrTerminator::Branch { cond, then_block: ok_block, else_block: fail_block };
         self.block_mut(blocks, fail_block).terminator = IrTerminator::Return(Some(self.fail_closed_return_operand()));
+        self.block_mut(blocks, fail_block).runtime_error = Some(CellScriptRuntimeError::AssertionFailed);
 
         LoweredExpr { operand: IrOperand::Const(IrConst::Unit), current: Some(ok_block) }
     }
@@ -3329,6 +3331,7 @@ impl IrGenerator {
         let fail_block = self.push_block(blocks);
         self.block_mut(blocks, active).terminator = IrTerminator::Branch { cond, then_block: ok_block, else_block: fail_block };
         self.block_mut(blocks, fail_block).terminator = IrTerminator::Return(Some(self.fail_closed_return_operand()));
+        self.block_mut(blocks, fail_block).runtime_error = Some(CellScriptRuntimeError::AssertionFailed);
 
         LoweredExpr { operand: IrOperand::Const(IrConst::Bool(true)), current: Some(ok_block) }
     }

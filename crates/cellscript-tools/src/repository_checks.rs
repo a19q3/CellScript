@@ -81,6 +81,34 @@ fn normalized_head(path: &Path, lines: usize) -> Result<String> {
     Ok(text.lines().take(lines).flat_map(str::split_whitespace).collect::<Vec<_>>().join(" "))
 }
 
+fn check_document_contract(
+    root: &Path,
+    relative: &str,
+    required: &[&str],
+    forbidden: &[&str],
+    failures: &mut Vec<String>,
+) -> Result<()> {
+    let path = root.join(relative);
+    if !path.is_file() {
+        failures.push(format!("required current-contract document is missing: {relative}"));
+        return Ok(());
+    }
+    let text = fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let searchable = normalized.to_ascii_lowercase();
+    for marker in required {
+        if !searchable.contains(&marker.to_ascii_lowercase()) {
+            failures.push(format!("{relative} is missing current-contract marker: {marker}"));
+        }
+    }
+    for marker in forbidden {
+        if searchable.contains(&marker.to_ascii_lowercase()) {
+            failures.push(format!("{relative} retains forbidden stale marker: {marker}"));
+        }
+    }
+    Ok(())
+}
+
 pub fn check_doc_status(root: &Path) -> Result<()> {
     let readme = fs::read_to_string(root.join("README.md"))?;
     let link_re = Regex::new(r"\]\((docs/CELLSCRIPT_[^)#]+\.md)(?:#[^)]+)?\)")?;
@@ -131,10 +159,123 @@ pub fn check_doc_status(root: &Path) -> Result<()> {
         ("docs/CELLSCRIPT_CKB_ADAPTER.md", "production contract for the current CellScript CKB profile"),
         ("docs/CELLSCRIPT_CKB_STD_COMPAT.md", "production compatibility contract for the current CellScript CKB profile"),
         ("docs/CELLSCRIPT_GRAMMAR_GOVERNANCE_RFC.md", "Active grammar-governance contract"),
-        ("docs/CELLSCRIPT_WEBSITE_PARADIGM_UPGRADE_RFC.md", "Implemented across the 0.20-0.21 line"),
+        ("docs/CELLSCRIPT_WEBSITE_PARADIGM_UPGRADE_RFC.md", "Implemented across the 0.20-0.23 line"),
     ] {
         if !normalized_head(&root.join(relative), 20)?.contains(marker) {
             failures.push(format!("{relative} Status header is missing freshness marker: {marker}"));
+        }
+    }
+
+    let lib_source = fs::read_to_string(root.join("src/lib.rs"))?;
+    let schema_re = Regex::new(r"METADATA_SCHEMA_VERSION:\s*u32\s*=\s*(\d+)")?;
+    let schema_version = schema_re
+        .captures(&lib_source)
+        .and_then(|captures| captures.get(1))
+        .map(|value| value.as_str().to_owned())
+        .context("src/lib.rs is missing METADATA_SCHEMA_VERSION")?;
+    let current_schema = format!("current metadata schema {schema_version}");
+    let schema_number = format!("metadata schema {schema_version}");
+
+    check_document_contract(
+        root,
+        "README.md",
+        &["0.23 release notes", "0.24 release notes", "0.24 roadmap", "cellc publish --authorise"],
+        &[],
+        &mut failures,
+    )?;
+    check_document_contract(
+        root,
+        "docs/README.md",
+        &[
+            schema_number.as_str(),
+            "CELLSCRIPT_0_23_RELEASE_NOTES.md",
+            "CELLSCRIPT_0_24_RELEASE_NOTES.md",
+            "CELLSCRIPT_0_24_ROADMAP.md",
+            "CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md",
+        ],
+        &[],
+        &mut failures,
+    )?;
+    for relative in ["docs/CELLSCRIPT_RUNTIME_ERROR_CODES.md", "docs/wiki/Tutorial-06-Metadata-Verification-and-Production-Gates.md"] {
+        check_document_contract(root, relative, &[current_schema.as_str()], &["current schema 55"], &mut failures)?;
+    }
+    for relative in ["docs/skills/cellscript-metadata-audit/SKILL.md", "docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md"] {
+        check_document_contract(root, relative, &[schema_number.as_str()], &["metadata schema 57"], &mut failures)?;
+    }
+    check_document_contract(
+        root,
+        "docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md",
+        &["metadata schema 57", "0.24 roadmap"],
+        &["metadata schema 58"],
+        &mut failures,
+    )?;
+
+    for relative in [
+        "docs/CELLSCRIPT_REGISTRY_PHASE1.md",
+        "docs/CELLSCRIPT_REGISTRY_PRODUCTION_BOUNDARY_ADR.md",
+        "docs/wiki/Tutorial-12-Phase1-Registry-End-to-End.md",
+        "services/registry-api/README.md",
+        "docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md",
+    ] {
+        check_document_contract(
+            root,
+            relative,
+            &["cellc publish --authorise", "get_live_cell", "get_transaction", "tx_status", "Pudge"],
+            &[],
+            &mut failures,
+        )?;
+    }
+    check_document_contract(
+        root,
+        "docs/CELLSCRIPT_GATE_POLICY.md",
+        &["Node 22", "npm --prefix website run build:ci", "native source-policy enforcement"],
+        &[],
+        &mut failures,
+    )?;
+    check_document_contract(
+        root,
+        "roadmap/CELLSCRIPT_0_23_ROADMAP.md",
+        &["implementation scope frozen", "final scope decision", "0.24 roadmap", "attested adapter"],
+        &["Status: Draft, pending release-line coordination"],
+        &mut failures,
+    )?;
+    check_document_contract(
+        root,
+        "roadmap/CELLSCRIPT_0_24_ROADMAP.md",
+        &[
+            "Verified Artifact Boundary",
+            "Executable Package Tests",
+            "Myelin Adapter Re-Convergence",
+            "independent checker",
+            "Exit Criteria",
+        ],
+        &[],
+        &mut failures,
+    )?;
+    check_document_contract(
+        root,
+        "docs/wiki/Tutorial-14-Verified-Artifacts-and-Executable-Tests.md",
+        &["four-file bundle", "cellc test --backend all", "structurally_verified"],
+        &[],
+        &mut failures,
+    )?;
+    for relative in ["roadmap/CELLSCRIPT_ROADMAP.md", "roadmap/CELLSCRIPT_ROADMAP_OVERVIEW.md"] {
+        check_document_contract(
+            root,
+            relative,
+            &["0.24", "independent", "CELLSCRIPT_0_24_ROADMAP.md"],
+            &["Myelin vendored fork re-converges"],
+            &mut failures,
+        )?;
+    }
+
+    let mut wiki_docs = Vec::new();
+    collect_markdown(&root.join("docs/wiki"), &mut wiki_docs)?;
+    for path in wiki_docs {
+        let text = fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+        if text.contains("/blob/nightly-0.22/") {
+            let relative = path.strip_prefix(root).unwrap_or(&path).display();
+            failures.push(format!("{relative} retains an active link to nightly-0.22"));
         }
     }
     if !failures.is_empty() {

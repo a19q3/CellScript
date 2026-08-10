@@ -23,6 +23,12 @@ The current stable release is
 [CellScript v0.22.0](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.22.0).
 See the [0.22 release notes](docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md)
 for its shipped surface, evidence boundaries, and migration checklist.
+The completed 0.23 implementation scope is tracked in the
+[0.23 release notes](docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md); those
+notes are not a stable-release claim. Development on `nightly-0.24` implements
+the independently checked artifact and executable-test boundary described in
+the [0.24 release notes](docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md) and
+[0.24 roadmap](roadmap/CELLSCRIPT_0_24_ROADMAP.md).
 
 In this README, metadata means machine-readable semantic facts emitted by the
 compiler: schema layout, Cell effects, access summaries, source hashes,
@@ -599,11 +605,12 @@ Emits ckb-vm-compatible RISC-V assembly (`.s`) or ELF (`.elf`):
   buffers, and per-entrypoint trampolines.
 - CKB syscall ABI with proper syscall number tables and source-flag conventions.
 
-### Metadata & Policy
+### Metadata, Lowering Evidence & Policy
 
-The compiler emits a single JSON metadata sidecar (`.elf.meta.json` /
-`.s.meta.json`) that captures everything the chain scheduler, audit tools, and
-policy gates need — without re-parsing source:
+The compiler emits a JSON metadata sidecar (`.elf.meta.json` / `.s.meta.json`).
+CKB ELF builds additionally emit canonical `.elf.lowering.json` and
+`.elf.sourcemap.json` sidecars. The standalone artifact checker consumes all
+four identities without calling the compiler front end or code generator:
 
 | What | Produced by | Consumed by |
 |---|---|---|
@@ -611,6 +618,8 @@ policy gates need — without re-parsing source:
 | Effect classification, resource summaries | `types/` | Scheduler, audit tools |
 | Scheduler witness ABI & access domains | `codegen/` | CKB block builder, parallel scheduler |
 | Source hashes, artifact CKB Blake2b | `lib.rs` | `cellc verify-artifact`, CI gates |
+| Stable lowering graph, ABI/frame/ProofPlan/syscall contracts, block digests | `verified_artifact.rs` | standalone checker, Registry artifact worker |
+| Source spans to final ELF instruction ranges | `verified_artifact.rs` | checker, executable-test coverage, audit tools |
 | Verifier obligations, pool invariants | `ir/` | On-chain verifier, policy checker |
 | Covenant ProofPlan trigger/scope/read coverage, risk diagnostics, macro provenance | `proof_plan/` | `cellc explain proof`, auditors |
 | Target-profile policy violations | `lib.rs` | `cellc check`, CI gates |
@@ -636,7 +645,7 @@ CKB cycle/capacity estimates.
 | **MCP server** | `cellscript-mcp` (separate bin) | Read-only Model Context Protocol JSON-RPC server that exposes compiler reports and explain commands to MCP-aware agents (Claude Code, Cursor, Aider, Codex, etc.) |
 | **Formatter** | `fmt/` | Idempotent formatter for `cellc fmt` and LSP |
 | **Doc generator** | `docgen/` | HTML/Markdown/JSON docs from AST + metadata |
-| **Simulator** | `simulate.rs` | Simulated evaluator — emits `TraceEvent` logs without ckb-vm |
+| **Executable test runner** | `simulate.rs` + `cli/test_runner.rs` | Versioned scenarios under the non-consensus simulator and local authoritative CKB-VM backend, with exact runtime errors and conservative coverage |
 | **REPL** | `repl.rs` | Interactive read-eval-print loop |
 | **Generated builder package** | `cellc gen-builder --target typescript` | Emits a registry-bound TypeScript action-builder package with runtime adapter contracts and self-tests |
 
@@ -672,11 +681,13 @@ flowchart TB
     Rules --> Policy
     Policy --> IR["IR lowering + optimizer\nCell effects, entry ABI,\nverifier obligations"]
     IR --> Metadata["metadata sidecar\nschema, ABI, runtime errors,\nconstraints, CKB policy"]
+    IR --> Lowering["verified lowering record + source map\ncanonical graph, final ranges, block digests"]
     IR --> Codegen["RISC-V codegen\nCKB syscalls, raw ELF,\nper-entry trampolines"]
     Codegen --> Artifact["CKB artifact\n.s / .elf"]
 
-    Artifact --> Verify["cellc verify-artifact\nprofile, source hash,\nartifact hash, policy flags"]
+    Artifact --> Verify["cellc verify-artifact\nbinding + structural + lowering states"]
     Metadata --> Verify
+    Lowering --> Verify
 
     Artifact --> Builder["builder workflow\ninputs, outputs, outputs_data,\nwitness, cell_deps, capacity floors"]
     Metadata --> Builder
@@ -687,8 +698,10 @@ This separates three boundaries:
 
 - **compiler boundary** — parse, type/state checks, CKB policy rejection, IR,
   codegen, and metadata;
-- **artifact boundary** — `cellc verify-artifact` proves the artifact, sidecar,
-  source hash, target profile, and selected policy flags agree;
+- **artifact boundary** — `cellc verify-artifact` uses the independent checker
+  to prove binding, static ELF structure, lowering-record, source-map, target
+  profile, and selected policy agreement; it does not claim complete semantic
+  equivalence or VM execution;
 - **chain-evidence boundary** — builders and acceptance scripts prove concrete
   CKB transaction shape, capacity, cycles, tx size, and lock/action behavior.
 
@@ -760,6 +773,8 @@ Non-CellScript artifact profiles still fail closed.
 
 - `cellc init` — create an application or library package with `Cell.toml`
 - `cellc build` / `check` / `doc` / `fmt` — operate on the current package
+- `cellc test --backend simulator|ckb-vm|all` — execute versioned
+  `*.scenario.json` fixtures; `--no-run` is the explicit compile-only mode
 - top-level `cellc <input>` and report commands accept `.cell` files, package
   directories, or `Cell.toml` manifests where the command supports an input
 - `cellc add --path` — records local path dependencies in `Cell.toml`
@@ -778,9 +793,15 @@ Non-CellScript artifact profiles still fail closed.
   dependency resolution, or build identity disagree with `Cell.lock`
 - `cellc registry verify --json` — checks off-chain deployment facts against
   `Cell.lock` and `Deployed.toml`
-- `cellc registry verify --live --rpc-url ... --json` — adds CKB RPC live-cell
-  checks for deployment records when RPC evidence is available
-- `cellc publish` — public registry publish path; `cellc publish --offline`
+- `cellc registry verify --live --rpc-url ... --json` — adds CKB RPC
+  `get_live_cell` liveness plus `get_transaction.tx_status` commit and
+  confirmation checks for deployment records when RPC evidence is available
+- `cellc publish --authorise` — recommended interactive first-publish path;
+  opens an exact-coordinate 15-minute browser authorisation session, keeps the
+  pending delegated key recoverable, and resumes publishing after the Registry
+  returns the matching key ID (`--no-open` supports remote terminals)
+- `cellc publish` — public registry publish path once a delegated publisher
+  credential is active; `cellc publish --offline`
   computes the package source hash and mirrors the version entry into
   `registry.json` for local fixtures, audit, and offline fallback
 - `cellc registry add` — write a discovery-index entry into the local/offline
@@ -789,6 +810,10 @@ Non-CellScript artifact profiles still fail closed.
   yanked, with optional reason and replacement metadata
 
 **Public registry boundary / fail-closed:**
+
+For interactive first use, run `cellc publish --authorise`. The explicit
+`auth capability create/submit` and `auth namespace claim` sequence below is
+the manual, CI, recovery, and external-wallet path.
 
 - Public registry publishing uses typed wallet-rooted publisher identities:
   CCC is the browser connection layer, `joyid_ckb` accepts JoyID passkeys, and
@@ -900,8 +925,8 @@ Non-CellScript artifact profiles still fail closed.
 | `cellc proof-diff` / `profile` / `tx trace` / `audit-bundle` | Emit v0.16 audit and debug reports |
 | `cellc opt-report` | Compare O0..O3 artifact size and constraints status |
 | `cellc receipt` / `sign-receipt` / `verify-receipt` | Emit, sign, and verify compile receipts over metadata/artifact hashes |
-| `cellc verify-artifact` | Verify an artifact against its metadata sidecar, with optional receipt binding |
-| `cellc test` | Run compiler and policy tests (no trusted runtime execution) |
+| `cellc verify-artifact` | Independently check an ELF, metadata, lowering record, and source map; report VM/chain evidence separately; optionally bind a receipt |
+| `cellc test --backend simulator\|ckb-vm\|all` | Execute fail-closed package scenarios with exact outcomes and evidence tiers (`--no-run` is compile-only) |
 | `cellc doc` | Generate API and audit documentation |
 | `cellc fmt` | Format `.cell` sources or check formatting |
 | `cellc init` | Create a package skeleton |
@@ -912,7 +937,7 @@ Non-CellScript artifact profiles still fail closed.
 | `cellc registry verify` | Verify deployment identity against `Cell.lock` and `Deployed.toml`; `--live` adds CKB RPC evidence |
 | `cellc certify --plugin novaseal-profile-v0` | Run the deterministic compiler-hosted NovaSeal profile certification (consumes `target/novaseal-*.json` and the local certifier source) |
 | `cellc repl` | Start the interactive REPL |
-| `cellc run` | Run ELF entrypoints via VM runner or simulator; `--json` includes cycles for VM execution and `cycles: null` for simulation |
+| `cellc run` | Run no-argument standalone ELF entrypoints via CKB-VM, or use explicit `--simulate`; parameter/transaction contexts fail closed instead of silently falling back |
 | `cellc publish` / `cellc publish --offline` / `cellc registry add` / `cellc registry edit --yank` | Public publish plus explicit local/offline registry metadata flow; public registry policy makes bare `cellc publish` an authenticated registry write, with Git/static metadata retained for audit and fallback |
 | `cellc auth capability create/submit/revoke` / public registry write API / non-CellScript artifact install | Typed wallet-rooted publication policy and future-facing artifact profiles; fail-closed where unsupported |
 

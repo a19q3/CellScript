@@ -81,12 +81,29 @@ The only accepted value is `"2026"`. The playground worker passes that value
 and records it in compiler-output provenance, so browser metadata cannot
 silently use a different compatibility contract from native builds.
 
-On `nightly-0.22`, qualified enum completion includes concrete payload
-constructors: after `Limit::`, `Some` advertises `Some(u64)` and inserts
+Introduced on the 0.22 line and retained by the current compiler, qualified
+enum completion includes concrete payload constructors: after `Limit::`,
+`Some` advertises `Some(u64)` and inserts
 `Some(value1)`, while `None` remains a bare variant. Enum hover reads the same
 compiler metadata as `cellc metadata` and shows the tagged-union layout, ABI,
 storage class, encoded width, and linear-payload flag. Generic or
 variable-width payload ADTs are intentionally not advertised as supported.
+
+## Recoverable Browser Workbench
+
+The website playground is a metadata workbench over the WASM compiler path,
+not a browser ELF builder. Its workspace snapshot preserves source files, the
+selected entry, active panels, and saved/dirty state in browser-local storage.
+Compile failure keeps the last valid output visible with an explicit stale
+label; if the compiler Worker stops, restart it from the playground without
+reloading the page.
+
+Cell Flow derives an inputs → action → outputs view from compile metadata. The
+Inspector connects a selected action or type back to its declaration and shows
+effects, estimated cycles, capabilities, runtime features, and layout evidence.
+Raw actions, types, diagnostics, and metadata remain available alongside those
+views. None of these panels upgrades metadata into consensus proof, and the
+browser path still emits no assembly or ELF.
 
 ## VS Code Extension
 
@@ -204,6 +221,7 @@ cellc check --all-targets --json
 cellc metadata . --target riscv64-elf --target-profile ckb -o /tmp/metadata.json
 cellc build --target riscv64-elf --target-profile ckb --json
 cellc verify-artifact build/main.elf --verify-sources --expect-target-profile ckb
+cellc test --backend all --json
 cellc package verify --json
 cellc registry verify --json
 ```
@@ -289,13 +307,17 @@ Use `cellc build` for package builds.
 
 Local `cellc install --path`, registry source-package `cellc install`, and
 `cellc update` are supported lockfile workflows for packages that can be
-resolved and source-hash verified. Public `cellc publish` is an authenticated
-registry write authorised by a JoyID-rooted capability; `cellc registry add`
-remains the local/offline discovery metadata path. Treat `run`, registry proxy
-use, cryptographic publisher signature verification, and non-CellScript artifact
-profiles as future-facing or fail-closed.
+resolved and source-hash verified. For an interactive first Registry write,
+`cellc publish --authorise` obtains a wallet-rooted delegated capability and
+resumes the publish; later `cellc publish` calls use the active scoped key.
+`cellc registry add` remains the local/offline discovery metadata path.
+Non-CellScript artifact profiles have explicit fetch, verify, pin, copy,
+deployment, and commitment commands and never become source dependencies by
+implicit resolver coercion.
 
 ## Next
 
 With the tooling loop in place, continue with
 [Bundled Example Contracts](https://github.com/CellScript-Labs/CellScript/wiki/Tutorial-08-Bundled-Example-Contracts).
+For the 0.24 checker and scenario boundaries, also read
+[Verified Artifacts and Executable Tests](Tutorial-14-Verified-Artifacts-and-Executable-Tests.md).

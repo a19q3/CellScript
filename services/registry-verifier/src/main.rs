@@ -41,6 +41,9 @@ struct VerificationOutput {
     manifest_hash: String,
     compatibility_profile_hash: Option<String>,
     artifact_format: String,
+    checker_version: Option<String>,
+    checker_policy_schema: Option<String>,
+    checker_report_hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +119,8 @@ fn verifier_error_code(error: &anyhow::Error) -> &'static str {
         "identity_hash_mismatch"
     } else if contains("CellScript package compilation failed") {
         "cellscript_compilation_failed"
+    } else if contains("independent checker rejected") || messages.iter().any(|message| message.starts_with('V')) {
+        "artifact_checker_rejected"
     } else if contains("artifact bundle") {
         "artifact_bundle_invalid"
     } else if contains("artifact profile contract") {
@@ -199,6 +204,9 @@ fn verify_cellscript_source(args: Args, snapshot: &[u8]) -> Result<VerificationO
         manifest_hash: args.manifest_hash,
         compatibility_profile_hash: args.compatibility_profile_hash,
         artifact_format: result.artifact_format.display_name().to_string(),
+        checker_version: None,
+        checker_policy_schema: None,
+        checker_report_hash: None,
     })
 }
 
@@ -234,6 +242,10 @@ fn verify_artifact_bundle(args: Args, snapshot: &[u8]) -> Result<VerificationOut
         None
     };
 
+    let mut checker_version = None;
+    let mut checker_policy_schema = None;
+    let mut checker_report_hash = None;
+    let mut verified_compatibility_profile_hash = None;
     let (artifact_hash, abi_hash, build_recipe_hash, artifact_format, verification_level) = match args.profile.as_str() {
         "ckb_executable" => {
             let executable = bundle_object(&bundle, "executable")?;
@@ -262,7 +274,25 @@ fn verify_artifact_bundle(args: Args, snapshot: &[u8]) -> Result<VerificationOut
             } else {
                 None
             };
-            (Some(actual_artifact_hash), Some(actual_abi_hash), actual_recipe_hash, "ckb-vm-executable", "hash_bound")
+            let metadata = bundle_object(&bundle, "metadata")?;
+            let lowering_record = bundle_object(&bundle, "lowering_record")?;
+            let source_map = bundle_object(&bundle, "source_map")?;
+            let budgets = cellscript_artifact_checker::CheckerBudgets::default();
+            let checker_report =
+                cellscript_artifact_checker::check_bundle(&executable, &metadata, &lowering_record, &source_map, &budgets)
+                    .map_err(anyhow::Error::msg)
+                    .context("artifact bundle independent checker rejected the CKB executable")?;
+            let report_bytes = cellscript_artifact_checker::canonical_bytes(&checker_report)
+                .map_err(anyhow::Error::msg)
+                .context("failed to canonicalize artifact checker report")?;
+            let record = cellscript_artifact_checker::parse_lowering_record(&lowering_record, &budgets)
+                .map_err(anyhow::Error::msg)
+                .context("failed to read checker-approved lowering record")?;
+            checker_version = Some(checker_report.checker_version);
+            checker_policy_schema = Some(checker_report.checker_policy_schema);
+            checker_report_hash = Some(hex::encode(cellscript_artifact_checker::ckb_blake2b256(&report_bytes)));
+            verified_compatibility_profile_hash = Some(record.compatibility_profile_hash);
+            (Some(actual_artifact_hash), Some(actual_abi_hash), actual_recipe_hash, "ckb-vm-executable", "structurally_verified")
         }
         "reproducible_build" => {
             let executable = bundle_object(&bundle, "executable")?;
@@ -306,8 +336,11 @@ fn verify_artifact_bundle(args: Args, snapshot: &[u8]) -> Result<VerificationOut
         compiler_version: None,
         source_hash: args.source_hash,
         manifest_hash: args.manifest_hash,
-        compatibility_profile_hash: None,
+        compatibility_profile_hash: verified_compatibility_profile_hash,
         artifact_format: artifact_format.to_string(),
+        checker_version,
+        checker_policy_schema,
+        checker_report_hash,
     })
 }
 
@@ -328,7 +361,7 @@ fn bundle_object(bundle: &ArtifactBundle, role: &str) -> Result<Vec<u8>> {
 
 fn validate_bundle_roles(bundle: &ArtifactBundle, profile: &str, contract: &serde_json::Value) -> Result<()> {
     let mut required = match profile {
-        "ckb_executable" => vec!["source", "executable", "abi"],
+        "ckb_executable" => vec!["source", "executable", "abi", "metadata", "lowering_record", "source_map"],
         "reproducible_build" => vec!["source", "executable", "build_recipe"],
         "copy_material" => vec!["source"],
         other => bail!("unsupported artifact bundle profile '{other}'"),
@@ -430,6 +463,52 @@ mod tests {
 
     use super::*;
 
+    struct VerifiedCkbFixture {
+        source: Vec<u8>,
+        executable: Vec<u8>,
+        abi: Vec<u8>,
+        metadata: Vec<u8>,
+        lowering_record: Vec<u8>,
+        source_map: Vec<u8>,
+    }
+
+    impl VerifiedCkbFixture {
+        fn new() -> Self {
+            let source = br#"module registry_fixture
+
+action main() {
+    verification
+}
+"#
+            .to_vec();
+            let result = cellscript::compile(
+                std::str::from_utf8(&source).unwrap(),
+                cellscript::CompileOptions { target: Some("riscv64-elf".to_string()), ..Default::default() },
+            )
+            .unwrap();
+            Self {
+                source,
+                executable: result.artifact_bytes,
+                abi: br#"{"actions":["main"]}"#.to_vec(),
+                metadata: serde_json::to_vec(&result.metadata).unwrap(),
+                lowering_record: cellscript_artifact_checker::canonical_bytes(result.verified_lowering_record.as_ref().unwrap())
+                    .unwrap(),
+                source_map: cellscript_artifact_checker::canonical_bytes(result.source_artifact_map.as_ref().unwrap()).unwrap(),
+            }
+        }
+
+        fn objects(&self) -> Vec<(&str, &[u8])> {
+            vec![
+                ("source", &self.source),
+                ("executable", &self.executable),
+                ("abi", &self.abi),
+                ("metadata", &self.metadata),
+                ("lowering_record", &self.lowering_record),
+                ("source_map", &self.source_map),
+            ]
+        }
+    }
+
     #[test]
     fn exposes_stable_machine_codes_for_verification_boundaries() {
         let cases = [
@@ -526,36 +605,38 @@ action identity(value: u64) -> u64 {
 
     #[test]
     fn hash_binds_ckb_executable_and_abi_bundle_objects() {
-        let source = b"fn main() {}";
-        let executable = b"ckb-vm-elf";
-        let abi = br#"{"actions":[]}"#;
+        let fixture = VerifiedCkbFixture::new();
         let output = verify_bundle(
             "ckb_executable",
-            &[("source", source), ("executable", executable), ("abi", abi)],
-            Some(hex::encode(cellscript::ckb_blake2b256(executable))),
-            Some(hex::encode(cellscript::ckb_blake2b256(abi))),
+            &fixture.objects(),
+            Some(hex::encode(cellscript::ckb_blake2b256(&fixture.executable))),
+            Some(hex::encode(cellscript::ckb_blake2b256(&fixture.abi))),
             None,
         )
         .unwrap();
         assert_eq!(output.status, "passed");
-        assert_eq!(output.verification_level, "hash_bound");
+        assert_eq!(output.verification_level, "structurally_verified");
         assert_eq!(output.artifact_format, "ckb-vm-executable");
+        assert_eq!(output.checker_version.as_deref(), Some(cellscript_artifact_checker::CHECKER_VERSION));
+        assert_eq!(output.checker_policy_schema.as_deref(), Some(cellscript_artifact_checker::CHECKER_POLICY_SCHEMA));
+        assert_eq!(output.checker_report_hash.as_deref().unwrap().len(), 64);
     }
 
     #[test]
     fn deployed_ckb_executable_can_bind_a_reproducible_recipe() {
-        let executable = b"ckb-vm-elf";
-        let abi = br#"{"actions":[]}"#;
+        let fixture = VerifiedCkbFixture::new();
         let recipe = b"pinned build recipe";
+        let mut objects = fixture.objects();
+        objects.push(("build_recipe", recipe));
         let output = verify_bundle(
             "ckb_executable",
-            &[("source", b"fn main() {}"), ("executable", executable), ("abi", abi), ("build_recipe", recipe)],
-            Some(hex::encode(cellscript::ckb_blake2b256(executable))),
-            Some(hex::encode(cellscript::ckb_blake2b256(abi))),
+            &objects,
+            Some(hex::encode(cellscript::ckb_blake2b256(&fixture.executable))),
+            Some(hex::encode(cellscript::ckb_blake2b256(&fixture.abi))),
             Some(hex::encode(cellscript::ckb_blake2b256(recipe))),
         )
         .unwrap();
-        assert_eq!(output.verification_level, "hash_bound");
+        assert_eq!(output.verification_level, "structurally_verified");
     }
 
     #[test]
@@ -581,11 +662,12 @@ action identity(value: u64) -> u64 {
 
     #[test]
     fn rejects_executable_bundle_when_published_hash_does_not_match() {
+        let fixture = VerifiedCkbFixture::new();
         let error = verify_bundle(
             "ckb_executable",
-            &[("source", b"source"), ("executable", b"elf"), ("abi", b"abi")],
+            &fixture.objects(),
             Some("11".repeat(32)),
-            Some(hex::encode(cellscript::ckb_blake2b256(b"abi"))),
+            Some(hex::encode(cellscript::ckb_blake2b256(&fixture.abi))),
             None,
         )
         .unwrap_err();
@@ -608,7 +690,14 @@ action identity(value: u64) -> u64 {
             release: "1.2.3".to_string(),
             profile: "ckb_executable".to_string(),
             manifest_json: contract.to_string(),
-            objects: vec![encode("source"), encode("executable"), encode("abi")],
+            objects: vec![
+                encode("source"),
+                encode("executable"),
+                encode("abi"),
+                encode("metadata"),
+                encode("lowering_record"),
+                encode("source_map"),
+            ],
         };
 
         let error = validate_bundle_roles(&bundle, "ckb_executable", &contract).unwrap_err();

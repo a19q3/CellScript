@@ -40,10 +40,7 @@ jobs:
           fi
 
       - name: Build website
-        run: |
-          cd website
-          npm exec -- astro check
-          npm exec -- astro build
+        run: npm --prefix website run build:ci
 
       - name: Upload website dist
         uses: actions/upload-artifact@v4

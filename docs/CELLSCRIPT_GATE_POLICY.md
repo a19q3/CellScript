@@ -14,14 +14,19 @@ deciding whether a change is ready.
 
 | Mode | When to run | Evidence boundary |
 |---|---|---|
-| `dev` | Local development before pushing | Rust formatting, canonical CellScript example formatting, all workspace-package Rust checks (including `cellscript-tools`) plus the independent Registry verifier crate; reproducible Registry Type Script build and CKB-VM tests; strict backend quick audit, syntax-combination quick audit, parity-gated skill-pack freshness, README-linked CellScript doc Status freshness, local markdown link check, whitespace diff check |
-| `ci` | Pull requests, pushes, and routine merge readiness | Canonical CellScript example formatting; tests and clippy for the compiler, Fiber adapter, CKB adapter, WASM crate, CKB SDK builder example, `cellscript-tools`, and the Registry verifier; reproducible Registry Type Script identity plus CKB-VM tests and clippy; Registry API typecheck/tests, Node API/verifier bundles, and dry-run Worker build; strict backend CI audit; package verification; parity-gated skill-pack/doc freshness; local-link and script syntax checks |
-| `backend` | Changes touching IR, codegen, assembler, ABI, ELF, or RISC-V behavior | Full Rust tests, clippy, and strict backend full audit, including stateful CKB scenarios |
+| `dev` | Local development before pushing | Native source-policy enforcement; Rust formatting; canonical CellScript example formatting; all workspace-package Rust checks (including the standalone artifact checker and `cellscript-tools`); checker mutation/Myelin handoff tests; simulator package scenarios; both Registry verifiers and their compiler-dependency boundaries; reproducible Registry Type Script build and CKB-VM tests; strict backend quick audit, syntax-combination quick audit, parity-gated skill-pack freshness, README-linked CellScript doc Status freshness, local markdown link check, whitespace diff check |
+| `ci` | Pull requests, pushes, and routine merge readiness | Node 22 and native source-policy enforcement; all compiler/checker/adapter/tool tests and clippy; simulator plus CKB-VM package scenarios; standalone-checker dependency and mutation evidence; reproducible Registry Type Script identity plus CKB-VM tests and clippy; Registry API typecheck/tests with compiler-backed and least-privilege artifact workers, Node bundles, and dry-run Worker build; full website behavior/build regression suite; strict backend CI audit; package verification; parity-gated skill-pack/doc freshness; local-link and script syntax checks |
+| `backend` | Changes touching IR, codegen, assembler, ABI, ELF, or RISC-V behavior | Compiler, artifact-checker, and Fiber checks/tests/clippy; checker dependency boundary; simulator plus CKB-VM package scenarios; native source-policy enforcement; and strict backend full audit, including stateful CKB scenarios |
 | `release` | Nightly/stable release candidates and any production CKB claim | Clean tagged source plus `ci`, a fresh size-gated website WASM rebuild, tooling/docs and VS Code checks, pinned-CKB acceptance harnesses, public builder-contract generation, and mandatory stateful scenario/action coverage |
 | `release-quick` | Wrapper compatibility and local compile-only preflight | `ci` plus compile-only production acceptance; not external live/devnet evidence |
 
 `release-quick` is kept for `scripts/cellscript_ckb_release_gate.sh quick`.
 Use `release` for any production or external live/devnet claim.
+
+CI packages the independently publishable `cellscript-artifact-checker` first,
+then verifies the `cellscript` package offline with an exact local crates.io
+patch. A real crates.io release must preserve that dependency order: publish
+and confirm the checker version before publishing the compiler version.
 
 `dev` and `ci` run `cellc fmt --check` against
 `examples/language/canonical_style.cell`. The formatter's comma-terminated
@@ -32,17 +37,31 @@ atomic-swap, and multi-phase-DAO example pairs; boundary arithmetic must use
 their local `U64_MAX` constants.
 
 Both release modes fail before doing expensive work unless the CellScript tree
-is completely clean, including untracked files. CI additionally requires the
-exact `v<workspace-version>` tag at `HEAD`; a manual release dispatch must name
+is completely clean, including untracked files. GitHub release CI additionally
+requires the exact `v<workspace-version>` tag at `HEAD`; a manual release dispatch must name
 the same version as the root `[package].version`. The GitHub Release workflow
 runs the full `release` gate first, and binary builds plus publication depend on
 that job succeeding.
+
+Production CKB acceptance rebuilds the pinned CKB `0.207.0` checkout in a
+fresh dedicated Cargo target. That pin resolves `ckb-librocksdb-sys 8.5.4`,
+whose `trace_record.h` uses fixed-width integer types without directly
+including `<cstdint>`. The acceptance builder therefore sets the exact
+`CXXFLAGS=-include cstdint` compatibility contract instead of patching the
+clean CKB checkout. The production evidence validator requires both that flag
+and `ckb-librocksdb-sys-8.5.4-explicit-cstdint-v1` in
+`ckb_runtime_provenance`; changing either is a release-boundary change.
 
 The 0.23 tooling migration is complete. `cellscript-tools` owns the backend,
 syntax-combination, skill-pack, tooling-release, CKB production-evidence,
 NovaSeal, and Evolving-DOB gate logic. Website data generation is implemented
 by Node scripts in `website/scripts/`. Dev, CI, backend, and release gates have
 no Python runtime dependency and reject tracked Python source files.
+Node-backed CI uses Node 22. After one checked Registry-data generation pass,
+the unified gate and manual website workflow both run
+`npm --prefix website run build:ci`; that target owns the complete Registry,
+playground, visual, homepage, preference, documentation, dist, deploy, Astro
+check, and Astro build regression contract.
 
 The 0.23 line also has one edition contract: every package declares
 `edition = "2026"`, and all emitted evidence binds the resolved compatibility
@@ -104,6 +123,8 @@ Both `dev` and `ci` also build the independent
 `riscv64imac-unknown-none-elf`, strip it with the pinned toolchain, verify the
 tracked canonical ELF's SHA-256 and CKB data hash, and execute that ELF's
 positive and negative lifecycle matrix in CKB-VM through `ckb-testtool`.
+The reproducible builder accepts either GNU `sha256sum` or Perl `shasum` and
+fails closed when neither SHA-256 implementation is available.
 Linux x86_64 additionally requires the fresh build to match the tracked ELF
 byte-for-byte. Other build hosts record their host artifact hash and make no
 cross-host reproduction claim; the pinned container builder provides that
@@ -171,6 +192,32 @@ recorded in the roadmap, but do not satisfy full mode because the CKB executable
 and Fiber source/build were observed only in a bounded local fixture, no signed
 announcement report was captured, and the complete declared matrix was not
 produced.
+
+### 0.24 verified-artifact and scenario evidence
+
+The 0.24 development line advances compile metadata to schema 58 and makes a
+CKB ELF build a four-file bundle: ELF, compile metadata, canonical verified
+lowering record, and canonical source map. Every build validates the bundle,
+and the gates separately build, test, lint, and dependency-audit
+`cellscript-artifact-checker`. The checker does not depend on the parser,
+resolver, IR, optimizer, assembler, or code generator. Its mutation and
+malformed-input corpora pin bounded `V2400` through `V2418` rejection classes,
+including reachability, stack, ELF, instruction, control-flow, syscall, digest,
+and source-map failures.
+
+`dev` runs executable package scenarios with the simulator. `ci` and `backend`
+run both simulator and CKB-VM backends and require exact registered runtime
+errors for negative fixtures. The v1 runner's multi-step Cell replacement is a
+local bookkeeping contract; it does not inject scenario Cells into CKB
+syscalls. The existing stateful CKB harness remains the transaction-shaped
+oracle.
+
+Registry API coverage keeps generic source/executable/ABI CKB bundles
+`hash_bound`. Supplying any verified sidecar requires the complete
+metadata/lowering-record/source-map set and dispatches to the least-privilege
+artifact worker. A `structurally_verified` checker level records checker
+version, policy, and report hash, but remains distinct from source equivalence,
+CKB-VM execution, deployment, and chain evidence.
 
 ### Nightly 0.22 compiler evidence
 

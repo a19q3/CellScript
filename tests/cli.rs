@@ -2252,6 +2252,49 @@ action add(x: u64, y: u64) -> u64 {
 }
 
 #[test]
+fn cellc_direct_elf_build_writes_and_reports_verified_sidecars() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("sample.cell");
+    let output = dir.path().join("sample.elf");
+    std::fs::write(
+        &input,
+        r#"
+module test
+
+action ping() -> u64 {
+    verification
+        1
+}
+"#,
+    )
+    .unwrap();
+
+    let result = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .arg(&input)
+        .args(["--target", "riscv64-elf", "--json", "-o"])
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+
+    let payload: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let lowering = dir.path().join("sample.elf.lowering.json");
+    let source_map = dir.path().join("sample.elf.sourcemap.json");
+    assert_eq!(payload["lowering_record"], lowering.to_string_lossy().as_ref());
+    assert_eq!(payload["source_map"], source_map.to_string_lossy().as_ref());
+    assert!(lowering.is_file());
+    assert!(source_map.is_file());
+
+    let verify = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .arg("verify-artifact")
+        .arg(&output)
+        .args(["--expect-target-profile", "ckb", "--json"])
+        .output()
+        .unwrap();
+    assert!(verify.status.success(), "{}", String::from_utf8_lossy(&verify.stderr));
+}
+
+#[test]
 fn cellc_verify_ckb_fixtures_accepts_standard_manifest() {
     let manifest =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("compat").join("ckb_standard").join("manifest.json");

@@ -1790,6 +1790,7 @@ function verificationStatusForAcceptedEvidence(
   if (kind !== "verified_build") return current;
   switch (evidence["verification_level"]) {
     case "compiled":
+    case "structurally_verified":
       return "verified";
     case "hash_bound":
       return "hash_bound";

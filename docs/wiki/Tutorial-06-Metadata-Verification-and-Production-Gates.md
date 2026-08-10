@@ -1,23 +1,29 @@
 # Tutorial 06: Metadata Verification and Production Gates
 
-Every CellScript artifact should be treated as a pair:
+Every CellScript CKB ELF build should be treated as one four-file bundle:
 
 ```text
 artifact
 artifact.meta.json
+artifact.lowering.json
+artifact.sourcemap.json
 ```
 
-The artifact is executable RISC-V assembly or ELF. The metadata sidecar is the
-explanation: source identity, target profile, artifact hash, schema layout,
-runtime requirements, scheduler information, and verifier obligations.
+The artifact is executable RISC-V ELF. The metadata sidecar is the explanation:
+source identity, target profile, artifact hash, schema layout, runtime
+requirements, scheduler information, and verifier obligations. The canonical
+lowering record exposes a bounded CFG, ABI, stack, ProofPlan, syscall, runtime
+exit, and final machine-range contract. The canonical source map binds source
+spans and lowering blocks to final ELF instruction ranges. Assembly output does
+not claim this verified-artifact boundary.
 
-On the 0.23 line it also carries mandatory `edition = "2026"` and the fully
+On the 0.24 development line it also carries mandatory `edition = "2026"` and the fully
 resolved compatibility profile. Edition contributes source semantics only.
 The profile combines that with independently versioned target,
 primitive-assurance, entry payload, witness placement, and metadata-schema
 axes. Verification rejects a sidecar whose profile does not resolve from those
 inputs; it never guesses another contract. Current outputs use metadata schema
-57, source schema 2, artifact schema 1, and constraints schema 2. Registry,
+58, source schema 2, artifact schema 1, and constraints schema 2. Registry,
 lock, deployment, receipt, and generated-builder readers require the same
 resolved-profile identity.
 
@@ -34,9 +40,11 @@ can prove, and where you still need CKB transaction evidence.
 Compiler verification is necessary, but it is not the same thing as a deployed
 transaction or chain acceptance report.
 
-If `verify-artifact` passes, you know the artifact and metadata agree. You do
-not yet know that a transaction builder can provide the right inputs, serialize
-the right witness, satisfy capacity, pass dry-run, and commit.
+If `verify-artifact` passes for an ELF, you know all four files agree and that
+the standalone checker independently accepted the bounded structural contract.
+You do not yet know that a transaction builder can provide the right inputs,
+serialize the right witness, satisfy capacity, pass dry-run, and commit. The
+checker does not claim complete source-to-machine semantic equivalence.
 
 That distinction prevents overclaiming.
 
@@ -66,6 +74,10 @@ Start with the basic check:
 cellc verify-artifact build/main.elf
 ```
 
+The command automatically loads `build/main.elf.meta.json`,
+`build/main.elf.lowering.json`, and `build/main.elf.sourcemap.json`. Use
+`--metadata`, `--lowering-record`, and `--source-map` only for custom paths.
+
 Pin the target profile:
 
 ```bash
@@ -86,9 +98,13 @@ cellc verify-artifact build/main.elf --deny-fail-closed
 cellc verify-artifact build/main.elf --deny-runtime-obligations
 ```
 
-Read this gate narrowly: it verifies the artifact, metadata, source hash
-expectations, and selected policy flags. It does not prove that a concrete CKB
-transaction has been built, deployed, dry-run, indexed, or measured.
+Read this gate narrowly: it verifies binding, structural ELF/lowering/source-map
+invariants, source hash expectations, and selected policy flags. Its JSON report
+keeps `binding_verification`, `structural_verification`,
+`lowering_record_verification`, `ckb_vm_evidence`, and `chain_evidence`
+separate, and keeps `semantic_equivalence_claimed = false`. It does not prove
+that a concrete CKB transaction has been built, deployed, dry-run, indexed, or
+measured.
 
 ## Check Before Build
 
@@ -178,7 +194,8 @@ the proof's versions must match the registry. `replace_unique` additionally
 records the exact `identity(...)` condition declared by the same resource.
 No proof may source authority from a container or another Cell type.
 
-Schema 53 includes top-level `enum_layouts` for concrete payload ADTs. Audit the
+Top-level `enum_layouts` for concrete payload ADTs first appeared in schema 53
+and remain in current metadata schema 58. Audit the
 `packed-tagged-union-v1` layout, one-byte tag, sequential variant tags, packed
 field offsets, encoded size, ownership, storage, and ABI together. A
 `linear-cell-handle` field is exactly eight bytes and forces
@@ -204,8 +221,8 @@ the `consume_each` runtime-helper tier. For `BoundedList<P, N>` driving
 `builder-evidence-required`; it is not proof that a transaction builder supplied
 the matching outputs or sufficient capacity.
 
-The validity record first appeared during the 0.22 schema sequence and is
-emitted by current schema 55 as `types[].validity_predicates`. Review each predicate's
+The validity record first appeared in schema 55 during the 0.22 line and is
+retained by current metadata schema 58 as `types[].validity_predicates`. Review each predicate's
 `expression`, `dependencies`, `evidence_tier`,
 `runtime_checked_on_create`, `create_paths_selected`,
 `create_paths_checked`, `update_paths_selected`, `create_path_status`,
@@ -224,7 +241,8 @@ are compile errors. Pure imported helpers are retained transitively and receive
 module-qualified dependency names; lifecycle helpers and transaction-view
 reads are rejected in validity predicates.
 
-Current schema 55 records explicit borrow blocks in
+Explicit borrow blocks first appeared in schema 55 and current metadata schema
+58 records them in
 `runtime.borrow_regions`. Review
 `root`, `binding`, `view_type`, `storage`, `abi`, `allowed_effects`,
 `evidence_tier`, and `source_span`. A canonical record has `View<T>`,
@@ -326,7 +344,8 @@ ProofPlan coverage states are intentionally explicit:
 | `gap:runtime-helper-required` | The claim maps to a runtime helper, but the selected entry did not emit matching helper coverage. |
 | `checked-runtime` | Generated runtime access backs the claim for the selected entry. |
 
-On the nightly 0.22 line, invariant read ranges and aggregate operands are
+Introduced on the 0.22 line and retained by the current compiler, invariant
+read ranges and aggregate operands are
 parsed once into a closed typed target: a source view (`inputs`, `outputs`,
 `group_inputs`, `group_outputs`, `cell_deps`, `header_deps`, `witness`, or
 `lock_args`) plus optional cell type and field. The formatter emits canonical
@@ -334,7 +353,8 @@ plural source-view names, while ProofPlan keeps the same readable target text.
 Unknown generic source views fail in the parser; later compiler phases do not
 recover their meaning by splitting strings.
 
-Nightly 0.22 also records who must discharge every obligation:
+The evidence tiers introduced on the 0.22 line still record who must discharge
+every obligation:
 
 | Evidence tier | Discharged by |
 |---|---|
@@ -354,9 +374,10 @@ evidence into compiler proof; those tiers remain external obligations.
 For the review-finding closure matrix, see
 `docs/archive/0.17/CELLSCRIPT_0_17_REVIEW_FINDINGS_CLOSURE.md`.
 
-## Nightly 0.22 Effect And Terminal Evidence
+## Effect And Terminal Evidence
 
-Function helpers can now publish the same stable effect contract as actions:
+Introduced on the 0.22 line and retained by the current compiler, function
+helpers can publish the same stable effect contract as actions:
 
 ```cellscript
 #[effect(ReadOnly)]
@@ -578,8 +599,12 @@ verifier behaviour and transaction shape, not the production resource-identity
 deployment story.
 
 Registry artifact evidence remains another independent boundary. A
-`verified_build` record proves either compiler-backed CellScript verification
-or the declared hash-bound generic profile level. A reproducible profile is not
+`verified_build` record may carry compiler-backed CellScript verification, the
+declared hash-bound generic profile level, or `structurally_verified` evidence
+from the least-privilege artifact checker. Generic CKB bundles remain
+`hash_bound`; structural admission requires the complete metadata, lowering
+record, and source map set, and partial verified sidecars fail closed. None of
+those levels is deployment or chain evidence. A reproducible profile is not
 `verified` until `reproduced_build` evidence binds at least two independent
 builders to the signed source, recipe, environment, executable, and logs.
 Likewise, a wallet-ready Registry commitment file is not chain evidence. Only a

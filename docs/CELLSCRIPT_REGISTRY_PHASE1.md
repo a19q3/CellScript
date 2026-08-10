@@ -12,6 +12,12 @@ code CellDeps. Until all four configuration values are present and their Cells
 are live with the required confirmation depth, commitment construction fails
 closed and scheduled chain reconciliation remains disabled.
 
+The Pudge Testnet Sandbox is a separate environment, not a network switch in
+production. It has its own API, Postgres database, object volume, signing
+origin, website build, wallet state, RPC identity, and testnet evidence.
+Sandbox releases leave discovery after 72 hours and source objects are removed
+after a further 24-hour grace period; Pudge chain history is unaffected.
+
 The canonical `no_std` Script source, exact deployable ELF, CKB-VM tests,
 reproducible Linux build recipe, builder image digest, and release identity are
 tracked under `contracts/registry-type-script`. Only a Linux x86_64 rebuild is
@@ -99,20 +105,27 @@ executable never claims that it is already deployed.
 
 For CKB executables, `artifact_hash` is the CKB Blake2b-256 hash of the
 executable bytes. A deployment record must bind the same value as `data_hash`.
-The Registry then calls mainnet `get_live_cell` and verifies:
+The Registry calls `get_live_cell` on the environment's configured CKB network
+and verifies:
 
 - the OutPoint is live;
 - the returned Cell data hash equals the published executable hash;
 - for `hash_type = type`, the returned Type Script hash equals `code_hash`;
 - for data-hash variants, `code_hash` equals the executable data hash.
 
+It also reads `get_transaction.tx_status` for the creation transaction,
+requires `status = committed`, and uses that standard response's block hash for
+minimum-confirmation checks. It does not depend on a proxy-specific
+`get_live_cell.block_hash` field.
+
 For `dep_type = dep_group`, the Registry decodes the live DepGroup Cell as the
 canonical Molecule `OutPointVec`, loads its members, and requires a live member
 whose code/data identity matches the published executable. The DepGroup
 container bytes are never treated as executable code.
 
-Only CKB mainnet deployment records are accepted. Testnet is neither a Registry
-deployment state nor a selectable website network.
+The production Registry accepts only CKB mainnet deployment records and exposes
+no network selector. The isolated Pudge environment accepts only testnet
+records and cannot promote them into production state.
 
 ## Publishing CellScript Dependencies
 
@@ -121,7 +134,8 @@ A normal CellScript package uses `Cell.toml` and the native publish path:
 ```bash
 cellc package verify --json
 cellc publish --dry-run
-cellc publish
+cellc publish --authorise  # interactive first publish
+cellc publish              # later publishes with an active delegated key
 ```
 
 Profile libraries use the same compiler-backed snapshot contract and declare
@@ -129,7 +143,7 @@ their distinct kind explicitly:
 
 ```bash
 cellc publish --artifact-kind profile_library --dry-run
-cellc publish --artifact-kind profile_library
+cellc publish --artifact-kind profile_library --authorise  # first publish
 ```
 
 The verifier compiles the snapshot with the real CellScript compiler and
@@ -229,7 +243,14 @@ cellc publish --artifact-manifest Artifact.toml
 The independent verifier checks the profile-specific object set and recomputes
 the published hashes. Generic executable and copy bundles are `hash_bound`; this
 does not claim executable semantics, reproducibility, or a security review. A
-reproducible build is marked `evidence_required` until
+CellScript CKB bundle may opt into the 0.24 structural boundary by providing
+all of `metadata`, `lowering_record`, and `source_map` in addition to source,
+executable, and ABI. Partial sidecar sets fail closed. The separate
+least-privilege artifact worker runs the compiler-independent checker and emits
+`structurally_verified` evidence with checker version, policy schema, and
+report hash. That evidence maps to accepted `verification_status = verified`,
+but remains neither source equivalence nor deployment evidence. A reproducible
+build is marked `evidence_required` until
 appropriate build evidence exists; merely uploading output bytes does not prove
 reproducibility.
 
@@ -342,8 +363,9 @@ RPC chain identity, and rebinds `hash_type` / `dep_type` to the signed profile
 contract. It never turns an `undeployed` release into a CellDep.
 
 `record-deployment` derives the artifact/data identity from the signed Registry
-release, signs a mainnet-only payload with the scoped capability key, and sends
-it to the API for live-Cell verification. Both publisher and recovery paths
+release, signs a payload for the network fixed by the selected Registry
+environment, and sends it to the API for live-Cell verification. Production is
+mainnet-only; Pudge is testnet-only. Both publisher and recovery paths
 reject deployment modes that differ from `profile_contract.ckb`.
 
 `set-availability` is the publisher control-plane path used by the Manage UI.
@@ -371,25 +393,25 @@ application's own Lock/Type Scripts, schemas, and replacement transactions.
 
 ## Publisher Authorisation
 
-The website presents a single “Connect CKB wallet” entry. Its modal separates
-CCC-detected browser signers, which can connect immediately, from wallet
-directory entries, which only open an external site and then require a
-compatible manually produced `wallet-signature.json`. A directory entry is a
-reference/import route, not proof that the wallet exposes a compatible message
-signing UI, and is never reported as connected.
-Network selection is not exposed because authorisation and deployment are
-mainnet-only.
+The preferred interactive path is `cellc publish --authorise`. The CLI creates
+the delegated P-256 key, stores it as pending in the OS keychain, and opens a
+15-minute exact-coordinate browser session. The browser receives only a
+fragment token and the public capability request. After a supported wallet
+signs the Registry-built challenge, one transaction consumes the nonce,
+registers the publishing key, claims or reviews the namespace, completes the
+session, and appends audit events. The polling CLI activates the key only when
+the Registry returns the matching key ID, then resumes the original publish.
 
-The wallet signs a narrowly scoped capability authorisation. Daily publishes
-use a P-256 capability key stored by `cellc`, so the wallet seed and mnemonic
-never leave the wallet. Namespace ownership, capability scope, expiry,
-revocation, nonce consumption, idempotency, quotas, and audit events are
-enforced by the API.
+Completed or review-pending sessions remain readable for 24 hours. A same-tab
+refresh preserves the browser token, while completion or expiry removes it.
+Only Registry-confirmed cancellation or pending-session expiry removes a
+pending local key; a local polling timeout preserves it for recovery.
 
-The submit form remains hidden until a direct signer is connected, a manual
-signature-import route is explicitly selected, or the publisher confirms that
-an active capability already exists. Manual payloads remain untrusted until
-the API verifies their principal binding and signature.
+The explicit capability-create/submit and namespace-claim commands remain the
+auditable manual path for CI and external wallet handoff. CCC-detected signers
+connect directly; directory-only wallets link out and require a compatible
+`wallet-signature.json`. Neither path accepts mnemonic words. Production has no
+network selector; the Pudge site and API are separate testnet-only origins.
 
 ## Public Reads
 
@@ -404,6 +426,10 @@ GET  /artifacts/:namespace/:name/releases/:release.json
 POST /v1/artifacts/:namespace/:name/releases
 POST /v1/artifacts/:namespace/:name/releases/:release/deployments
 POST /v1/artifacts/:namespace/:name/releases/:release/availability
+POST /v1/authorisation-sessions
+GET  /v1/authorisation-sessions/:session_id
+POST /v1/authorisation-sessions/:session_id/challenge
+POST /v1/authorisation-sessions/:session_id/complete
 ```
 
 The list endpoint accepts `q`, `namespace`, `kind`, `verification`,

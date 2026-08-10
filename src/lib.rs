@@ -41,9 +41,14 @@ pub mod runtime_errors;
 pub mod simulate;
 pub mod stdlib;
 pub mod types;
+mod verified_artifact;
 pub mod wasm;
 
 pub use assumptions::{BuilderAssumptionMetadata, TxValidationReport, TxValidationViolation};
+pub use cellscript_artifact_checker::{
+    CheckerBudgets, CheckerReport, SourceArtifactMap, VerifiedArtifactMetadata, VerifiedArtifactState, VerifiedLoweringRecord,
+    CHECKER_POLICY_SCHEMA, CHECKER_VERSION, LOWERING_RECORD_SCHEMA, SOURCE_MAP_SCHEMA,
+};
 pub use edition::{
     resolve_compatibility_profile, CellScriptEdition, ResolvedCompatibilityProfile, COMPATIBILITY_PROFILE_SCHEMA, CURRENT_EDITION,
 };
@@ -210,8 +215,8 @@ fn strict_capability_name(capability: ast::Capability) -> &'static str {
 
 const DEFAULT_TARGET: &str = "riscv64-asm";
 const DEFAULT_TARGET_PROFILE: &str = "ckb";
-const ARTIFACT_CACHE_VERSION: &str = "project-source-set-v9-edition";
-pub const METADATA_SCHEMA_VERSION: u32 = 57;
+const ARTIFACT_CACHE_VERSION: &str = "project-source-set-v10-verified-artifact";
+pub const METADATA_SCHEMA_VERSION: u32 = 58;
 pub const SOURCE_METADATA_SCHEMA_VERSION: u32 = 2;
 pub const ARTIFACT_METADATA_SCHEMA_VERSION: u32 = 1;
 pub const CONSTRAINTS_METADATA_SCHEMA_VERSION: u32 = 2;
@@ -370,6 +375,11 @@ pub struct CompileResult {
     pub metadata: CompileMetadata,
     /// Parsed AST (for simulation, etc.)
     pub ast: crate::ast::Module,
+    /// Canonical verified-lowering sidecar for ELF artifacts.
+    pub verified_lowering_record: Option<VerifiedLoweringRecord>,
+    /// Canonical source-to-artifact sidecar for ELF artifacts.
+    pub source_artifact_map: Option<SourceArtifactMap>,
+    pub(crate) verified_artifact_draft: Option<verified_artifact::VerifiedArtifactDraft>,
     /// Whether this result was served from the incremental compilation cache
     pub cache_hit: bool,
 }
@@ -412,6 +422,8 @@ pub struct CompileMetadata {
     pub source_content_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_units: Vec<SourceUnitMetadata>,
+    #[serde(default)]
+    pub verified_artifact: VerifiedArtifactMetadata,
     pub lowering: LoweringMetadata,
     #[serde(default)]
     pub capability_registry: CapabilityRegistryMetadata,
@@ -2607,6 +2619,11 @@ fn bind_source_metadata(metadata: &mut CompileMetadata, mut source_units: Vec<So
     metadata.source_units = source_units;
 }
 
+fn bind_compile_result_source_metadata(result: &mut CompileResult, source_units: Vec<SourceUnitMetadata>) -> Result<()> {
+    bind_source_metadata(&mut result.metadata, source_units);
+    result.refresh_verified_artifact_boundary()
+}
+
 fn append_source_hash_material(out: &mut Vec<u8>, unit: &SourceUnitMetadata, include_path: bool) {
     out.extend_from_slice(unit.role.as_bytes());
     out.push(0);
@@ -4136,6 +4153,14 @@ pub fn validate_compile_result(result: &CompileResult) -> Result<()> {
             if vm_abi_trailer_version(&result.artifact_bytes)?.is_some() {
                 return Err(CompileError::without_span("RISC-V assembly artifacts must not embed a VM ABI trailer"));
             }
+            if result.metadata.verified_artifact.state != VerifiedArtifactState::NotEmittedNonElf
+                || result.verified_lowering_record.is_some()
+                || result.source_artifact_map.is_some()
+            {
+                return Err(CompileError::without_span(
+                    "RISC-V assembly result must not claim or carry the ELF verified-artifact boundary",
+                ));
+            }
         }
         ArtifactFormat::RiscvElf => {
             if !result.artifact_bytes.starts_with(b"\x7fELF") {
@@ -4163,6 +4188,18 @@ pub fn validate_compile_result(result: &CompileResult) -> Result<()> {
                 }
                 None => {}
             }
+            if result.metadata.verified_artifact.state != VerifiedArtifactState::Emitted {
+                return Err(CompileError::without_span("RISC-V ELF metadata does not claim emitted verified-artifact sidecars"));
+            }
+            let record = result
+                .verified_lowering_record
+                .as_ref()
+                .ok_or_else(|| CompileError::without_span("RISC-V ELF result is missing its verified lowering record"))?;
+            let source_map = result
+                .source_artifact_map
+                .as_ref()
+                .ok_or_else(|| CompileError::without_span("RISC-V ELF result is missing its source artifact map"))?;
+            verified_artifact::validate_boundary_values(&result.artifact_bytes, &result.metadata, record, source_map)?;
         }
     }
 
@@ -5111,6 +5148,24 @@ impl CompileResult {
         validate_compile_result(self)
     }
 
+    pub(crate) fn refresh_verified_artifact_boundary(&mut self) -> Result<()> {
+        if self.artifact_format != ArtifactFormat::RiscvElf {
+            self.metadata.verified_artifact = VerifiedArtifactMetadata::default();
+            self.verified_lowering_record = None;
+            self.source_artifact_map = None;
+            return Ok(());
+        }
+        let draft = self.verified_artifact_draft.as_ref().ok_or_else(|| {
+            CompileError::without_span("RISC-V ELF result is missing the verified-artifact draft").with_code("E2400")
+        })?;
+        let (record, source_map, boundary) =
+            verified_artifact::build_verified_artifact_boundary(&self.artifact_bytes, &self.metadata, draft)?;
+        self.metadata.verified_artifact = boundary;
+        self.verified_lowering_record = Some(record);
+        self.source_artifact_map = Some(source_map);
+        Ok(())
+    }
+
     /// Default output path
     pub fn default_output_path(&self, input_path: &Utf8Path) -> Utf8PathBuf {
         input_path.with_extension(self.artifact_format.file_extension())
@@ -5138,6 +5193,58 @@ impl CompileResult {
 
     pub fn default_metadata_path(&self, artifact_path: &Utf8Path) -> Utf8PathBuf {
         metadata_output_path_from_artifact(artifact_path)
+    }
+
+    pub fn default_lowering_record_path(&self, artifact_path: &Utf8Path) -> Utf8PathBuf {
+        lowering_record_output_path_from_artifact(artifact_path)
+    }
+
+    pub fn default_source_map_path(&self, artifact_path: &Utf8Path) -> Utf8PathBuf {
+        source_map_output_path_from_artifact(artifact_path)
+    }
+
+    pub fn write_verified_artifact_sidecars(&self, artifact_path: &Utf8Path) -> Result<Option<(Utf8PathBuf, Utf8PathBuf)>> {
+        if self.artifact_format != ArtifactFormat::RiscvElf {
+            return Ok(None);
+        }
+        self.validate()?;
+        let record = self
+            .verified_lowering_record
+            .as_ref()
+            .ok_or_else(|| CompileError::without_span("ELF result is missing verified lowering record").with_code("E2400"))?;
+        let source_map = self
+            .source_artifact_map
+            .as_ref()
+            .ok_or_else(|| CompileError::without_span("ELF result is missing source artifact map").with_code("E2400"))?;
+        let record_path = self.default_lowering_record_path(artifact_path);
+        let source_map_path = self.default_source_map_path(artifact_path);
+        if let Some(parent) = record_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                CompileError::new(
+                    format!("failed to create verified artifact sidecar directory '{}': {}", parent, error),
+                    error::Span::default(),
+                )
+                .with_category(error::CompileErrorCategory::Io)
+                .with_source(error)
+            })?;
+        }
+        let record_bytes = cellscript_artifact_checker::canonical_bytes(record)
+            .map_err(|error| CompileError::without_span(error.to_string()).with_code("E2400"))?;
+        let source_map_bytes = cellscript_artifact_checker::canonical_bytes(source_map)
+            .map_err(|error| CompileError::without_span(error.to_string()).with_code("E2400"))?;
+        std::fs::write(&record_path, record_bytes).map_err(|error| {
+            CompileError::new(format!("failed to write lowering record '{}': {}", record_path, error), error::Span::default())
+                .with_category(error::CompileErrorCategory::Io)
+                .with_file(record_path.clone())
+                .with_source(error)
+        })?;
+        std::fs::write(&source_map_path, source_map_bytes).map_err(|error| {
+            CompileError::new(format!("failed to write source map '{}': {}", source_map_path, error), error::Span::default())
+                .with_category(error::CompileErrorCategory::Io)
+                .with_file(source_map_path.clone())
+                .with_source(error)
+        })?;
+        Ok(Some((record_path, source_map_path)))
     }
 
     pub fn write_metadata_to_path(&self, output_path: &Utf8Path) -> Result<()> {
@@ -5431,7 +5538,7 @@ pub fn compile(source: &str, options: CompileOptions) -> Result<CompileResult> {
     let ast = parser::parse(&tokens)?;
 
     let mut result = compile_ast(&ast, &options, None)?;
-    bind_source_metadata(&mut result.metadata, vec![source_unit_from_bytes("<memory>", "memory", source.as_bytes())]);
+    bind_compile_result_source_metadata(&mut result, vec![source_unit_from_bytes("<memory>", "memory", source.as_bytes())])?;
     result.validate()?;
     Ok(result)
 }
@@ -5442,7 +5549,7 @@ pub fn compile_fungible_type_group_entry(source: &str, options: CompileOptions) 
     let tokens = lexer::lex(source)?;
     let ast = parser::parse(&tokens)?;
     let mut result = compile_ast_with_build(&ast, &options, None, None, Some(&CompileEntryScope::FungibleTypeGroupV1))?;
-    bind_source_metadata(&mut result.metadata, vec![source_unit_from_bytes("<memory>", "memory", source.as_bytes())]);
+    bind_compile_result_source_metadata(&mut result, vec![source_unit_from_bytes("<memory>", "memory", source.as_bytes())])?;
     result.validate()?;
     Ok(result)
 }
@@ -5458,7 +5565,7 @@ pub fn compile_fungible_type_group_entry_for(
     let ast = parser::parse(&tokens)?;
     let scope = CompileEntryScope::FungibleTypeGroupV1For(type_name.into());
     let mut result = compile_ast_with_build(&ast, &options, None, None, Some(&scope))?;
-    bind_source_metadata(&mut result.metadata, vec![source_unit_from_bytes("<memory>", "memory", source.as_bytes())]);
+    bind_compile_result_source_metadata(&mut result, vec![source_unit_from_bytes("<memory>", "memory", source.as_bytes())])?;
     result.validate()?;
     Ok(result)
 }
@@ -5980,13 +6087,14 @@ fn compile_ast_with_build(
 
     // 5. Code generation
     let codegen_options = codegen::CodegenOptions { opt_level: options.opt_level, debug: options.debug, target_profile };
-    let mut artifact_bytes = codegen::generate(ir, &codegen_options, artifact_format).map_err(|error| {
+    let generated = codegen::generate_with_evidence(ir, &codegen_options, artifact_format).map_err(|error| {
         if error.code.is_some() {
             error
         } else {
             error.with_code("E2000")
         }
     })?;
+    let mut artifact_bytes = generated.bytes;
     if artifact_bytes.is_empty() {
         return Err(CompileError::new("backend produced an empty artifact", error::Span::default()).with_code("E2001"));
     }
@@ -6030,9 +6138,19 @@ fn compile_ast_with_build(
         validate_primitive_strict_017_metadata(&metadata)?;
     }
 
-    let result = CompileResult { artifact_bytes, artifact_format, artifact_hash, metadata, ast: ast.clone(), cache_hit: false };
-    result.validate()?;
-    Ok(result)
+    let verified_artifact_draft =
+        generated.machine_layout.map(|layout| verified_artifact::VerifiedArtifactDraft::new(layout, lowering_ast));
+    Ok(CompileResult {
+        artifact_bytes,
+        artifact_format,
+        artifact_hash,
+        metadata,
+        ast: ast.clone(),
+        verified_lowering_record: None,
+        source_artifact_map: None,
+        verified_artifact_draft,
+        cache_hit: false,
+    })
 }
 
 /// Compile from file, package directory, or Cell.toml
@@ -6151,7 +6269,7 @@ fn compile_file_with_entry_scope<P: AsRef<Utf8Path>>(
         manifest.as_ref().map(|manifest| &manifest.build),
         entry_scope.as_ref(),
     )?;
-    bind_source_metadata(&mut result.metadata, source_units);
+    bind_compile_result_source_metadata(&mut result, source_units)?;
     if let Some(manifest) = manifest.as_ref() {
         apply_manifest_deploy_metadata(&mut result.metadata, manifest)?;
     }
@@ -6189,6 +6307,8 @@ fn incremental_cache_hit(path: &Utf8Path, cache_units: &[SourceUnitMetadata], op
 
     let artifact_path = entry_dir.join("artifact");
     let metadata_path = entry_dir.join("metadata.json");
+    let lowering_record_path = entry_dir.join("lowering.json");
+    let source_map_path = entry_dir.join("sourcemap.json");
 
     if !artifact_path.exists() || !metadata_path.exists() {
         return None;
@@ -6206,6 +6326,16 @@ fn incremental_cache_hit(path: &Utf8Path, cache_units: &[SourceUnitMetadata], op
     let artifact_bytes = std::fs::read(&artifact_path).ok()?;
     let metadata_json = std::fs::read_to_string(&metadata_path).ok()?;
     let metadata: CompileMetadata = serde_json::from_str(&metadata_json).ok()?;
+    let (verified_lowering_record, source_artifact_map) = if metadata.artifact_format == "RISC-V ELF" {
+        let lowering_bytes = std::fs::read(&lowering_record_path).ok()?;
+        let source_map_bytes = std::fs::read(&source_map_path).ok()?;
+        (
+            Some(cellscript_artifact_checker::parse_lowering_record(&lowering_bytes, &CheckerBudgets::default()).ok()?),
+            Some(cellscript_artifact_checker::parse_source_map(&source_map_bytes, &CheckerBudgets::default()).ok()?),
+        )
+    } else {
+        (None, None)
+    };
 
     let artifact_hash: [u8; 32] = {
         let hash_hex = metadata.artifact_hash.as_deref().unwrap_or("");
@@ -6221,6 +6351,9 @@ fn incremental_cache_hit(path: &Utf8Path, cache_units: &[SourceUnitMetadata], op
         artifact_hash,
         metadata,
         ast: ast::Module { name: String::new(), items: Vec::new(), span: crate::error::Span { start: 0, end: 0, line: 0, column: 0 } },
+        verified_lowering_record,
+        source_artifact_map,
+        verified_artifact_draft: None,
         cache_hit: true,
     };
     result.validate().ok()?;
@@ -6238,6 +6371,16 @@ fn incremental_cache_store(path: &Utf8Path, cache_units: &[SourceUnitMetadata], 
     let _ = std::fs::write(entry_dir.join("artifact"), &result.artifact_bytes);
     let metadata_json = serde_json::to_string_pretty(&result.metadata).unwrap_or_default();
     let _ = std::fs::write(entry_dir.join("metadata.json"), metadata_json);
+    if let Some(record) = &result.verified_lowering_record {
+        if let Ok(bytes) = cellscript_artifact_checker::canonical_bytes(record) {
+            let _ = std::fs::write(entry_dir.join("lowering.json"), bytes);
+        }
+    }
+    if let Some(source_map) = &result.source_artifact_map {
+        if let Ok(bytes) = cellscript_artifact_checker::canonical_bytes(source_map) {
+            let _ = std::fs::write(entry_dir.join("sourcemap.json"), bytes);
+        }
+    }
     let source_hash = source_set_hash(cache_units);
     let _ = std::fs::write(entry_dir.join("source_hash"), &source_hash);
     if let Ok(cache_units_json) = serde_json::to_string_pretty(cache_units) {
@@ -6570,6 +6713,16 @@ fn metadata_output_path_from_artifact(artifact_path: &Utf8Path) -> Utf8PathBuf {
     artifact_path.with_file_name(metadata_name)
 }
 
+pub fn lowering_record_output_path_from_artifact(artifact_path: &Utf8Path) -> Utf8PathBuf {
+    let file_name = artifact_path.file_name().unwrap_or("artifact");
+    artifact_path.with_file_name(format!("{}.lowering.json", file_name))
+}
+
+pub fn source_map_output_path_from_artifact(artifact_path: &Utf8Path) -> Utf8PathBuf {
+    let file_name = artifact_path.file_name().unwrap_or("artifact");
+    artifact_path.with_file_name(format!("{}.sourcemap.json", file_name))
+}
+
 fn compile_metadata_from_ir(
     ir: &ir::IrModule,
     artifact_format: ArtifactFormat,
@@ -6652,6 +6805,7 @@ fn compile_metadata_from_ir(
         source_hash: None,
         source_content_hash: None,
         source_units: Vec::new(),
+        verified_artifact: VerifiedArtifactMetadata::default(),
         lowering: LoweringMetadata {
             protocol_semantics: "CellScript IR records consume/read_ref/create summaries before RISC-V codegen".to_string(),
             assembly_path: "riscv64-asm emits executable CKB-style syscall paths plus metadata for verifier obligations".to_string(),
@@ -7195,6 +7349,7 @@ fn scope_ir_to_fungible_type_group_v1(ir: &ir::IrModule, selected_type: Option<&
                     args: Vec::new(),
                 }],
                 terminator: ir::IrTerminator::Return(None),
+                runtime_error: None,
             }],
         },
         effect_class: ir::EffectClass::ReadOnly,

@@ -138,7 +138,19 @@ cellc build --json
 ```
 
 `build` reads `Cell.toml`, compiles the current package entry, and writes the
-artifact plus metadata sidecar under the configured output directory.
+artifact plus metadata sidecar under the configured output directory. A CKB
+ELF build also writes canonical verified-artifact sidecars:
+
+```text
+build/main.elf
+build/main.elf.meta.json
+build/main.elf.lowering.json
+build/main.elf.sourcemap.json
+```
+
+The lowering record and source map are checked against final ELF bytes during
+compilation. They are structural/binding evidence, not a complete
+source-equivalence or chain-execution claim.
 
 For a one-off source file, use the top-level compiler form instead:
 
@@ -148,6 +160,30 @@ cellc path/to/file.cell
 
 That form is great for quick experiments. Packages are better when you need
 repeatability.
+
+## Execute Package Scenarios
+
+Executable tests are versioned `*.scenario.json` files under `tests/`. Name a
+backend explicitly:
+
+```bash
+cellc test --backend simulator
+cellc test --backend ckb-vm
+cellc test --backend all --json
+```
+
+`simulator` is fast development evidence. `ckb-vm` executes the emitted ELF and
+is local authoritative runtime evidence. Use `cellc test --no-run` only when
+compile-only checking is intentional. Without `--no-run`, an omitted backend
+or an empty scenario set is an error rather than a false pass.
+
+The v1 scenario format rejects unknown fields and validates named live Cells,
+replacement steps, Scripts, deps, headers, `since`, witnesses, capacity and
+size limits, and exact runtime error code/name pairs. Its multi-step Cell set
+is a local bookkeeping oracle; the CKB-VM backend currently supports
+no-argument entries and does not inject those declared Cells into syscalls.
+Transaction-syscall scenarios remain with the repository's stateful CKB
+oracle. See [Verified Artifacts and Executable Tests](Tutorial-14-Verified-Artifacts-and-Executable-Tests.md).
 
 ## Check Without Writing Artifacts
 
@@ -405,13 +441,18 @@ debugging dependency resolution.
 ## Registry Commands
 
 Registry source-package installation and registry-backed `update` are supported
-for the CellScript source-package profile. `cellc auth capability create
+for the CellScript source-package profile. The preferred interactive first-use
+path is `cellc publish --authorise`: it creates a 15-minute browser session,
+authorises a wallet-rooted delegated key, and resumes the publish after the
+Registry returns the matching key ID. `--no-open` supports remote terminals.
+Later `cellc publish` calls use the active scoped key.
+
+For CI, recovery, or an external-wallet handoff, `cellc auth capability create
 --principal-type <joyid_ckb|ckb_secp256k1> --principal-id <principal_id>` creates
-the wallet payload for a scoped publisher capability, then `cellc publish`
-writes a real Registry entry. Inside a package directory, omitting `--scope`
-infers only the exact `publish` scope. Add `deployment` or `availability`
-scopes explicitly when that delegated key genuinely needs those actions; none
-implies another.
+the wallet payload; submit the wallet signature and claim the namespace before
+publishing. Inside a package directory, omitting `--scope` infers only the exact
+`publish` scope. Add `deployment` or `availability` scopes explicitly when that
+delegated key genuinely needs those actions; none implies another.
 The `principal_id` is cryptographically derived from the signer, not from a
 display label. The same metadata can still be
 mirrored with `cellc publish --offline` to `registry.json` and Git tags for

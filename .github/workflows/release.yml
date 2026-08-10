@@ -38,6 +38,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             website/package-lock.json
+            services/registry-api/package-lock.json
             editors/vscode-cellscript/package-lock.json
 
       - name: Install Rust release toolchain

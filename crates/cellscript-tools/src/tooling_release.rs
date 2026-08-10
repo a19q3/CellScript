@@ -404,6 +404,7 @@ pub fn run(root: &Path) -> Result<()> {
         .ok_or_else(|| anyhow!("website/package.json scripts object is missing"))?;
     for (script_name, expected_command) in [
         ("prepare:registry", "node scripts/generate-registry-data.mjs"),
+        ("check:homepage", "node scripts/check-homepage-regressions.mjs"),
         ("check:docs", "node scripts/check-doc-links.mjs"),
         ("check:dist", "node scripts/check-dist-regressions.mjs"),
         ("check:deploy", "node scripts/check-production-deploy.mjs"),
@@ -416,13 +417,27 @@ pub fn run(root: &Path) -> Result<()> {
         .get("build")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| anyhow!("invalid CellScript tooling release boundary: website package script 'build' is missing"))?;
+    require_ordered_script_steps("build", website_build, &["npm run prepare:registry", "npm run build:ci"])?;
+    let website_ci_build = website_scripts
+        .get("build:ci")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("invalid CellScript tooling release boundary: website package script 'build:ci' is missing"))?;
     require_ordered_script_steps(
-        "build",
-        website_build,
+        "build:ci",
+        website_ci_build,
         &[
-            "npm run prepare:registry",
+            "npm run test:registry-guidance",
+            "npm run test:registry-browse",
+            "npm run test:session-storage",
+            "npm run test:submit-draft",
+            "npm run test:playground-focus",
+            "npm run test:playground-session",
+            "npm run test:playground-presentation",
+            "npm run check:visual",
             "astro check",
             "astro build",
+            "npm run check:homepage",
+            "npm run test:site-preferences",
             "npm run check:docs",
             "npm run check:dist",
             "npm run check:deploy",
@@ -436,8 +451,7 @@ pub fn run(root: &Path) -> Result<()> {
             "run_in_dir",
             "run_website_build_check",
             "website registry data is stale",
-            "run_in_dir website npm exec -- astro check",
-            "run_in_dir website npm exec -- astro build",
+            "run npm --prefix website run build:ci",
             "run_in_dir editors/vscode-cellscript npm exec -- vsce package --no-dependencies --out /tmp/cellscript-vscode-dry-run.vsix",
             "node editors/vscode-cellscript/scripts/validate.mjs",
         ],
@@ -445,6 +459,8 @@ pub fn run(root: &Path) -> Result<()> {
 
     // --- Stage K: gate-script slice + tx_measure_gate checks --------------
     let gate_script = read_text(root, "scripts/cellscript_gate.sh")?;
+    let backend_gate = slice_between(&gate_script, "run_backend_gate() {", "run_release_auxiliary_checks() {")?;
+    require(backend_gate.contains("check_source_policy"), "backend gate must enforce the repository source-language policy")?;
     let tx_measure_gate = slice_between(&gate_script, "check_ckb_tx_measure_tool() {", "check_novaseal_rust_tooling() {")?;
     require(
         tx_measure_gate.contains("cargo test --manifest-path tools/ckb-tx-measure/Cargo.toml --locked"),
@@ -467,7 +483,13 @@ pub fn run(root: &Path) -> Result<()> {
     require_contains(
         root,
         ".github/workflows/website-build.yml",
-        &["workflow_dispatch:", "Generate registry website data", "Check generated registry data is committed", "Upload website dist"],
+        &[
+            "workflow_dispatch:",
+            "Generate registry website data",
+            "Check generated registry data is committed",
+            "npm --prefix website run build:ci",
+            "Upload website dist",
+        ],
     )?;
     let website_build_workflow = read_text(root, ".github/workflows/website-build.yml")?;
     require(
@@ -475,6 +497,11 @@ pub fn run(root: &Path) -> Result<()> {
         "website artifact workflow must not duplicate the unified CI gate on pull requests",
     )?;
     require(!website_build_workflow.contains("push:"), "website artifact workflow must not duplicate the unified CI gate on pushes")?;
+    require_contains(
+        root,
+        ".github/workflows/ci.yml",
+        &["actions/setup-node@v4", "node-version: \"22\"", "services/registry-api/package-lock.json"],
+    )?;
 
     // --- Stage M: CLI wiring ----------------------------------------------
     require_contains(root, "src/main.rs", &["cellc_cli_command().get_subcommands()", "cellscript::cli::run()"])?;

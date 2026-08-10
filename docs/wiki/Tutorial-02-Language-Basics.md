@@ -215,7 +215,8 @@ The shorthand is exactly `field: field`; it does not infer or rename fields.
 
 ## Concrete Payload Enums
 
-Nightly 0.22 supports concrete, fixed-width payload variants:
+Concrete, fixed-width payload variants were introduced on the 0.22 line and
+remain supported by the current compiler:
 
 ```cellscript
 enum Limit {
@@ -288,7 +289,8 @@ or use an explicit stdlib lifecycle pattern such as
 
 ### Type Validity
 
-On the nightly 0.22 line, a type can state pure value predicates in a final
+Introduced on the 0.22 line and retained by the current compiler, a type can
+state pure value predicates in a final
 `validity` section:
 
 ```cellscript

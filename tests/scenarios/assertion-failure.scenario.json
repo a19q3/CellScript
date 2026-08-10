@@ -1,0 +1,35 @@
+{
+  "schema": "cellscript-test-scenario-v1",
+  "name": "negative-exact-runtime-error",
+  "source": "assertion-failure.cell",
+  "target_profile": "ckb",
+  "entry": {
+    "kind": "action",
+    "name": "main",
+    "args": []
+  },
+  "initial_cells": [],
+  "steps": [
+    {
+      "name": "assertion-fails",
+      "consumes": [],
+      "outputs": [],
+      "cell_deps": [],
+      "header_deps": [],
+      "since": {},
+      "witnesses": [],
+      "expectation": {
+        "status": "runtime-error",
+        "result": null,
+        "runtime_error": {"code": 5, "name": "assertion-failed"}
+      }
+    }
+  ],
+  "limits": {
+    "max_steps": 1000,
+    "max_cycles": 10000000,
+    "max_transaction_bytes": 65536,
+    "minimum_cell_capacity": 100000000
+  },
+  "oracle": null
+}

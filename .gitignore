@@ -1,5 +1,6 @@
 /target/
 services/registry-verifier/target/
+services/registry-artifact-verifier/target/
 node_modules/
 dist/
 dist-node/

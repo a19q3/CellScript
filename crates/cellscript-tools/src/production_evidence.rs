@@ -516,6 +516,8 @@ fn validate_ckb_runtime_provenance(report: &Map<String, Value>, repo_root: &Path
         ("repo_dirty", json!(false)),
         ("version", pin.get("version").cloned().unwrap_or(Value::Null)),
         ("build_mode", json!("fresh-dedicated-cargo-target")),
+        ("cxxflags", json!("-include cstdint")),
+        ("cxx_compatibility_contract", json!("ckb-librocksdb-sys-8.5.4-explicit-cstdint-v1")),
         ("binary_archived_with_report", json!(true)),
     ] {
         require_field(provenance, key, expected, context)?;

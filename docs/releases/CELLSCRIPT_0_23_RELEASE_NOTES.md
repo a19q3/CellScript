@@ -1,9 +1,9 @@
 # CellScript 0.23 Release Notes
 
-**Status**: Development release notes for `nightly-0.23`; not a stable release
-certificate.
+**Status**: Implementation-complete development release notes for
+`nightly-0.23`; not a stable release certificate or production CKB evidence.
 
-**Updated**: 2026-08-02.
+**Updated**: 2026-08-09.
 
 CellScript 0.23 makes its source semantics and compatibility axes explicit.
 Edition 2026 is the first and only CellScript source-semantics epoch. The
@@ -16,9 +16,45 @@ read/write domains, website, CLI read authority, and automatic compiler-backed
 source-package evidence chain are deployed. General artifact, reproduction,
 deployment, and commitment support is implemented in-tree, while canonical
 Registry Script deployment, the first real non-CellScript mainnet commitment,
-and publisher-owned clean-machine adoption remain checkpoints. Broader
-RGB++/Fiber evidence and the Off-Chain Session Runtime profile remain roadmap
-work.
+and publisher-owned clean-machine production adoption remain external
+operational checkpoints. The short-lived browser authorisation flow, isolated
+Pudge Testnet Sandbox, and recoverable Playground workbench are implemented and
+regression-tested. The complete Fiber/RGB++ external matrices move to the
+conditional 0.24 evidence track. The formerly proposed Off-Chain Session
+Runtime compiler profile is retired: current Myelin uses an attested external
+compiler process, compiles production requests under `ckb`, and keeps
+`MyelinExtended` semantics outside CellScript.
+
+## 0.23 Scope Closure
+
+The in-repository 0.23 implementation scope is closed around:
+
+- Edition 2026, resolved compatibility profiles, metadata schema 57, and
+  canonical `WitnessArgs.input_type` placement;
+- the deployed public Registry source-package path, generalized artifact and
+  chain-evidence implementation, publisher-session flow, and Pudge sandbox;
+- the native Rust/shell/Node gate and repository source policy;
+- refreshed audited timelock transaction recipes for the three artifacts
+  changed by the canonical `U64_MAX` source form, plus a provenance-checked
+  `<cstdint>` compatibility flag for fresh builds of the pinned CKB/RocksDB
+  source;
+- the recoverable website workbench and current Wiki/docs/tooling contracts;
+  and
+- the bounded Fiber adapter/evidence work actually covered by tests and
+  recorded reports.
+
+This closure does not convert external operations into local evidence. Mainnet
+Registry Script deployment, a real non-CellScript commitment, a
+publisher-owned wallet run, and clean-machine adoption require their real
+operator, wallet, transaction, confirmation, and readback evidence. Likewise,
+the incomplete pinned Fiber/RGB++ matrices remain pending.
+
+Myelin no longer has the vendored-compiler architecture assumed by the early
+0.23 proposal. Adding an off-chain target profile would now duplicate
+Myelin-owned VM/session semantics and weaken the `CkbStrict` court boundary.
+The [0.24 roadmap](../../roadmap/CELLSCRIPT_0_24_ROADMAP.md) instead specifies
+an independent artifact checker, executable package tests, source maps, and an
+explicit Myelin adapter-lock handoff.
 
 ## At A Glance
 
@@ -28,6 +64,7 @@ work.
 | Entry witness | `CSARGv1` is decoded only from canonical Molecule `WitnessArgs.input_type`. |
 | Failure mode | Raw payloads, malformed tables, absent `input_type`, wrong placement, and mismatched identities fail closed. |
 | Build identity | The resolved profile independently combines edition, target, primitive assurance, metadata schemas, and entry/witness ABIs, then binds them into metadata, registry, lock, deployment, receipt, and builder records. |
+| Metadata | Current metadata schema 57 is composed with source schema 2, artifact schema 1, and constraints schema 2 in the resolved profile. |
 | Registry contract | The deployed publish contract requires Edition 2026 plus its compatibility-profile hash from CLI signature through API, Postgres, version-addressed JSON, and website; assurance states require ordered evidence. |
 | Registry operations | `api.registry.cellscript.dev` and `registry.cellscript.dev` run as an isolated self-hosted Postgres/Node/object-volume/read-only-nginx stack behind trusted TLS. |
 | Registry retry safety | Pre-admission failures release only the failed request's nonce and retry reservation; accepted metadata commits transactionally, and readiness covers the actual managed object prefixes. |
@@ -35,6 +72,9 @@ work.
 | Registry artifact profiles | CellScript dependencies, CKB executables, runtime verifiers, reproducible binaries, and copy-only templates share discovery but retain different resolver, TCB, deployment, and copy contracts. |
 | Registry reproducibility | Reproducible profiles stay `evidence_required` until independent builder reports bind the signed environment, source, recipe, executable, and build logs. |
 | Registry chain evidence | Mainnet deployment records are RPC-checked; configured Registry Type/Lock Scripts produce wallet transaction intents and a bounded Type-Script indexer reconciles live commitments without erasing history. |
+| First publish | `cellc publish --authorise` creates a 15-minute exact-coordinate browser session, keeps the private P-256 key pending in the local keychain, and resumes the publish only after Registry-confirmed wallet approval. |
+| Testnet sandbox | Pudge uses a separate API, database, object store, signing origin, website build, wallet state, and testnet evidence lifecycle; it never creates a testnet selector in production. |
+| Browser workbench | Playground snapshots preserve source, entry, panels, and dirty state; compile failures retain explicitly stale last-valid output, and a failed compiler Worker can restart without a page reload. |
 | Production HTTP boundary | API/static JSON responses use HSTS, deny-all content policy, anti-framing, no-sniff, and restrictive browser permissions; the website ships a reproducible read-only nginx deployment with health checks and bounded logs/temp storage. |
 | Registry install policy | Explicit unverified/quarantined install acknowledgements persist per dependency, so lock refresh and subsequent builds retain the same auditable risk choice. |
 | Tooling | CLI, LSP, WASM, website bindings, examples, and package tooling use the same edition contract. |
@@ -203,6 +243,12 @@ to `deployed`; and a stale deployment falls back to
 `deployment_status = undeployed` (projected as `verified_build`). Disabling Script configuration
 also clears current commitment pointers. Evidence remains append-only.
 
+Live-Cell identity and confirmation depth use two standard RPC observations:
+`get_live_cell` proves that the declared OutPoint is still live, while
+`get_transaction.tx_status` proves that its creation transaction is committed
+and supplies the block hash used for confirmation counting. The Registry does
+not depend on a proxy-specific `get_live_cell.block_hash` extension.
+
 The canonical Registry Type Script implementation is tracked as an independent
 `no_std` crate under `contracts/registry-type-script`, together with the exact
 3,352-byte deployable ELF and its pinned Linux x86_64 builder image identity.
@@ -228,6 +274,12 @@ checkpoint.
   accept only `"2026"`.
 - The playground worker and TypeScript declarations pass that edition into the
   WASM boundary and include it in compiler-output provenance.
+- Browser-local workspace snapshots preserve source files, selected entry,
+  active panels, and saved/dirty state. Compile failure keeps the last valid
+  output with an explicit stale label, and Worker failure exposes a restart
+  action. Cell Flow and Inspector remain metadata-derived views; raw actions,
+  types, metadata, and diagnostics stay available, and browser WASM still emits
+  no ELF.
 - Registry list and dynamic detail pages read the live production API, display
   evidence plus each version's source edition and separate
   compatibility-profile hash, and use the checked-in fixture only as an
@@ -237,10 +289,16 @@ checkpoint.
   Rust. Manage exposes isolated reproduction, mainnet deployment, and
   commitment command builders alongside publish, inspect, and availability;
   task-specific fields disappear when the task changes.
-- `cellc auth namespace claim` and the submit page's **Claim namespace** action
-  expose the namespace-ownership admission step required before a package's
-  first public publish. Capability registration no longer appears to imply a
-  claim that the write API never created.
+- `cellc publish --authorise` is the interactive first-publish path. It creates
+  a 15-minute browser session, stores the delegated private key as pending
+  before opening the browser, and resumes the original publish only after the
+  Registry returns the matching key ID. `--no-open` supports remote terminals.
+  The explicit `auth capability submit` plus `auth namespace claim` sequence
+  remains the manual, CI, and external-wallet path.
+- The isolated Pudge Sandbox uses testnet-only origins, storage, signing state,
+  RPC identity, wallet state, and deployment evidence. Releases leave discovery
+  after 72 hours and source objects are removed after a 24-hour grace period;
+  on-chain Pudge history is not deleted.
 - Production operations include dependency-aware readiness, bounded proxy and
   application request bodies, persistent Postgres/object volumes, and a daily
   systemd backup. The first backup passed SHA-256 checks plus non-destructive
@@ -337,9 +395,27 @@ Production release evidence:
 ./scripts/cellscript_gate.sh release
 ```
 
-The `backend` stateful portion and both release modes require a clean tree and
-their documented external dependencies. A passing lighter gate must not be
+Both release modes require a clean tree and their documented external
+dependencies. The backend gate runs stateful scenarios but does not itself
+impose release source-identity cleanliness. A passing lighter gate must not be
 reported as release evidence.
+
+The pinned CKB `0.207.0` build records
+`CXXFLAGS=-include cstdint` and
+`ckb-librocksdb-sys-8.5.4-explicit-cstdint-v1` in its runtime provenance. This
+is a host-toolchain compatibility include for the pinned RocksDB header, not a
+CKB source patch. The refreshed timelock recipe identities were accepted only
+after two deterministic artifact builds matched and the complete production
+stateful matrix passed against the pinned CKB checkout.
+
+The 2026-08-09 implementation-closure snapshot passed `dev`, the complete
+Node-22 `ci` gate, and `backend`. The clean detached backend run rebuilt CKB
+revision `f7fa4436737756f97a24e254f22c13a36316ecea` with CKB SDK `v5.1.0`,
+then passed 43 action cases, 17 lock cases, and all 26 stateful scenarios / 46
+steps with no missing action or artifact identities. This is local
+implementation evidence. The workspace remains version `0.22.0`; no 0.23
+tag, stable release, mainnet deployment, or external adoption claim is made by
+this document.
 
 Deployed Registry liveness and public read verification:
 
@@ -394,8 +470,9 @@ network endpoint, or lifecycle; both temporary targets were removed after the
 drill.
 
 These endpoints prove the deployed service boundary, not a publisher-owned
-JoyID signature or first-package install. That interactive positive flow
-remains the explicit adoption checkpoint.
+production adoption. The browser-session flow itself is implemented and
+regression-tested; a publisher-owned clean-machine production publish and first
+consumer install remain the explicit adoption checkpoint.
 
 ## Detailed Documentation
 
@@ -405,4 +482,5 @@ remains the explicit adoption checkpoint.
 - [CKB target profiles](../wiki/Tutorial-05-CKB-Target-Profiles.md)
 - [Metadata verification and production gates](../wiki/Tutorial-06-Metadata-Verification-and-Production-Gates.md)
 - [0.23 roadmap](../../roadmap/CELLSCRIPT_0_23_ROADMAP.md)
+- [0.24 roadmap](../../roadmap/CELLSCRIPT_0_24_ROADMAP.md)
 - [Changelog](../../CHANGELOG.md)

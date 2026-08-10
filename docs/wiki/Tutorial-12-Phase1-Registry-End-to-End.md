@@ -8,22 +8,40 @@ libraries, profile libraries, CKB runtime verifiers, deployable contracts,
 reproducible binaries, and copy-only templates. This tutorial uses the native
 CellScript path first, then the generic artifact path.
 
-## 1. Connect a CKB wallet
+## 1. Authorise the first publish
 
-Open `https://cellscript.dev/registry/submit`. The page does not expose a
-network selector. The production Registry is CKB mainnet-only. Pudge testing
-uses `https://testnet.registry.cellscript.dev/registry`, with a different API origin,
-database, object store, wallet connection state, and testnet-only evidence.
+Start from the package or artifact directory, not from an empty browser form:
+
+```bash
+cellc publish --authorise
+```
+
+`cellc` creates the delegated P-256 key, stores it as pending in the local OS
+keychain, opens a 15-minute exact-coordinate Registry session, waits for wallet
+approval, and then resumes the original publish. The private key never enters
+the browser. The Registry atomically registers the public key, claims or reviews
+the namespace, completes the session, and records the audit trail. Use
+`--no-open` to print the browser URL for a remote or terminal-only environment.
+
+The browser token is fragment-only, survives a same-tab refresh, and is removed
+on completion or expiry. Completed or review-pending sessions remain readable
+to the polling CLI for 24 hours so an approval committed near the deadline can
+be recovered. A local polling timeout preserves the pending key unless the
+Registry confirms cancellation or pending-session expiry.
+
+The production site has no network selector and accepts mainnet evidence only.
+Pudge testing uses `https://testnet.registry.cellscript.dev/registry`, with a
+different API origin, database, object store, signing identity, wallet state,
+and testnet-only evidence. Start that flow explicitly with:
+
+```bash
+cellc publish --authorise --api-url https://api.testnet.registry.cellscript.dev
+```
+
 Sandbox records disappear from discovery after 72 hours and their source bytes
 are purged after a 24-hour grace period; this does not erase Pudge chain history.
-
-Choose a detected wallet from the modal. Wallets listed without an active
-connector link to their official installation page. The wallet signs only the
-canonical capability authorisation; `cellc` generates and stores the delegated
-P-256 publish key.
-
-Claim a namespace and wait until it is active. The submit form then produces
-the capability and publish commands for the selected artifact kind.
+The explicit capability-submit and namespace-claim commands remain available
+for CI, external-wallet signing, and recovery.
 
 ## 2. Publish a CellScript source library
 
@@ -41,7 +59,8 @@ Verify and publish:
 ```bash
 cellc package verify --json
 cellc publish --dry-run
-cellc publish
+cellc publish --authorise  # first publish
+cellc publish              # later publishes with an active delegated key
 ```
 
 Use `--artifact-kind profile_library` when the package is a named CellScript
@@ -218,9 +237,12 @@ It includes the published `artifact_hash`, equal `data_hash`, `code_hash`,
 `hash_type`, `dep_type`, and the environment's OutPoint. The API requires the same
 namespace capability used for publishing and prior verified-build evidence.
 
-The API first verifies the configured RPC chain identity, then calls
-`get_live_cell`. It rejects a dead or missing Cell, a data-hash mismatch, a
-Type Script hash mismatch, a network mismatch, or an
+The API first verifies the configured RPC chain identity. It calls
+`get_live_cell` to prove that the OutPoint remains live and reads
+`get_transaction.tx_status` to prove the creation transaction is committed and
+obtain the block hash used for confirmation counting. It rejects a dead or
+missing Cell, an uncommitted creation transaction, insufficient confirmation
+depth, a data-hash mismatch, a Type Script hash mismatch, a network mismatch, or an
 OutPoint that is not bound to the published executable. A successful request
 appends deployment evidence and changes only `deployment_status` to
 `chain_verified`.
@@ -300,6 +322,13 @@ official RPC; an explicit `--rpc-url` still has to report the same chain.
 
 - `runtime_verifier`: `ckb_executable` bundle with source, executable, and ABI;
   consumption mode is `tcb`.
+- A generic `ckb_executable` with only `source`, `executable`, and `abi`
+  remains `hash_bound`. A CellScript release may opt into independent
+  structural admission by adding the complete `metadata`, `lowering_record`,
+  and `source_map` role set. Supplying only part of that set fails closed. The
+  least-privilege artifact worker records checker version, policy, and report
+  hash as `structurally_verified` evidence; it does not load the compiler and
+  does not claim source equivalence or deployment.
 - A `ckb_executable` that is built reproducibly may additionally include
   `build_recipe`, set `build.reproducible = true`, and bind the recipe,
   environment, command, and expected executable hash in `reproduction`.

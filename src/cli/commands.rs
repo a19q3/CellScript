@@ -168,6 +168,7 @@ pub struct BuildArgs {
 #[derive(Debug, Default)]
 pub struct TestArgs {
     pub filter: Option<String>,
+    pub backend: Option<String>,
     pub jobs: Option<usize>,
     pub release: bool,
     pub no_run: bool,
@@ -514,6 +515,8 @@ pub struct VerifyReceiptArgs {
 pub struct VerifyArtifactArgs {
     pub artifact: PathBuf,
     pub metadata: Option<PathBuf>,
+    pub lowering_record: Option<PathBuf>,
+    pub source_map: Option<PathBuf>,
     pub receipt: Option<PathBuf>,
     pub verify_sources: bool,
     pub json: bool,
@@ -768,6 +771,7 @@ fn run_entry_outcome(metadata: &CompileMetadata) -> Option<RunEntryOutcome> {
 }
 
 impl CommandExecutor {
+    #[cfg(not(feature = "vm-runner"))]
     fn experimental_command(name: &str, detail: &str) -> Result<()> {
         Err(crate::error::CompileError::without_span(format!("cellc {} is still experimental: {}", name, detail)))
     }
@@ -881,6 +885,7 @@ impl CommandExecutor {
         result.write_to_path(&output_path)?;
         let metadata_path = default_metadata_path_for_artifact(&output_path);
         result.write_metadata_to_path(&metadata_path)?;
+        let verified_sidecars = result.write_verified_artifact_sidecars(&output_path)?;
 
         refresh_lockfile_from_build(std::path::Path::new("."), &result.metadata)?;
         if args.entry_action.is_none() && args.entry_lock.is_none() {
@@ -891,7 +896,7 @@ impl CommandExecutor {
             || policy_args.deny_fail_closed
             || policy_args.deny_ckb_runtime
             || policy_args.deny_runtime_obligations;
-        let summary = serde_json::json!({
+        let mut summary = serde_json::json!({
             "status": "ok",
             "artifact": output_path.to_string(),
             "metadata": metadata_path.to_string(),
@@ -933,6 +938,11 @@ impl CommandExecutor {
             "cache_hit": result.cache_hit,
             "constraints": &result.metadata.constraints,
         });
+        if let Some(object) = summary.as_object_mut() {
+            object
+                .insert("lowering_record".to_string(), serde_json::json!(verified_sidecars.as_ref().map(|paths| paths.0.to_string())));
+            object.insert("source_map".to_string(), serde_json::json!(verified_sidecars.as_ref().map(|paths| paths.1.to_string())));
+        }
         let mut human_lines = vec![
             "Build complete".green().to_string(),
             format!("  Artifact format: {}", result.artifact_format.display_name()),
@@ -1017,12 +1027,15 @@ impl CommandExecutor {
                     result.write_to_path(&output_path)?;
                     let metadata_path = default_metadata_path_for_artifact(&output_path);
                     result.write_metadata_to_path(&metadata_path)?;
+                    let verified_sidecars = result.write_verified_artifact_sidecars(&output_path)?;
 
                     member_results.push(serde_json::json!({
                         "member": member_dir.as_str(),
                         "status": "ok",
                         "artifact": output_path.to_string(),
                         "metadata": metadata_path.to_string(),
+                        "lowering_record": verified_sidecars.as_ref().map(|paths| paths.0.to_string()),
+                        "source_map": verified_sidecars.as_ref().map(|paths| paths.1.to_string()),
                         "artifact_format": result.artifact_format.display_name(),
                         "target_profile": result.metadata.target_profile.name,
                         "artifact_hash": result.metadata.artifact_hash,
@@ -1101,10 +1114,26 @@ impl CommandExecutor {
         };
 
         let mut test_inputs = collect_cell_files(Path::new("tests"))?;
+        let mut scenario_inputs = super::test_runner::collect_scenario_files(Path::new("tests"))?;
         if let Some(filter) = &args.filter {
             test_inputs.retain(|path| path.to_string_lossy().contains(filter));
+            scenario_inputs.retain(|path| path.to_string_lossy().contains(filter));
         }
         test_inputs.sort();
+        scenario_inputs.sort();
+        let backends = if args.no_run {
+            Vec::new()
+        } else {
+            let backend = args.backend.as_deref().ok_or_else(|| {
+                crate::error::CompileError::without_span("cellc test requires --backend simulator|ckb-vm|all unless --no-run is used")
+            })?;
+            if scenario_inputs.is_empty() {
+                return Err(crate::error::CompileError::without_span(
+                    "cellc test cannot pass without an executable *.scenario.json fixture; use --no-run for compile-only checks",
+                ));
+            }
+            super::test_runner::TestBackend::parse(backend)?
+        };
 
         if test_inputs.is_empty() {
             compile_path(
@@ -1142,7 +1171,9 @@ impl CommandExecutor {
                     "execution": if args.no_run { "disabled" } else { "skipped-no-test-files" },
                     "docs_generated": args.doc,
                     "doc_output": doc_output.as_ref().map(|path| path.display().to_string()),
+                    "scenario_files": scenario_inputs.len(),
                     "tests": [],
+                    "scenarios": [],
                 }),
                 human_lines,
             }
@@ -1215,16 +1246,64 @@ impl CommandExecutor {
                 })));
         }
 
+        let mut scenario_reports = Vec::new();
+        let mut scenario_failures = Vec::new();
+        if !args.no_run {
+            for scenario in &scenario_inputs {
+                for backend in &backends {
+                    match super::test_runner::run_scenario(scenario, *backend) {
+                        Ok(report) => scenario_reports.push(report),
+                        Err(error) => {
+                            let message = format!("{}: {}", scenario.display(), error);
+                            scenario_reports.push(serde_json::json!({
+                                "schema": "cellscript-test-report-v1",
+                                "status": "failed",
+                                "scenario_path": scenario.to_string_lossy(),
+                                "error": error.to_string(),
+                            }));
+                            scenario_failures.push(message);
+                            if args.fail_fast {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if args.fail_fast && !scenario_failures.is_empty() {
+                    break;
+                }
+            }
+        }
+        if !scenario_failures.is_empty() {
+            return Err(crate::error::CompileError::without_span(format!(
+                "scenario test failed:\n  - {}",
+                scenario_failures.join("\n  - ")
+            ))
+            .with_details(serde_json::json!({
+                "mode": "test",
+                "compile_test_files": test_inputs.len(),
+                "scenario_files": scenario_inputs.len(),
+                "backend": args.backend,
+                "scenario_runs_passed": scenario_reports.len().saturating_sub(scenario_failures.len()),
+                "scenario_runs_failed": scenario_failures.len(),
+                "scenarios": scenario_reports,
+            })));
+        }
+
         let mut human_lines = Vec::new();
         if let Some(output) = &doc_output {
             human_lines.push("Documentation generated".green().to_string());
             human_lines.push(format!("  Output: {}", output.display()));
         }
-        human_lines.push("Test compile complete".green().to_string());
+        human_lines.push(if args.no_run { "Test compile complete" } else { "Test execution complete" }.green().to_string());
         human_lines.push(format!("  Compiled {} test file(s)", passed));
-        if !args.no_run {
-            human_lines
-                .push("  Execution: skipped; CellScript test execution is not enabled in the default toolchain yet".to_string());
+        if args.no_run {
+            human_lines.push("  Execution: disabled by --no-run".to_string());
+        } else {
+            human_lines.push(format!(
+                "  Executed {} scenario/backend run(s) with {}",
+                scenario_reports.len(),
+                args.backend.as_deref().unwrap_or("unknown")
+            ));
         }
         CommandOutcome {
             machine: serde_json::json!({
@@ -1235,10 +1314,14 @@ impl CommandExecutor {
                 "failed": 0,
                 "fail_fast": args.fail_fast,
                 "no_run": args.no_run,
-                "execution": if args.no_run { "disabled" } else { "skipped-default-toolchain" },
+                "execution": if args.no_run { "disabled" } else { "executed" },
+                "backend": args.backend,
+                "scenario_files": scenario_inputs.len(),
+                "scenario_runs": scenario_reports.len(),
                 "docs_generated": args.doc,
                 "doc_output": doc_output.as_ref().map(|path| path.display().to_string()),
                 "tests": test_reports,
+                "scenarios": scenario_reports,
             }),
             human_lines,
         }
@@ -3335,8 +3418,8 @@ impl CommandExecutor {
         let artifact_path = Utf8Path::from_path(&args.artifact).ok_or_else(|| {
             crate::error::CompileError::without_span(format!("artifact path '{}' is not valid UTF-8", args.artifact.display()))
         })?;
-        let metadata_path = match args.metadata {
-            Some(path) => path,
+        let metadata_path = match args.metadata.as_ref() {
+            Some(path) => path.clone(),
             None => default_metadata_path_for_artifact(artifact_path).into_std_path_buf(),
         };
 
@@ -3349,6 +3432,46 @@ impl CommandExecutor {
         let metadata: CompileMetadata = serde_json::from_slice(&metadata_bytes).map_err(|error| {
             crate::error::CompileError::without_span(format!("failed to parse metadata '{}': {}", metadata_path.display(), error))
         })?;
+        let (checker_report, lowering_record_path, source_map_path) = if metadata.artifact_format == "RISC-V ELF" {
+            let lowering_record_path = args
+                .lowering_record
+                .clone()
+                .unwrap_or_else(|| crate::lowering_record_output_path_from_artifact(artifact_path).into_std_path_buf());
+            let source_map_path = args
+                .source_map
+                .clone()
+                .unwrap_or_else(|| crate::source_map_output_path_from_artifact(artifact_path).into_std_path_buf());
+            let lowering_record_bytes = std::fs::read(&lowering_record_path).map_err(|error| {
+                crate::error::CompileError::without_span(format!(
+                    "failed to read lowering record '{}': {}",
+                    lowering_record_path.display(),
+                    error
+                ))
+            })?;
+            let source_map_bytes = std::fs::read(&source_map_path).map_err(|error| {
+                crate::error::CompileError::without_span(format!(
+                    "failed to read source map '{}': {}",
+                    source_map_path.display(),
+                    error
+                ))
+            })?;
+            let report = cellscript_artifact_checker::check_bundle(
+                &artifact_bytes,
+                &metadata_bytes,
+                &lowering_record_bytes,
+                &source_map_bytes,
+                &crate::CheckerBudgets::default(),
+            )
+            .map_err(|error| crate::error::CompileError::without_span(error.to_string()))?;
+            (Some(report), Some(lowering_record_path), Some(source_map_path))
+        } else {
+            if args.lowering_record.is_some() || args.source_map.is_some() {
+                return Err(crate::error::CompileError::without_span(
+                    "--lowering-record/--source-map are only valid for RISC-V ELF artifacts",
+                ));
+            }
+            (None, None, None)
+        };
         let result = validate_artifact_metadata(artifact_bytes, metadata)?;
         if args.verify_sources {
             validate_source_units_on_disk(&result.metadata)?;
@@ -3432,6 +3555,27 @@ impl CommandExecutor {
                 "constraints": &result.metadata.constraints,
             });
             if let Some(object) = summary.as_object_mut() {
+                object.insert(
+                    "lowering_record".to_string(),
+                    serde_json::json!(lowering_record_path.as_ref().map(|path| path.display().to_string())),
+                );
+                object.insert(
+                    "source_map".to_string(),
+                    serde_json::json!(source_map_path.as_ref().map(|path| path.display().to_string())),
+                );
+                object.insert("binding_verification".to_string(), serde_json::json!("verified"));
+                object.insert(
+                    "structural_verification".to_string(),
+                    serde_json::json!(if checker_report.is_some() { "verified" } else { "not-applicable" }),
+                );
+                object.insert(
+                    "lowering_record_verification".to_string(),
+                    serde_json::json!(if checker_report.is_some() { "verified" } else { "not-applicable" }),
+                );
+                object.insert("ckb_vm_evidence".to_string(), serde_json::json!("not-executed"));
+                object.insert("chain_evidence".to_string(), serde_json::json!("not-provided"));
+                object.insert("semantic_equivalence_claimed".to_string(), serde_json::json!(false));
+                object.insert("checker_report".to_string(), serde_json::json!(&checker_report));
                 object.insert("receipt_verified".to_string(), serde_json::json!(receipt_report.is_some()));
                 object.insert(
                     "receipt_payload_hash".to_string(),
@@ -3468,6 +3612,23 @@ impl CommandExecutor {
         println!("  Target profile: {}", result.metadata.target_profile.name);
         println!("  Hash: {}", result.metadata.artifact_hash.as_deref().unwrap_or("missing"));
         println!("  Size: {} bytes", result.artifact_bytes.len());
+        println!("  Binding verification: verified");
+        if checker_report.is_some() {
+            println!("  Structural verification: verified");
+            println!("  Lowering-record verification: verified");
+            if let Some(path) = lowering_record_path {
+                println!("  Lowering record: {}", path.display());
+            }
+            if let Some(path) = source_map_path {
+                println!("  Source map: {}", path.display());
+            }
+        } else {
+            println!("  Structural verification: not applicable to assembly");
+            println!("  Lowering-record verification: not applicable to assembly");
+        }
+        println!("  CKB-VM evidence: not executed");
+        println!("  Chain evidence: not provided");
+        println!("  Semantic equivalence: not claimed");
         if expected_target_profile_verified {
             println!("  Expected target profile: verified");
         }
@@ -3525,32 +3686,23 @@ impl CommandExecutor {
                 .chain(result.metadata.locks.iter().filter(|lock| !lock.params.is_empty()).map(|lock| format!("lock {}", lock.name)))
                 .collect::<Vec<_>>();
             if !parameterized_entries.is_empty() {
-                eprintln!(
-                    "{}",
-                    format!(
-                        "Warning: {} requires transaction/parameter ABI context; falling back to simulate mode",
-                        parameterized_entries.join(", ")
-                    )
-                    .yellow()
-                );
-                return Self::run_simulate(&result, &args);
+                return Err(crate::error::CompileError::without_span(format!(
+                    "cellc run executes only no-argument pure ELF entrypoints; {} requires transaction/parameter ABI context; use --simulate explicitly for development interpretation",
+                    parameterized_entries.join(", ")
+                )));
             }
 
             if result.metadata.runtime.ckb_runtime_required {
-                eprintln!(
-                    "{}",
-                    format!(
-                        "Warning: CKB runtime required ({}); falling back to simulate mode",
-                        result.metadata.runtime.ckb_runtime_features.join(", ")
-                    )
-                    .yellow()
-                );
-                return Self::run_simulate(&result, &args);
+                return Err(crate::error::CompileError::without_span(format!(
+                    "cellc run cannot provide CKB transaction/syscall context required by {}; use --simulate explicitly or an executable transaction scenario",
+                    result.metadata.runtime.ckb_runtime_features.join(", ")
+                )));
             }
 
             if !result.metadata.runtime.standalone_runner_compatible {
-                eprintln!("{}", "Warning: ELF is not standalone-compatible; falling back to simulate mode".yellow());
-                return Self::run_simulate(&result, &args);
+                return Err(crate::error::CompileError::without_span(
+                    "cellc run requires a standalone-compatible pure ELF; use --simulate explicitly or an executable transaction scenario",
+                ));
             }
 
             let vm_args = args.args.into_iter().map(|arg| arg.into_bytes()).collect::<Vec<_>>();
@@ -13364,6 +13516,13 @@ impl CliParser {
                     .about("Run the tests")
                     .arg(Arg::new("filter").value_name("FILTER").help("Filter tests by name"))
                     .arg(
+                        Arg::new("backend")
+                            .long("backend")
+                            .value_name("BACKEND")
+                            .value_parser(["simulator", "ckb-vm", "all"])
+                            .help("Execution backend; required unless --no-run: simulator, ckb-vm, or all"),
+                    )
+                    .arg(
                         Arg::new("no-run")
                             .long("no-run")
                             .action(ArgAction::SetTrue)
@@ -14011,6 +14170,18 @@ impl CliParser {
                             .long("receipt")
                             .value_name("FILE")
                             .help("Also verify a compile receipt against the artifact and metadata"),
+                    )
+                    .arg(
+                        Arg::new("lowering-record")
+                            .long("lowering-record")
+                            .value_name("FILE")
+                            .help("Canonical lowering record; defaults to ARTIFACT.lowering.json for ELF"),
+                    )
+                    .arg(
+                        Arg::new("source-map")
+                            .long("source-map")
+                            .value_name("FILE")
+                            .help("Canonical source map; defaults to ARTIFACT.sourcemap.json for ELF"),
                     )
                     .arg(
                         Arg::new("verify-sources")
@@ -14829,6 +15000,7 @@ impl CliParser {
             }),
             Some(("test", m)) => Command::Test(TestArgs {
                 filter: m.get_one::<String>("filter").cloned(),
+                backend: m.get_one::<String>("backend").cloned(),
                 no_run: m.get_flag("no-run"),
                 nocapture: m.get_flag("nocapture"),
                 fail_fast: m.get_flag("fail-fast"),
@@ -15205,6 +15377,8 @@ impl CliParser {
             Some(("verify-artifact", m)) => Command::VerifyArtifact(VerifyArtifactArgs {
                 artifact: m.get_one::<String>("artifact").map(PathBuf::from).expect("required artifact"),
                 metadata: m.get_one::<String>("metadata").map(PathBuf::from),
+                lowering_record: m.get_one::<String>("lowering-record").map(PathBuf::from),
+                source_map: m.get_one::<String>("source-map").map(PathBuf::from),
                 receipt: m.get_one::<String>("receipt").map(PathBuf::from),
                 verify_sources: m.get_flag("verify-sources"),
                 json: json_output(m),

@@ -52,8 +52,10 @@ or copy fields against immutable object hashes. The independent verifier then
 applies a profile-specific object contract:
 
 - `cellscript_source`: compile the canonical CellScript snapshot;
-- `ckb_executable`: hash-bind source, executable, ABI, and an optional
-  reproducible build recipe;
+- `ckb_executable`: hash-bind source, executable, ABI, and any optional
+  reproducible build recipe; when a CellScript bundle supplies one verified
+  sidecar, require the complete metadata/lowering-record/source-map set and run
+  the compiler-independent structural checker;
 - `reproducible_build`: hash-bind source, executable, and build recipe, then
   require external reproducibility evidence;
 - `copy_material`: hash-bind a `cellscript-template-file-map-v1` source and
@@ -310,12 +312,15 @@ executable hash, equal Cell data hash, code hash, hash type, dep type, and
 OutPoint. Prior verified-build evidence is mandatory.
 
 The API confirms the configured RPC chain identity, calls
-`get_live_cell(out_point, true, false)`, and fails
+`get_live_cell(out_point, true, false)` to prove the OutPoint is live, then
+reads `get_transaction(tx_hash).tx_status` to require a committed creation
+transaction and obtain the block hash used for confirmation counting. It fails
 closed unless the Cell is live and its data hash equals the published
 executable. For `hash_type = type`, it serializes the returned Type Script with
 Molecule and verifies its CKB Script hash against `code_hash`. Data-hash modes
-require `code_hash` to equal the data hash. Success appends hash-addressed
-evidence and sets only `deployment_status = chain_verified`.
+require `code_hash` to equal the data hash. The service does not depend on the
+proxy-specific `get_live_cell.block_hash` extension. Success appends
+hash-addressed evidence and sets only `deployment_status = chain_verified`.
 
 `CKB_RPC_URL` configures the environment RPC. `CKB_MAINNET_RPC_URL` remains a
 production compatibility alias. The Docker deployment sets
@@ -410,9 +415,13 @@ retryable infrastructure errors.
 For CellScript source, the verifier compiles the authenticated snapshot using
 the current real compiler. For generic artifact bundles it validates the
 coordinate/profile and required objects, recomputes all hashes, and emits the
-profile-specific verification level. Evidence insertion and the job publishing
-checkpoint commit atomically; a crash after that point retries only the static
-object write.
+profile-specific verification level. Generic CKB bundles remain `hash_bound`.
+A CKB bundle that supplies the complete compile metadata, lowering record, and
+source map is processed by the separate least-privilege artifact worker and
+may become `structurally_verified`; checker version, policy, and report hash
+are persisted. Partial sidecar sets fail closed. Evidence insertion and the job
+publishing checkpoint commit atomically; a crash after that point retries only
+the static object write.
 
 Queue operations require the admin token:
 

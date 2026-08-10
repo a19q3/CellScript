@@ -46,6 +46,15 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            website/package-lock.json
+            services/registry-api/package-lock.json
+
       - name: Check out ckb-sdk-rust path dependency
         run: |
           git clone --depth 1 --branch "$CKB_SDK_RUST_REF" \

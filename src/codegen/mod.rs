@@ -10,7 +10,7 @@ use crate::ir::*;
 use crate::runtime_errors::CellScriptRuntimeError;
 use crate::{ArtifactFormat, TargetProfile, ENTRY_WITNESS_ABI_MAGIC};
 use serde::Serialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -915,6 +915,8 @@ pub struct CodeGenerator {
     fail_handler_codes: BTreeSet<CellScriptRuntimeError>,
     /// Unique label counter for runtime checks.
     next_runtime_label: usize,
+    /// Final stack-frame size for typed action/lock/helper entries.
+    entry_frame_sizes: BTreeMap<String, u32>,
 }
 
 impl CodeGenerator {
@@ -1043,6 +1045,7 @@ impl CodeGenerator {
             verified_collection_push_values: BTreeSet::new(),
             fail_handler_codes: BTreeSet::new(),
             next_runtime_label: 0,
+            entry_frame_sizes: BTreeMap::new(),
         }
     }
 
@@ -1050,7 +1053,11 @@ impl CodeGenerator {
         runtime_syscall_abi(self.options.target_profile)
     }
 
-    pub fn generate(mut self, ir: &IrModule, format: ArtifactFormat) -> Result<Vec<u8>> {
+    pub fn generate(self, ir: &IrModule, format: ArtifactFormat) -> Result<Vec<u8>> {
+        self.generate_with_evidence(ir, format).map(|generated| generated.bytes)
+    }
+
+    pub fn generate_with_evidence(mut self, ir: &IrModule, format: ArtifactFormat) -> Result<GeneratedArtifact> {
         let has_entrypoint = ir.items.iter().any(|item| matches!(item, IrItem::Action(_) | IrItem::Lock(_)));
         self.enum_fixed_sizes = ir.enum_fixed_sizes.clone();
         self.enum_layouts = ir.enum_layouts.clone();
@@ -1104,7 +1111,26 @@ impl CodeGenerator {
         self.generate_runtime_support(ir);
         self.emit_const_data_pool();
 
-        self.assemble(format).map_err(|error| {
+        let generated = match format {
+            ArtifactFormat::RiscvAssembly => GeneratedArtifact { bytes: self.assembly.join("\n").into_bytes(), machine_layout: None },
+            ArtifactFormat::RiscvElf => {
+                let machine_layout = machine_layout_evidence(&self.assembly, &self.entry_frame_sizes, ir)
+                    .map_err(|error| with_codegen_code(error, "E2201"))?;
+                let bytes = assemble_elf_internal(&self.assembly).map_err(|error| with_codegen_code(error, "E2300"))?;
+                GeneratedArtifact { bytes, machine_layout: Some(machine_layout) }
+            }
+        };
+        Ok(generated)
+    }
+
+    #[allow(dead_code)]
+    fn assemble(&self, format: ArtifactFormat) -> Result<Vec<u8>> {
+        let assembly_text = self.assembly.join("\n");
+        match format {
+            ArtifactFormat::RiscvAssembly => Ok(assembly_text.into_bytes()),
+            ArtifactFormat::RiscvElf => assemble_elf(&self.assembly),
+        }
+        .map_err(|error| {
             let fallback = match format {
                 ArtifactFormat::RiscvAssembly => "E2900",
                 ArtifactFormat::RiscvElf => "E2300",
@@ -1228,6 +1254,7 @@ impl CodeGenerator {
     }
 
     fn emit_entry_witness_wrapper(&mut self, target: &str, params: &[IrParam]) -> Result<()> {
+        self.entry_frame_sizes.insert(ENTRY_WITNESS_LABEL.to_string(), ENTRY_WITNESS_FRAME_SIZE as u32);
         let callable_abi = self.callable_abis.get(target).cloned();
         let type_hash_param_indices = callable_abi.as_ref().map(|abi| abi.type_hash_param_indices.clone()).unwrap_or_default();
         let runtime_bound_param_indices = callable_abi.as_ref().map(|abi| abi.runtime_bound_param_indices.clone()).unwrap_or_default();
@@ -2054,6 +2081,10 @@ impl CodeGenerator {
         self.bind_readonly_schema_params = true;
         self.fail_handler_codes.clear();
         self.prepare_function_layout(&action.body, &action.params);
+        self.entry_frame_sizes
+            .entry(action.name.clone())
+            .and_modify(|size| *size = (*size).max(self.frame_size as u32))
+            .or_insert(self.frame_size as u32);
         self.next_virtual_output = 0;
         self.set_schema_pointer_params(&action.params);
         self.set_consumed_schema_pointers(&action.body);
@@ -2132,6 +2163,7 @@ impl CodeGenerator {
         self.bind_readonly_schema_params = false;
         self.fail_handler_codes.clear();
         self.prepare_function_layout(&function.body, &function.params);
+        self.entry_frame_sizes.insert(function.name.clone(), self.frame_size as u32);
         self.next_virtual_output = 0;
         self.set_schema_pointer_params(&function.params);
         self.set_consumed_schema_pointers(&function.body);
@@ -2185,6 +2217,10 @@ impl CodeGenerator {
         self.current_lock_entry = true;
         self.fail_handler_codes.clear();
         self.prepare_function_layout(&lock.body, &lock.params);
+        self.entry_frame_sizes
+            .entry(lock.name.clone())
+            .and_modify(|size| *size = (*size).max(self.frame_size as u32))
+            .or_insert(self.frame_size as u32);
         self.next_virtual_output = 0;
         self.set_schema_pointer_params(&lock.params);
         self.set_consumed_schema_pointers(&lock.body);
@@ -18784,24 +18820,68 @@ impl CodeGenerator {
         self.emit_large_addi("sp", "sp", 32);
         self.emit("ret");
     }
-
-    fn assemble(&self, format: ArtifactFormat) -> Result<Vec<u8>> {
-        let assembly_text = self.assembly.join("\n");
-        match format {
-            ArtifactFormat::RiscvAssembly => Ok(assembly_text.into_bytes()),
-            ArtifactFormat::RiscvElf => {
-                // All former non-executable runtime paths now have real RISC-V
-                // lowerings or fail-closed traps with specific error codes.
-                // ELF emission is always permitted.
-                assemble_elf(&self.assembly)
-            }
-        }
-    }
 }
 
 pub fn generate(ir: &IrModule, options: &CodegenOptions, format: ArtifactFormat) -> Result<Vec<u8>> {
     let generator = CodeGenerator::new(options.clone());
     generator.generate(ir, format)
+}
+
+pub fn generate_with_evidence(ir: &IrModule, options: &CodegenOptions, format: ArtifactFormat) -> Result<GeneratedArtifact> {
+    let generator = CodeGenerator::new(options.clone());
+    generator.generate_with_evidence(ir, format)
+}
+
+#[derive(Debug, Clone)]
+pub struct GeneratedArtifact {
+    pub bytes: Vec<u8>,
+    pub machine_layout: Option<MachineLayoutEvidence>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MachineLayoutEvidence {
+    pub text_start: u64,
+    pub text_end: u64,
+    pub entry_label: String,
+    pub blocks: Vec<MachineBlockEvidence>,
+    pub edges: Vec<MachineEdgeEvidence>,
+    pub symbols: BTreeMap<String, u64>,
+    pub globals: BTreeSet<String>,
+    pub entry_frame_sizes: BTreeMap<String, u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MachineBlockEvidence {
+    pub index: usize,
+    pub label: Option<String>,
+    pub start: u64,
+    pub end: u64,
+    pub terminator: MachineTerminatorEvidence,
+    pub runtime_error_codes: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineTerminatorEvidence {
+    Fallthrough,
+    Jump,
+    ConditionalBranch,
+    Return,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineEdgeEvidence {
+    pub from: usize,
+    pub to: usize,
+    pub kind: MachineEdgeKindEvidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineEdgeKindEvidence {
+    Fallthrough,
+    Jump,
+    ConditionalTaken,
+    ConditionalFallthrough,
+    Call,
 }
 
 fn with_codegen_code(error: CompileError, code: &'static str) -> CompileError {
@@ -18922,6 +19002,7 @@ fn consumed_operand_var(instruction: &IrInstruction) -> Option<&IrVar> {
 
 const ELF_HEADER_SIZE: usize = 64;
 const ELF_PROGRAM_HEADER_SIZE: usize = 56;
+const ELF_SECTION_HEADER_SIZE: usize = 64;
 const ELF_SEGMENT_ALIGN: usize = 0x1000;
 const ELF_PF_X: u32 = 1;
 #[cfg(test)]
@@ -18930,6 +19011,7 @@ const ELF_PF_R: u32 = 4;
 const ELF_BASE_ADDR: u64 = 0x10000;
 const START_TRAMPOLINE_SIZE: usize = 20;
 const EXIT_SYSCALL_NUMBER: i64 = 93;
+const ELF_SECTION_NAMES: &[u8] = b"\0.text\0.rodata\0.shstrtab\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SectionKind {
@@ -19184,8 +19266,12 @@ fn assemble_elf_internal(lines: &[String]) -> Result<Vec<u8>> {
         CompileError::new("ELF text base is smaller than the load segment file offset", crate::error::Span::default())
     })?;
     let load_segment_file_size = segment_file_offset + segment_file_payload_size;
-    let mut elf = vec![0u8; load_segment_file_size];
-    write_elf_header(&mut elf[..ELF_HEADER_SIZE], layout.text_base, 1)?;
+    let section_names_offset = align_up(load_segment_file_size, 8);
+    let section_header_offset = align_up(section_names_offset + ELF_SECTION_NAMES.len(), 8);
+    let section_count = 4usize;
+    let elf_size = section_header_offset + section_count * ELF_SECTION_HEADER_SIZE;
+    let mut elf = vec![0u8; elf_size];
+    write_elf_header(&mut elf[..ELF_HEADER_SIZE], layout.text_base, 1, section_header_offset as u64, section_count as u16, 3)?;
     write_program_header(
         &mut elf[ELF_HEADER_SIZE..ELF_HEADER_SIZE + ELF_PROGRAM_HEADER_SIZE],
         ELF_PF_R | ELF_PF_X,
@@ -19198,6 +19284,38 @@ fn assemble_elf_internal(lines: &[String]) -> Result<Vec<u8>> {
     let segment = &mut elf[segment_file_offset..segment_file_offset + segment_file_payload_size];
     segment[..text_bytes.len()].copy_from_slice(&text_bytes);
     segment[rodata_offset..rodata_offset + rodata_bytes.len()].copy_from_slice(&rodata_bytes);
+    elf[section_names_offset..section_names_offset + ELF_SECTION_NAMES.len()].copy_from_slice(ELF_SECTION_NAMES);
+    let section_headers = &mut elf[section_header_offset..section_header_offset + section_count * ELF_SECTION_HEADER_SIZE];
+    write_section_header(
+        &mut section_headers[ELF_SECTION_HEADER_SIZE..2 * ELF_SECTION_HEADER_SIZE],
+        1,
+        1,
+        0x2 | 0x4,
+        layout.text_base,
+        segment_file_offset as u64,
+        text_bytes.len() as u64,
+        4,
+    )?;
+    write_section_header(
+        &mut section_headers[2 * ELF_SECTION_HEADER_SIZE..3 * ELF_SECTION_HEADER_SIZE],
+        7,
+        1,
+        0x2,
+        layout.rodata_base,
+        (segment_file_offset + rodata_offset) as u64,
+        rodata_bytes.len() as u64,
+        8,
+    )?;
+    write_section_header(
+        &mut section_headers[3 * ELF_SECTION_HEADER_SIZE..4 * ELF_SECTION_HEADER_SIZE],
+        15,
+        3,
+        0,
+        0,
+        section_names_offset as u64,
+        ELF_SECTION_NAMES.len() as u64,
+        1,
+    )?;
     Ok(elf)
 }
 
@@ -19437,6 +19555,7 @@ struct ParsedAssembly {
     text_size: usize,
     rodata_size: usize,
     symbols: HashMap<String, SymbolDef>,
+    globals: BTreeSet<String>,
     entry_label: Option<String>,
     relaxed_text_branches: BTreeSet<usize>,
 }
@@ -19518,6 +19637,7 @@ impl ParsedAssembly {
             text_size,
             rodata_size,
             symbols,
+            globals,
             entry_label: entry_label.or(fallback_entry),
             relaxed_text_branches: branch_size_mode.relaxed_text_branches().cloned().unwrap_or_default(),
         })
@@ -19609,6 +19729,95 @@ impl MachineLayoutPlan {
         let metrics = parsed.layout_metrics(&layout, &cfg, &order, coverage)?;
         Ok(Self { parsed, layout, cfg, order, metrics })
     }
+}
+
+fn machine_layout_evidence(
+    lines: &[String],
+    entry_frame_sizes: &BTreeMap<String, u32>,
+    ir: &IrModule,
+) -> Result<MachineLayoutEvidence> {
+    let plan = MachineLayoutPlan::build(lines)?;
+    let runtime_error_labels = ir_runtime_error_labels(ir);
+    let text_start = plan.layout.text_user_base;
+    let text_end = text_start
+        .checked_add(plan.metrics.text_size as u64)
+        .ok_or_else(|| CompileError::new("machine evidence text range overflows u64", crate::error::Span::default()))?;
+    let entry_label = plan
+        .parsed
+        .entry_label
+        .clone()
+        .ok_or_else(|| CompileError::new("machine evidence requires an entry label", crate::error::Span::default()))?;
+    let blocks = plan
+        .cfg
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(index, block)| MachineBlockEvidence {
+            index,
+            label: block.label.clone(),
+            start: text_start + block.byte_start as u64,
+            end: text_start + block.byte_start as u64 + block.byte_size as u64,
+            terminator: match block.terminator {
+                MachineTerminator::Fallthrough => MachineTerminatorEvidence::Fallthrough,
+                MachineTerminator::Jump { .. } => MachineTerminatorEvidence::Jump,
+                MachineTerminator::ConditionalBranch { .. } => MachineTerminatorEvidence::ConditionalBranch,
+                MachineTerminator::Return => MachineTerminatorEvidence::Return,
+            },
+            runtime_error_codes: block.label.as_ref().and_then(|label| runtime_error_labels.get(label)).cloned().unwrap_or_default(),
+        })
+        .collect();
+    let edges = plan
+        .cfg
+        .edges
+        .iter()
+        .map(|edge| MachineEdgeEvidence {
+            from: edge.from,
+            to: edge.to,
+            kind: match edge.kind {
+                MachineCfgEdgeKind::Fallthrough => MachineEdgeKindEvidence::Fallthrough,
+                MachineCfgEdgeKind::Jump => MachineEdgeKindEvidence::Jump,
+                MachineCfgEdgeKind::ConditionalTaken => MachineEdgeKindEvidence::ConditionalTaken,
+                MachineCfgEdgeKind::ConditionalFallthrough => MachineEdgeKindEvidence::ConditionalFallthrough,
+                MachineCfgEdgeKind::Call => MachineEdgeKindEvidence::Call,
+            },
+        })
+        .collect();
+    let symbols = plan
+        .parsed
+        .symbols
+        .iter()
+        .filter_map(|(name, symbol)| {
+            (symbol.section == SectionKind::Text).then_some((name.clone(), text_start + symbol.offset as u64))
+        })
+        .collect();
+    Ok(MachineLayoutEvidence {
+        text_start,
+        text_end,
+        entry_label,
+        blocks,
+        edges,
+        symbols,
+        globals: plan.parsed.globals.clone(),
+        entry_frame_sizes: entry_frame_sizes.clone(),
+    })
+}
+
+fn ir_runtime_error_labels(ir: &IrModule) -> BTreeMap<String, Vec<u64>> {
+    let mut labels = BTreeMap::new();
+    for item in &ir.items {
+        let (name, body) = match item {
+            IrItem::Action(action) => (action.name.as_str(), &action.body),
+            IrItem::Lock(lock) => (lock.name.as_str(), &lock.body),
+            IrItem::PureFn(function) => (function.name.as_str(), &function.body),
+            IrItem::TypeDef(_) | IrItem::Invariant(_) => continue,
+        };
+        for block in &body.blocks {
+            if let Some(error) = block.runtime_error {
+                labels.insert(format!(".L{}_block_{}", name, block.id.0), vec![error.code()]);
+            }
+        }
+    }
+    labels
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -20430,7 +20639,14 @@ fn li_sequence_size(imm: i128) -> usize {
     }
 }
 
-fn write_elf_header(out: &mut [u8], entry: u64, program_header_count: u16) -> Result<()> {
+fn write_elf_header(
+    out: &mut [u8],
+    entry: u64,
+    program_header_count: u16,
+    section_header_offset: u64,
+    section_header_count: u16,
+    section_name_index: u16,
+) -> Result<()> {
     if out.len() != ELF_HEADER_SIZE {
         return Err(CompileError::new("invalid ELF header buffer size", crate::error::Span::default()));
     }
@@ -20444,11 +20660,38 @@ fn write_elf_header(out: &mut [u8], entry: u64, program_header_count: u16) -> Re
     out[20..24].copy_from_slice(&1u32.to_le_bytes());
     out[24..32].copy_from_slice(&entry.to_le_bytes());
     out[32..40].copy_from_slice(&(ELF_HEADER_SIZE as u64).to_le_bytes());
-    out[40..48].copy_from_slice(&0u64.to_le_bytes());
+    out[40..48].copy_from_slice(&section_header_offset.to_le_bytes());
     out[48..52].copy_from_slice(&0u32.to_le_bytes());
     out[52..54].copy_from_slice(&(ELF_HEADER_SIZE as u16).to_le_bytes());
     out[54..56].copy_from_slice(&(ELF_PROGRAM_HEADER_SIZE as u16).to_le_bytes());
     out[56..58].copy_from_slice(&program_header_count.to_le_bytes());
+    out[58..60].copy_from_slice(&(ELF_SECTION_HEADER_SIZE as u16).to_le_bytes());
+    out[60..62].copy_from_slice(&section_header_count.to_le_bytes());
+    out[62..64].copy_from_slice(&section_name_index.to_le_bytes());
+    Ok(())
+}
+
+fn write_section_header(
+    out: &mut [u8],
+    name_offset: u32,
+    section_type: u32,
+    flags: u64,
+    address: u64,
+    offset: u64,
+    size: u64,
+    alignment: u64,
+) -> Result<()> {
+    if out.len() != ELF_SECTION_HEADER_SIZE {
+        return Err(CompileError::new("invalid ELF section header buffer size", crate::error::Span::default()));
+    }
+    out.fill(0);
+    out[0..4].copy_from_slice(&name_offset.to_le_bytes());
+    out[4..8].copy_from_slice(&section_type.to_le_bytes());
+    out[8..16].copy_from_slice(&flags.to_le_bytes());
+    out[16..24].copy_from_slice(&address.to_le_bytes());
+    out[24..32].copy_from_slice(&offset.to_le_bytes());
+    out[32..40].copy_from_slice(&size.to_le_bytes());
+    out[48..56].copy_from_slice(&alignment.to_le_bytes());
     Ok(())
 }
 
@@ -21819,6 +22062,7 @@ mod tests {
                         id: BlockId(0),
                         instructions: vec![],
                         terminator: IrTerminator::Return(Some(IrOperand::Const(IrConst::U64(7)))),
+                        runtime_error: None,
                     }],
                 },
             })],

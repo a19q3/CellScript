@@ -324,6 +324,9 @@ fn main() {
             if let Err(e) = result.write_metadata_to_path(&metadata_path) {
                 terminate_cli_error(&e, message_format, None, None);
             }
+            let verified_sidecars = result
+                .write_verified_artifact_sidecars(&output_path)
+                .unwrap_or_else(|e| terminate_cli_error(&e, message_format, None, None));
 
             if message_format == MessageFormat::Json {
                 let payload = serde_json::json!({
@@ -331,6 +334,8 @@ fn main() {
                     "mode": "direct-build",
                     "artifact": output_path.as_str(),
                     "metadata": metadata_path.as_str(),
+                    "lowering_record": verified_sidecars.as_ref().map(|paths| paths.0.as_str()),
+                    "source_map": verified_sidecars.as_ref().map(|paths| paths.1.as_str()),
                     "artifact_format": result.artifact_format.display_name(),
                     "target_profile": result.metadata.target_profile.name,
                     "artifact_hash": result.metadata.artifact_hash,
@@ -344,6 +349,10 @@ fn main() {
                 println!("  Artifact hash: {:x?}", result.artifact_hash);
                 println!("  Output: {}", output_path);
                 println!("  Metadata: {}", metadata_path);
+                if let Some((lowering_record, source_map)) = verified_sidecars {
+                    println!("  Lowering record: {}", lowering_record);
+                    println!("  Source map: {}", source_map);
+                }
             }
         }
         Err(e) => {

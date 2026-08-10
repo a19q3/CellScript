@@ -2,12 +2,15 @@
 
 ## Status
 
-Implemented across the 0.20-0.21 line for the website playground, WASM
-metadata-only compile path, multi-file browser workspace, and agent-facing
-documentation surface. Path B, full ELF generation inside the browser WASM
-bundle, remains deferred.
+Implemented across the 0.20-0.23 line for the website playground, WASM
+metadata-only compile path, multi-file browser workspace, agent-facing
+documentation surface, and recoverable browser workbench. The 0.23 workbench
+persists workspace/panel state, retains explicitly stale last-valid output,
+restarts a failed compiler Worker, and derives Cell Flow plus Inspector views
+from metadata. Path B, full ELF generation inside the browser WASM bundle,
+remains deferred.
 
-Updated: 2026-07-11 for CellScript 0.21.0.
+Updated: 2026-08-09 for the CellScript 0.23 development line.
 
 ## Goal
 

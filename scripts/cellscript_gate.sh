@@ -22,6 +22,16 @@ require_cmd() {
     fi
 }
 
+require_node_22() {
+    require_cmd node
+    local node_major
+    node_major="$(node --version | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')"
+    if [[ "$node_major" != "22" ]]; then
+        printf 'Node.js 22 is required by the CellScript website and Registry toolchain; found %s\n' "$(node --version)" >&2
+        exit 1
+    fi
+}
+
 run() {
     printf '\n==> %s\n' "$*"
     "$@"
@@ -38,6 +48,7 @@ cargo_fmt_workspace() {
     run cargo fmt \
         --manifest-path "$ROOT_DIR/Cargo.toml" \
         --package cellscript \
+        --package cellscript-artifact-checker \
         --package cellscript-ckb-adapter \
         --package cellscript-fiber-adapter \
         --package cellscript-tools \
@@ -218,6 +229,11 @@ check_markdown_local_links() {
         --root "$ROOT_DIR" check-markdown-links
 }
 
+check_source_policy() {
+    run cargo run --quiet --locked -p cellscript-tools --bin cellscript-tools -- \
+        --root "$ROOT_DIR" check-source-policy
+}
+
 check_ckb_acceptance_boundaries() {
     local required=(
         'scripts/ckb_cellscript_acceptance.sh::Usage: scripts/ckb_cellscript_acceptance.sh'
@@ -233,6 +249,7 @@ check_ckb_acceptance_boundaries() {
         'crates/cellscript-tools/src/ckb_acceptance_live.rs::ckb_acceptance_pin.json'
         'crates/cellscript-tools/src/ckb_acceptance_live.rs::cellscript-ckb-runtime-provenance-v0.22'
         'crates/cellscript-tools/src/ckb_acceptance_live.rs::fresh-dedicated-cargo-target'
+        'crates/cellscript-tools/src/ckb_acceptance_live.rs::ckb-librocksdb-sys-8.5.4-explicit-cstdint-v1'
         'crates/cellscript-tools/src/ckb_acceptance_live.rs::binary_archived_with_report'
         'crates/cellscript-tools/src/ckb_acceptance.rs::cellscript-public-builder-contract-gate-v0.22'
         'crates/cellscript-tools/src/ckb_acceptance.rs::cellscript_build_reports'
@@ -243,6 +260,7 @@ check_ckb_acceptance_boundaries() {
         'crates/cellscript-tools/src/production_evidence.rs::validate_public_builder_contracts'
         'crates/cellscript-tools/src/production_evidence.rs::validate_ckb_runtime_provenance'
         'crates/cellscript-tools/src/production_evidence.rs::fresh-dedicated-cargo-target'
+        'crates/cellscript-tools/src/production_evidence.rs::ckb-librocksdb-sys-8.5.4-explicit-cstdint-v1'
         'crates/cellscript-tools/src/production_evidence.rs::stateful branch scenarios must cover every action absent from end-to-end flows exactly once'
         'crates/cellscript-tools/src/production_evidence.rs::validate_build_reports'
         'crates/cellscript-tools/src/production_evidence.rs::tracked_source_sha256'
@@ -380,8 +398,7 @@ run_website_build_check() {
         exit 1
     fi
 
-    run_in_dir website npm exec -- astro check
-    run_in_dir website npm exec -- astro build
+    run npm --prefix website run build:ci
 }
 
 run_registry_api_check() {
@@ -389,6 +406,7 @@ run_registry_api_check() {
     if [[ "$registry_verifier_target_dir" != /* ]]; then
         registry_verifier_target_dir="$ROOT_DIR/$registry_verifier_target_dir"
     fi
+    local registry_artifact_verifier_target_dir="$ROOT_DIR/services/registry-artifact-verifier/target"
 
     if [[ ! -d services/registry-api/node_modules ]]; then
         run npm --prefix services/registry-api ci
@@ -396,13 +414,40 @@ run_registry_api_check() {
     run npm --prefix services/registry-api run check
     run cargo build --locked --manifest-path services/registry-verifier/Cargo.toml \
         --target-dir "$registry_verifier_target_dir"
+    run cargo build --locked --manifest-path services/registry-artifact-verifier/Cargo.toml \
+        --target-dir "$registry_artifact_verifier_target_dir"
     run env CELLSCRIPT_REGISTRY_VERIFIER_TEST_BINARY="$registry_verifier_target_dir/debug/cellscript-registry-verify" \
+        CELLSCRIPT_REGISTRY_ARTIFACT_VERIFIER_TEST_BINARY="$registry_artifact_verifier_target_dir/debug/cellscript-registry-artifact-verify" \
         npm --prefix services/registry-api test
     run npm --prefix services/registry-api run build
     run npm --prefix services/registry-api run build:node
     run cargo fmt --manifest-path services/registry-verifier/Cargo.toml -- --check
+    run cargo fmt --manifest-path services/registry-artifact-verifier/Cargo.toml -- --check
     run cargo test --locked --manifest-path services/registry-verifier/Cargo.toml
+    run cargo test --locked --manifest-path services/registry-artifact-verifier/Cargo.toml
     run cargo clippy --locked --manifest-path services/registry-verifier/Cargo.toml --all-targets -- -D warnings
+    run cargo clippy --locked --manifest-path services/registry-artifact-verifier/Cargo.toml --all-targets -- -D warnings
+}
+
+check_registry_artifact_verifier_dependency_boundary() {
+    if cargo tree --locked --manifest-path services/registry-artifact-verifier/Cargo.toml --edges normal --prefix none \
+        | rg --quiet '^cellscript v'; then
+        printf 'Registry artifact verifier production dependency graph must not contain the CellScript compiler\n' >&2
+        return 1
+    fi
+}
+
+check_artifact_checker_dependency_boundary() {
+    if cargo tree --locked --manifest-path Cargo.toml -p cellscript-artifact-checker --edges normal --prefix none \
+        | rg --quiet '^cellscript v'; then
+        printf 'Artifact checker production dependency graph must not contain the CellScript compiler\n' >&2
+        return 1
+    fi
+}
+
+run_executable_package_scenarios() {
+    local backend="$1"
+    run cargo run --quiet --locked -p cellscript --bin cellc -- test scenarios --backend "$backend"
 }
 
 run_registry_type_script_check() {
@@ -457,24 +502,31 @@ run_dev_gate() {
 
     cargo_fmt_workspace
     run cargo fmt --manifest-path services/registry-verifier/Cargo.toml
+    run cargo fmt --manifest-path services/registry-artifact-verifier/Cargo.toml
     run cargo check --locked -p cellscript --all-targets
+    run cargo check --locked -p cellscript-artifact-checker --all-targets
+    run cargo test --locked -p cellscript-artifact-checker
+    run cargo test --locked -p cellscript --test artifact_checker --test myelin_handoff
     run cargo check --locked -p cellscript-fiber-adapter --all-targets
     run cargo check --locked -p cellscript-ckb-adapter --all-targets
     run cargo check --locked -p cellscript-wasm --all-targets --features wasm
     run cargo check --locked -p cellscript-ckb-sdk-builder-example --all-targets
     run cargo check --locked -p cellscript-tools --all-targets
     run cargo check --locked --manifest-path services/registry-verifier/Cargo.toml --all-targets
+    run cargo check --locked --manifest-path services/registry-artifact-verifier/Cargo.toml --all-targets
+    check_registry_artifact_verifier_dependency_boundary
+    check_artifact_checker_dependency_boundary
     run_registry_type_script_check
     check_canonical_cellscript_format
     check_example_u64_boundaries
     run ./scripts/cellscript_strict_backend_audit.sh quick
     run ./scripts/cellscript_syntax_combo_audit.sh quick
+    run_executable_package_scenarios simulator
     run cargo run --quiet --locked -p cellscript-tools --bin cellscript-tools -- \
         --root "$ROOT_DIR" check-skill-pack
     check_cellscript_doc_status_freshness
     check_markdown_local_links
-    run cargo run --quiet --locked -p cellscript-tools --bin cellscript-tools -- \
-        --root "$ROOT_DIR" check-source-policy
+    check_source_policy
     run git diff --check
 }
 
@@ -486,18 +538,23 @@ run_ci_gate() {
     require_cmd cargo
     require_cmd rg
     require_cmd npm
+    require_node_22
 
     printf '{"status":"not-generated","reason":"test suite did not reach backend shape report generation"}\n' >"$CELLSCRIPT_BACKEND_SHAPE_REPORT"
     cargo_fmt_workspace --check
     check_canonical_cellscript_format
     check_example_u64_boundaries
     run cargo test --locked -p cellscript -- --test-threads=1
+    run cargo test --locked -p cellscript-artifact-checker -- --test-threads=1
+    check_artifact_checker_dependency_boundary
     run cargo test --locked -p cellscript-fiber-adapter -- --test-threads=1
     run cargo test --locked -p cellscript-ckb-adapter -- --test-threads=1
     run cargo test --locked -p cellscript-wasm --features wasm -- --test-threads=1
     run cargo test --locked -p cellscript-ckb-sdk-builder-example -- --test-threads=1
     run cargo test --locked -p cellscript-tools -- --test-threads=1
+    run_executable_package_scenarios all
     run cargo clippy --locked -p cellscript --all-targets -- -D warnings
+    run cargo clippy --locked -p cellscript-artifact-checker --all-targets -- -D warnings
     run cargo clippy --locked -p cellscript-fiber-adapter --all-targets -- -D warnings
     run cargo clippy --locked -p cellscript-ckb-adapter --all-targets -- -D warnings
     run cargo clippy --locked -p cellscript-wasm --all-targets --features wasm -- -D warnings
@@ -511,13 +568,15 @@ run_ci_gate() {
     check_cellscript_doc_status_freshness
     check_markdown_local_links
     check_package_contents
-    run cargo package --locked --offline --allow-dirty
+    run cargo package --manifest-path crates/cellscript-artifact-checker/Cargo.toml --locked --offline --allow-dirty
+    run cargo --config "patch.crates-io.cellscript-artifact-checker.path=\"$ROOT_DIR/crates/cellscript-artifact-checker\"" \
+        package --locked --offline --allow-dirty
     run_registry_api_check
+    check_registry_artifact_verifier_dependency_boundary
     run_website_build_check
     check_script_syntax
     run git diff --check
-    run cargo run --quiet --locked -p cellscript-tools --bin cellscript-tools -- \
-        --root "$ROOT_DIR" check-source-policy
+    check_source_policy
     check_trailing_whitespace
 }
 
@@ -529,13 +588,21 @@ run_backend_gate() {
     require_cmd cargo
     require_cmd rg
 
+    check_source_policy
+
     cargo_fmt_workspace --check
     run cargo check --locked -p cellscript --all-targets
+    run cargo check --locked -p cellscript-artifact-checker --all-targets
     run cargo check --locked -p cellscript-fiber-adapter --all-targets
     run cargo test --locked -p cellscript
+    run cargo test --locked -p cellscript-artifact-checker
     run cargo test --locked -p cellscript-fiber-adapter -- --test-threads=1
     run cargo clippy --locked -p cellscript --all-targets -- -D warnings
+    run cargo clippy --locked -p cellscript-artifact-checker --all-targets -- -D warnings
     run cargo clippy --locked -p cellscript-fiber-adapter --all-targets -- -D warnings
+    check_registry_artifact_verifier_dependency_boundary
+    check_artifact_checker_dependency_boundary
+    run_executable_package_scenarios all
     run ./scripts/cellscript_strict_backend_audit.sh full
     run git diff --check
 }

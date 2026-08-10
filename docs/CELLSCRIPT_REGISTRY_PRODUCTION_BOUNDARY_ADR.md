@@ -1,10 +1,10 @@
 # ADR: CellScript Registry Production Boundary
 
-**Status**: accepted and implemented; amended 2026-08-01 for the unified
-artifact model and mainnet deployment-evidence path.
+**Status**: accepted and implemented; amended 2026-08-09 for browser-session
+authorisation, the isolated Pudge Sandbox, and standard CKB confirmation RPCs.
 
 **Decision date**: 2026-06-23
-**Current amendment**: 2026-08-01
+**Current amendment**: 2026-08-09
 
 ## Context
 
@@ -32,12 +32,15 @@ The production Registry uses:
    content transport;
 6. an isolated, profile-aware verification worker;
 7. signed, live-RPC-verified CKB mainnet deployment evidence;
-8. fail-closed CellScript dependency resolution that accepts only the
+8. an isolated Pudge Testnet Sandbox with separate origins, storage, signing,
+   wallet state, RPC identity, expiry, and evidence;
+9. fail-closed CellScript dependency resolution that accepts only the
    `cellscript_source` + `dependency` contract.
 
 There is no account-style Registry identity, no Git convention as public
-resolver authority, no testnet deployment option, and no second public package
-route.
+resolver authority, no testnet option inside the production Registry, and no
+second public package route. Pudge is a separate environment and cannot create
+production deployment state.
 
 ## Artifact Profiles
 
@@ -91,6 +94,15 @@ with expiry and revocation. Daily publish and deployment requests use the
 delegated key. Seed phrases and private wallet keys never cross the wallet
 boundary.
 
+For interactive first publish, `cellc publish --authorise` creates the key as a
+pending keychain entry and opens a 15-minute exact-coordinate browser session.
+The browser holds only a fragment token and signs a server-built challenge.
+Session completion atomically consumes the nonce, registers the public key,
+claims or reviews the namespace, records the terminal session state, and writes
+audit events. The polling CLI activates only the matching returned key ID and
+then resumes the original publish. The explicit capability and namespace
+commands remain the manual/CI path.
+
 Capabilities do not claim namespaces implicitly. The namespace must be active
 and owned by the capability principal. Reserved names may require attributed
 operator review.
@@ -106,7 +118,9 @@ The Registry does not pretend that catalog presence means runtime support.
 Backend signature verification is identical for browser and external handoff
 flows. Recovery phrases are never accepted by the frontend or API.
 
-The network is fixed to CKB mainnet and is not shown as a selectable control.
+The production network is fixed to CKB mainnet and is not shown as a selectable
+control. The Pudge site is a separate testnet-only origin with separate wallet
+state, not a selector value.
 
 ## Write Path
 
@@ -147,11 +161,16 @@ repeats only the static write.
 A CKB executable begins as `undeployed`. Deployment evidence uses a separate
 signed protocol and requires prior verified-build evidence.
 
-The API accepts only `network = mainnet`, calls `get_live_cell` for the declared
-OutPoint, and requires a live Cell whose data hash equals the published
+The production API accepts only `network = mainnet`. It calls `get_live_cell`
+for the declared OutPoint and requires a live Cell whose data hash equals the published
 executable hash. For Type-hash references it computes the returned Type Script
 hash from canonical Molecule serialization; for data-hash references it
 requires code hash and data hash equality.
+
+Confirmation depth comes from the standard creation-transaction path:
+`get_transaction.tx_status` must report `committed` and supplies the block hash
+used with the current tip. The service does not rely on a proxy-specific
+`get_live_cell.block_hash` extension.
 
 For DepGroups, the API decodes the live container data as canonical Molecule
 `OutPointVec`, loads the members, and verifies the matching live code Cell. The
@@ -188,6 +207,11 @@ registry.cellscript.dev      -> immutable bundles and static release JSON
 cellscript.dev/registry      -> static Astro discovery and publishing UI
 ```
 
+The testnet sandbox uses `api.testnet.registry.cellscript.dev` and
+`testnet.registry.cellscript.dev` with independent storage and signing state.
+Its records leave discovery after 72 hours and source objects are deleted after
+a 24-hour grace period; this does not erase Pudge chain history.
+
 Static release objects use:
 
 ```text
@@ -205,7 +229,8 @@ query, and pagination filters.
 Generic consumers use explicit `cellc artifact` operations. Fetch/verify check
 the receipt and all immutable identities; pin records TCB/deployment inputs;
 copy safely materializes only an authenticated file map; record-deployment
-submits mainnet evidence; CellDep generation requires attached RPC evidence;
+submits evidence to the network fixed by the selected Registry environment;
+CellDep generation requires attached RPC evidence;
 commitment generation produces the canonical chain payload. Generic artifacts
 never flow through dependency installation.
 
@@ -283,5 +308,7 @@ Costs:
 - **Store the full evidence corpus on chain**: expensive and unnecessary; the
   chain should carry runtime commitments while full evidence remains
   content-addressed off chain.
-- **Accept testnet deployment records**: creates a misleading production state
-  in a public Registry whose deployed status is used for mainnet discovery.
+- **Accept testnet deployment records in production**: creates a misleading
+  production state whose deployed status is used for mainnet discovery. Pudge
+  is instead isolated by origin, storage, signer, wallet state, RPC identity,
+  expiry policy, and build.

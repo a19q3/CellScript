@@ -1,12 +1,13 @@
 # CellScript 0.23 Roadmap
 
-**Status**: Draft, pending release-line coordination before adoption
+**Status**: Implementation scope frozen on 2026-08-09; stable release and
+production CKB claims still require their documented clean-tree gates and
+external evidence
 **Scope**: one Edition 2026 source-semantics epoch, an independently resolved
 compatibility profile, canonical CKB
 `WitnessArgs.input_type` entry placement, public registry production deployment
-on `cellscript.dev`, completed native test/fixture tooling, deeper RGB++ / Fiber
-integration, and a Myelin-aligned Off-Chain Session Runtime profile with initial
-concurrency support
+on `cellscript.dev`, completed native test/fixture tooling, and the bounded
+Fiber/RGB++ evidence actually obtained on this line
 **Depends on**: the 0.22 typed transaction views, bounded collections, stable
 `E2xxx` diagnostics, the existing `cellscript-fiber-adapter` no-profile path,
 the implemented `services/registry-api` write boundary, the production
@@ -14,22 +15,64 @@ boundary ADR, and the Myelin Session L2 plan
 
 ## Goal
 
-0.23 is the first CellScript release whose headline is *operational* rather
+0.23 is the first CellScript release line whose headline is *operational* rather
 than language-theoretic. 0.22 closed the first slice of the type/set roadmap
 and the bounded Fiber path; 0.23 turns those compiler facts into a running
-public package registry, drops Python from the project's tooling contract,
-pushes RGB++ / Fiber further toward production, and introduces a new
-Off-Chain Session Runtime profile so that the Myelin vendored fork can stop
-diverging.
+public package registry, drops Python from the project's tooling contract, and
+preserves the bounded Fiber/RGB++ path without overstating incomplete external
+evidence.
 
-The four pillars below are independent enough to be tracked as separate work
-packages, but they share one discipline: every claim must remain tied to
-compiler evidence or builder-backed chain evidence, and every "production"
-word must distinguish *deployed and observed* from *gated and certified*.
+The four original pillars below were independent planning packages. The final
+scope adopts the first two, preserves only the bounded completed slice of the
+third, and retires the fourth. They share one discipline: every claim remains
+tied to compiler evidence or builder-backed chain evidence, and every
+"production" word distinguishes *deployed and observed* from *gated and
+certified*.
 
-This is a draft roadmap, not an implementation contract. It must be matched
-against `CHANGELOG.md`, the release gate, and any in-flight branch before
-adoption.
+This file preserves the original four-pillar plan and records the final scope
+decision below. It must be read with `CHANGELOG.md`, the 0.23 release notes, and
+the release gate; historical planned text is not evidence that a deferred item
+shipped.
+
+## Final Scope Decision (2026-08-09)
+
+The 0.23 implementation boundary is frozen around the work that is present and
+gated in this repository:
+
+- Edition 2026, the resolved compatibility profile, metadata schema 57,
+  canonical `WitnessArgs.input_type` placement, and the persisted identity cut;
+- the deployed public Registry read/write/source-package verification slice,
+  generalized artifact/reproduction/deployment/commitment support, the
+  publisher browser-session flow, and the isolated Pudge sandbox;
+- the Rust/shell/Node native tooling boundary and repository source policy;
+- the content-addressed bounded Fiber evidence/adapter improvements actually
+  recorded by the release line; and
+- the website, Wiki, release-note, and toolchain freshness closure enforced by
+  `dev` and `ci`.
+
+Three categories are deliberately not relabelled as completed 0.23 work:
+
+1. Deploying the canonical Registry Scripts on CKB mainnet, spending a real
+   publisher wallet, and publishing the first real non-CellScript commitment
+   need operator authority, funds, wallet approval, public-chain transactions,
+   confirmations, and configuration readback. They remain external operational
+   checkpoints rather than local implementation tasks.
+2. The complete pinned Fiber lifecycle/negative matrix and protocol-level
+   RGB++ promotion remain external evidence work. Representative devnet rows do
+   not close those matrices.
+3. The proposed Off-Chain Session Runtime compiler profile is retired rather
+   than shipped. Current Myelin no longer vendors CellScript: it invokes an
+   independently versioned compiler process through an attested adapter,
+   compiles production requests under `ckb`, keeps scheduler plans as sidecar
+   evidence, and forces `CkbStrict` for session/court paths. Moving
+   `MyelinExtended` semantics into CellScript would weaken that separation.
+
+The independent artifact checker, executable package tests, source maps,
+Myelin adapter handoff, and conditional Fiber/RGB++ promotion are specified in
+the [0.24 roadmap](CELLSCRIPT_0_24_ROADMAP.md). This scope decision follows the
+risk register's existing permission to cut the CellScript release when Myelin
+or external evidence slips; it does not claim that the deferred evidence
+passed.
 
 ## Completed Release-Line Foundation: Source Edition And Compatibility Axes
 
@@ -385,6 +428,12 @@ Source documents:
 
 ## Pillar 3: RGB++ And Fiber Integration
 
+**Final 0.23 disposition**: bounded adapter and content-addressed evidence
+hardening is retained; the complete external Fiber matrix and RGB++ protocol
+promotion move to the conditional evidence track in 0.24. This section records
+the original target and the remaining boundary, not a claim that every item
+below completed.
+
 0.22 shipped a narrow, no-profile Fiber path: the dedicated
 `fungible-type-group-v1` compiler entry, the `cellscript-fiber-adapter`, and
 bounded local-devnet scenarios. Phase 5 (gate promotion and optional hot
@@ -459,82 +508,41 @@ Source documents:
 
 ## Pillar 4: Off-Chain Session Runtime Profile (Myelin Alignment)
 
-The Myelin repository vendors a copy of CellScript at
-`/Users/arthur/RustroverProjects/Myelin/cellscript`, currently pinned at
-`0.21.1`. It has already diverged: the workspace members differ, the
-vendored fork is behind the 0.22 type/set surface, and Myelin's own session
-L2 plan calls for a court-facing `CkbStrict` VM profile and a finite session
-ledger whose disputed chunks project into CKB-compatible replay. 0.23
-absorbs the language-side needs of that plan so Myelin can stop carrying a
-private fork.
+**Final 0.23 disposition**: superseded and not implemented as a CellScript
+target profile. Myelin's current repository has already removed the vendored
+compiler architecture assumed by this proposal. Its `cellscript-adapter`
+attests an independently versioned external compiler, production requests use
+the CellScript `ckb` target, scheduler plans remain off-chain sidecars, and
+session/court execution is Myelin-owned `CkbStrict`. The 0.24 handoff therefore
+updates that adapter to the completed CellScript identity/checker boundary
+without introducing `MyelinExtended` semantics into CellScript.
 
-### Scope
+### Current Boundary
 
-Introduce an `Off-Chain Session Runtime` target profile in the CellScript
-compiler that gives Myelin (and any other bounded off-chain session runtime)
-a first-class, fail-closed compilation entry for session-shaped contracts.
-The profile is opt-in and does not change the default CKB profile.
+- CellScript owns source semantics, the `ckb` target contract, generated
+  artifact/metadata identities, and scheduler access templates.
+- Myelin owns its finite-session VM, authenticated state resolution, conflict
+  hashes, scheduler plans, finality, DA, projection receipts, and the
+  distinction between `CkbStrict` and `MyelinExtended` execution.
+- Scheduler binding names are diagnostics. Myelin resolves every final
+  conflict key from authenticated concrete Cells and validated type-script
+  identity.
+- Myelin compiler fixtures may live in Myelin, but compiler source and
+  workspace crates do not.
 
-The profile's initial deliverables:
+### 0.24 Handoff
 
-- A new target profile metadata entry, distinct from the existing `ckb`
-  profile, that records:
-  - `vm_profile` (e.g. `ckb_strict` vs `myelin_extended`);
-  - session commitment shape (`SessionId`, `ChunkCommitment`,
-    `DisputeBundle`, `SettlementIntent` references, not values);
-  - whether the artifact is court-facing or off-chain-only;
-  - whether concurrency is permitted.
-- A bounded concurrency primitive surface for the off-chain path only. This
-  is the *initial* concurrency support: a finite, scheduler-visible set of
-  session-scoped operations whose semantics are well-defined under Myelin's
-  session model (ordered chunk commitments, deterministic state-root
-  transitions, scheduler commitments). It is **not** a general
-  threading/actor model and does not enter the CKB profile.
-- A fail-closed rule: any artifact compiled under the Off-Chain Session
-  Runtime profile that is later projected into a CKB court path must
-  recompile under `ckb_strict` and must not carry `MyelinExtended` semantics
-  unless the projection layer explicitly proves compatibility.
-- Compiler metadata and `cellc explain-*` output that distinguish
-  court-facing from off-chain-only artifacts, so auditors can tell which
-  profile an artifact was built under.
+The next integration step is one explicit adapter-lock transition to the
+completed Edition 2026, metadata/profile, and canonical witness identities,
+followed by adoption of the independent artifact checker. No fallback reader,
+raw-witness alias, off-chain compiler target, or general concurrency syntax is
+added to make that transition easier.
 
-### Myelin Re-Convergence
-
-After the profile lands in upstream CellScript:
-
-- Myelin drops its vendored fork and consumes the published CellScript
-  release as a normal dependency.
-- The Myelin Session L2 P0 skeleton (`SessionOpen`, `ChunkCommitment`,
-  `DisputeBundle`, `SettlementIntent`) consumes the new profile instead of
-  patching the compiler.
-- The `CkbStrict` default for court-facing execution becomes a CellScript
-  profile fact, not a Myelin-local deviation.
-- Legacy group-source encoding and other deviations recorded in
-  `MYELIN_CKB_SEMANTIC_DEVIATIONS.md` move into the upstream profile contract
-  or are removed.
-
-### Acceptance Boundary
-
-- The Off-Chain Session Runtime profile is parser/type/lowering/metadata/
-  codegen/LSP/docs gated just like any other target profile.
-- The concurrency surface is bounded: every permitted concurrent operation
-  has a documented scheduler contract, a deterministic replay story, and a
-  fail-closed fallback when the host runtime does not provide it.
-- No `MyelinExtended` artifact may claim CKB court compatibility without an
-  explicit projection proof in metadata.
-- The Myelin Teeworlds fixture still finalises with both the static
-  committee and Tendermint and produces identical state-transition
-  commitments but different finality evidence.
-
-### Non-Goals
-
-- No general `channel` or session-type syntax in the core language. The 0.22
-  type/set roadmap already defers this; 0.23 keeps it deferred.
-- No independent app-chain features for Myelin: block production, P2P
-  gossip, fork choice, validator-set lifecycle, slashing, fee markets, or
-  app-chain governance stay out of scope, matching the Myelin Session L2
-  plan.
-- No implicit promotion of off-chain semantics onto the CKB court path.
+Acceptance belongs to the 0.24 roadmap: the adapter must verify exact compiler,
+source, artifact, metadata, source-map, lowering-record, and checker identities;
+court-facing requests stay on `ckb`; and the same deterministic session
+transition must retain consensus-independent state commitments with distinct
+finality evidence.
 
 Source documents:
 
@@ -542,6 +550,7 @@ Source documents:
 - [Myelin CKB semantic deviations](https://github.com/Myelin-Labs/Myelin/blob/main/MYELIN_CKB_SEMANTIC_DEVIATIONS.md)
 - [Myelin production gate](https://github.com/Myelin-Labs/Myelin/blob/main/MYELIN_PRODUCTION_GATE.md)
 - [0.22 type/set roadmap (session-type deferral)](CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md)
+- [0.24 roadmap](CELLSCRIPT_0_24_ROADMAP.md)
 
 ## Cross-Cutting Discipline
 
@@ -554,9 +563,9 @@ Source documents:
   working tree; if the production registry changes what gets regenerated,
   commit the result.
 - The wasm bundle size budget (600 KB gzip) still holds. Any compiler
-  surface added for the Off-Chain Session Runtime profile must be gated so
-  the `wasm32-unknown-unknown` playground build does not pull native-IO or
-  concurrency deps.
+  surface must be gated so the `wasm32-unknown-unknown` playground build does
+  not pull native-IO or host-runtime concurrency dependencies. The retired
+  Off-Chain Session Runtime proposal adds no 0.23 WASM surface.
 - Release notes continue to separate highlights, scope boundaries,
   validation commands, and detailed docs. Roadmap promises stay out of
   `docs/` and in `roadmap/`.
@@ -566,19 +575,20 @@ Source documents:
 
 ## Sequencing
 
-The four pillars are largely independent and can be tracked as parallel
-work streams. Suggested ordering for *release-blocking* slices:
+The final 0.23 sequence is:
 
-1. Pillar 2 (native tooling migration) lands first, because it changes the
-   shape of the gate itself and every later pillar's evidence runs through
-   that gate.
-2. Pillar 1 (registry production) lands next, because it unblocks real
-   package publishing for everything else.
-3. Pillar 4 (Off-Chain Session Runtime profile) lands next, because Myelin
-   re-convergence depends on it and it is the riskiest compiler change.
-4. Pillar 3 (RGB++ / Fiber) lands last, because it is the most
-   evidence-bound and the least likely to be fully "done" in one release;
-   partial closure with an explicit pending matrix is acceptable.
+1. native tooling migration and source-policy enforcement;
+2. Edition/profile/entry-ABI and persisted-identity closure;
+3. public Registry infrastructure, automatic source verification, artifact
+   evidence, publisher-session, Pudge, website, and documentation closure; and
+4. bounded Fiber evidence hardening without promoting an incomplete external
+   matrix.
+
+The proposed Off-Chain Session Runtime profile is not inserted after those
+steps. The current Myelin process-adapter architecture makes that compiler
+surface unnecessary. Independent artifact verification, executable package
+tests, source maps, the Myelin adapter handoff, and conditional Fiber/RGB++
+promotion start from the 0.24 roadmap.
 
 ## Risk Register
 
@@ -597,18 +607,20 @@ work streams. Suggested ordering for *release-blocking* slices:
 - **Native tooling serialization drift**. A subtle difference in
   evidence-report formatting breaks historical comparisons. Mitigation:
   byte-identical output requirements, stable schemas, and regression vectors.
-- **Off-Chain Session Runtime scope creep**. The profile can easily grow
-  into a general concurrency model. Mitigation: bounded scheduler-visible
-  operations only, fail-closed when the host does not provide them, no
-  core-language channel/session syntax.
+- **Off-Chain Session Runtime scope creep**. The proposed compiler profile
+  would duplicate Myelin-owned VM/session semantics and blur court-facing CKB
+  claims. Resolution: retire the profile proposal; keep production compilation
+  on `ckb`, keep `MyelinExtended` inside Myelin, and harden the external adapter
+  and independent checker boundary in 0.24.
 - **Fiber full matrix never closing**. The matrix is large and depends on an
   external Fiber binary. Mitigation: keep the harness standalone and
   non-gating until the matrix is complete; release 0.23 with an explicit
   pending matrix rather than blocking on it.
-- **Myelin re-convergence slip**. If the profile lands late, Myelin keeps
-  diverging. Mitigation: land the profile early in the cycle and cut a
-  CellScript release that Myelin can consume even if the other pillars slip
-  to 0.24.
+- **Myelin handoff drift**. Myelin's current adapter lock still identifies an
+  earlier reviewed compiler line while CellScript 0.23 changes edition,
+  schemas, profile identity, and witness placement. Mitigation: do not add
+  compatibility aliases to 0.23; coordinate one explicit adapter-lock and
+  fixture transition under the 0.24 checker contract.
 
 ## Roadmap Discipline
 

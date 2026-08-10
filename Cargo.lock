@@ -320,6 +320,7 @@ dependencies = [
  "base64 0.22.1",
  "blake2b_simd",
  "camino",
+ "cellscript-artifact-checker",
  "cellscript-ckb-adapter",
  "ckb-sdk",
  "ckb-std",
@@ -348,6 +349,17 @@ dependencies = [
  "toml 0.8.19",
  "tower-lsp",
  "unicode-width",
+]
+
+[[package]]
+name = "cellscript-artifact-checker"
+version = "0.22.0"
+dependencies = [
+ "blake2b_simd",
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

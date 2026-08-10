@@ -14,6 +14,18 @@ if [[ ! -x "$rust_objcopy" ]]; then
     exit 1
 fi
 
+sha256_file() {
+    local input_path="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$input_path" | awk '{ print $1 }'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$input_path" | awk '{ print $1 }'
+    else
+        printf 'SHA-256 tool not found; install sha256sum or shasum\n' >&2
+        return 1
+    fi
+}
+
 mkdir -p "$target_dir"
 target_dir="$(cd "$target_dir" && pwd)"
 unit_separator=$'\x1f'
@@ -46,7 +58,7 @@ if [[ -z "$canonical_relative_path" || ! -f "$canonical_artifact" ]]; then
     exit 1
 fi
 
-sha256_hash="$(shasum -a 256 "$canonical_artifact" | awk '{ print $1 }')"
+sha256_hash="$(sha256_file "$canonical_artifact")"
 artifact_bytes="$(wc -c < "$canonical_artifact" | tr -d ' ')"
 ckb_data_hash="$(CARGO_TARGET_DIR="$hash_target_dir" cargo run --quiet --locked \
     --manifest-path "$contract_dir/Cargo.toml" \
@@ -65,7 +77,7 @@ if [[ "$artifact_bytes" != "$expected_artifact_bytes" || "$sha256_hash" != "$exp
     exit 1
 fi
 
-host_sha256="$(shasum -a 256 "$host_artifact" | awk '{ print $1 }')"
+host_sha256="$(sha256_file "$host_artifact")"
 if [[ "$host_triple" == "x86_64-unknown-linux-gnu" ]]; then
     if ! cmp -s "$host_artifact" "$canonical_artifact"; then
         printf 'canonical x86_64 Linux rebuild does not match the tracked Registry Type Script artifact\n' >&2

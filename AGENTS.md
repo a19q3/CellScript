@@ -11,8 +11,10 @@ crate at the repo root is `cellscript` (workspace member `.`); a sibling crate
 `crates/cellscript-wasm` exposes the metadata-only compile path to browsers via
 `wasm-bindgen`; `crates/cellscript-ckb-adapter` is a CKB-side adapter; and
 `crates/cellscript-fiber-adapter` implements the bounded no-profile Fiber
-interoperability path. The website submodule under `website/` ships an Astro +
-WASM playground that loads the prebuilt bundle.
+interoperability path. `crates/cellscript-artifact-checker` independently
+validates the versioned lowering/source-map/ELF boundary without loading the
+compiler front end or code generator. The website submodule under `website/`
+ships an Astro + WASM playground that loads the prebuilt bundle.
 
 Version line: the workspace `Cargo.toml` pins `version = "0.22.0"`, Rust
 Edition 2024, and `rust-version = "1.97.1"`. `rust-toolchain.toml` and CI pin
@@ -88,9 +90,9 @@ require extra tooling.
 
 | Mode | What it does |
 | --- | --- |
-| `dev` | Explicit workspace-package formatting and checks for the compiler, Fiber adapter, CKB adapter, WASM crate, CKB SDK builder example, `cellscript-tools`, and the independent Registry verifier crate; reproducible Registry Type Script build and CKB-VM tests; native source-policy enforcement; strict backend audit (quick); syntax combo audit (quick); parity-gated skill-pack freshness; `git diff --check`. Run before committing. |
-| `ci` | `dev` coverage plus tests and clippy for every workspace package, `cellscript-tools`, the Registry verifier, and the Registry Type Script; Registry API tests plus Node API/verifier bundles; full package contents check, website build check (requires `npm`), shell syntax and native source-policy checks, parity-gated skill-pack freshness, and trailing-whitespace check. Run before claiming merge-readiness. |
-| `backend` | For IR / codegen / assembler / ABI / ELF / RISC-V changes: explicit workspace-package format checking, `cargo check --locked -p cellscript --all-targets`, `cargo test --locked -p cellscript`, `cargo clippy ... -D warnings`, strict backend audit (full, which itself fires the CKB stateful-scenarios harness via `cellscript_ckb_stateful_scenarios.sh`), `git diff --check`. |
+| `dev` | Explicit workspace-package formatting and checks for the compiler, standalone artifact checker, Fiber adapter, CKB adapter, WASM crate, CKB SDK builder example, `cellscript-tools`, and both independent Registry verifiers; checker mutation/Myelin handoff tests; simulator package scenarios; reproducible Registry Type Script build and CKB-VM tests; native source-policy enforcement; strict backend audit (quick); syntax combo audit (quick); parity-gated skill-pack freshness; `git diff --check`. Run before committing. |
+| `ci` | `dev` coverage plus tests and clippy for every workspace package, `cellscript-tools`, both Registry verifiers, and the Registry Type Script; simulator and CKB-VM package scenarios; Registry API tests plus Node API/verifier bundles; full package contents check, website build check (requires `npm`), shell syntax and native source-policy checks, parity-gated skill-pack freshness, and trailing-whitespace check. Run before claiming merge-readiness. |
+| `backend` | For IR / codegen / assembler / ABI / ELF / RISC-V changes: explicit workspace-package format checking, compiler/checker tests and clippy, both package-scenario backends, standalone-checker dependency enforcement, strict backend audit (full, which itself fires the CKB stateful-scenarios harness via `cellscript_ckb_stateful_scenarios.sh`), and `git diff --check`. |
 | `release` / `release-quick` | Everything `ci` does plus release-auxiliary checks (CKB acceptance, NovaSeal pinning, NovaSeal Rust tooling for RISC-V, fresh WASM + VS Code packaging, CKB tx measure tool, etc.) and the CKB acceptance harness (`scripts/ckb_cellscript_acceptance.sh`). These modes need the pinned sibling CKB checkout from `scripts/ckb_acceptance_pin.json`, the NovaSeal submodule, a sibling `ckb-sdk-rust` checkout at tag `v5.1.0`, Docker for the canonical Linux/amd64 WASM build, and `riscv64imac-unknown-none-elf` for NovaSeal verifier builds. Do not run them casually. |
 
 Focused commands are still useful while debugging — `cargo check --locked -p
@@ -102,6 +104,8 @@ Notes on Rust toolchain / target:
 
 - `rust-version = "1.97.1"` in every in-tree Cargo manifest;
   `rust-toolchain.toml` and CI select that exact toolchain.
+- Registry reproducibility accepts either GNU `sha256sum` or Perl `shasum` and
+  fails closed if neither SHA-256 tool is available.
 - The NovaSeal verifier (`proposals/novaseal/v0-mvp-skeleton/verifier/novaseal_btc_verifier_riscv`)
   builds with `--target riscv64imac-unknown-none-elf` in release mode.
   `scripts/cellscript_gate.sh` will not pass without it.
@@ -116,12 +120,14 @@ The root `Cargo.toml` declares a virtual workspace with these members:
 - `.` (the `cellscript` library + `cellc` bin at `src/main.rs`)
 - `crates/cellscript-ckb-adapter`
 - `crates/cellscript-fiber-adapter`
+- `crates/cellscript-artifact-checker`
 - `crates/cellscript-tools`
 - `crates/cellscript-wasm`
 - `examples/ckb-sdk-builder`
 
 Excluded from the workspace (still buildable through their own manifests):
 `contracts/registry-type-script`, `services/registry-verifier`,
+`services/registry-artifact-verifier`,
 `proposals/novaseal/v0-mvp-skeleton/{harness,verifier}` and
 `proposals/novaseal/agreement-profile-v0/harness/ckb_vm`. `tools/ckb-tx-measure`
 defines its own `[workspace]` (no parent) because it pulls `ckb-jsonrpc-types`
@@ -136,7 +142,8 @@ tooling source across the repository and initialized submodules.
 
 Features (root crate):
 
-- `default = ["cli", "lsp"]`
+- `default = ["cli", "lsp", "vm-runner"]` — native `cellc test` can execute
+  the authoritative CKB-VM scenario backend without an extra feature flag.
 - `cli` — pulls `clap`, `colored`, `env_logger`, `keyring`, `reqwest` (rustls),
   `ring`, `base64`. Native I/O, gated out of the wasm build.
 - `lsp` — pulls `tower-lsp` and `tokio` (full). Gated out of wasm.
@@ -249,6 +256,11 @@ Existing command families to be aware of:
 
 ## Testing approach
 
+- Package runtime fixtures use `cellscript-test-scenario-v1` JSON under
+  `tests/scenarios/`. `cellc test` requires `--backend simulator|ckb-vm|all`
+  unless `--no-run` is explicitly selected. Simulator evidence is
+  non-consensus; CKB-VM evidence is runtime-only, and the v1 runner does not
+  inject its local Cell bookkeeping into transaction syscalls.
 - Integration tests live in `tests/*.rs`. Per-version suites exist
   (`tests/v0_14.rs`, `v0_16.rs`, `v0_17.rs`, `v0_18.rs`) — when adding a
   versioned boundary, add it to the latest suite and keep prior ones intact

@@ -6,7 +6,7 @@ and the locks that decide whether a Cell may be spent. The compiler then turns
 that `.cell` source into ckb-vm compatible RISC-V assembly or ELF artifacts, and
 writes metadata that explains what was built.
 
-Last updated: 2026-07-31 (`nightly-0.23`).
+Last updated: 2026-08-10 (`nightly-0.24` development line).
 
 This wiki is a guided path. It starts with one compiled example, then slowly
 builds the mental model: source files, Cell effects, packages, the CKB profile,
@@ -39,6 +39,15 @@ After that, the wiki continues outward:
 - v0.23 makes Edition 2026 the single source-semantics epoch, composes it with
   independently versioned target/assurance/ABI/schema axes, and places
   CellScript entry payloads only in canonical `WitnessArgs.input_type`;
+- v0.23 also makes the browser playground recoverable: snapshots, last-valid
+  results, worker restart, Cell Flow, and Inspector views keep metadata work
+  auditable without claiming browser ELF generation;
+- v0.24 emits a canonical lowering record and source-to-artifact map alongside
+  each CKB ELF, then validates the four-file bundle with a bounded standalone
+  checker that does not load the compiler front end or code generator;
+- v0.24 makes `cellc test` run explicit simulator or CKB-VM scenarios with
+  exact runtime errors, backend-labelled evidence, local multi-step Cell
+  replacement, and conservative source-linked coverage;
 - production evidence proves more than compiler success;
 - editor tooling shortens the local loop;
 - bundled examples show the style in real contracts.
@@ -57,8 +66,10 @@ If you already know what you need, jump directly:
 - working in an editor: read [LSP and Tooling](Tutorial-07-LSP-and-Tooling.md);
 - learning by example: finish with [Bundled Example Contracts](Tutorial-08-Bundled-Example-Contracts.md);
 - driving `cellc` from an agent: read [Agentic Loops and cellscript-mcp](Tutorial-13-Agentic-Loops-and-cellscript-mcp.md).
+- checking structural artifacts and executable scenarios: read
+  [Verified Artifacts and Executable Tests](Tutorial-14-Verified-Artifacts-and-Executable-Tests.md).
 - using CellScript fungible assets with Fiber: read the
-  [bounded Fiber interoperability guide](https://github.com/CellScript-Labs/CellScript/blob/nightly-0.22/examples/fiber/README.md).
+  [bounded Fiber interoperability guide](https://github.com/CellScript-Labs/CellScript/blob/nightly-0.23/examples/fiber/README.md).
 - evaluating Spore or RGB++ integration: read
   [Spore and RGB++ Interoperability Boundaries](Spore-and-RGBPP-Interop-Boundaries.md).
 - spawning a pinned BIP340 verifier: read the
@@ -97,6 +108,9 @@ If you already know what you need, jump directly:
 13. [Agentic Loops and cellscript-mcp](Tutorial-13-Agentic-Loops-and-cellscript-mcp.md):
    drive the read-oriented compiler surface from an automated writer in a
    write -> check -> explain -> fix loop.
+14. [Verified Artifacts and Executable Tests](Tutorial-14-Verified-Artifacts-and-Executable-Tests.md):
+   independently check a CKB ELF bundle, run simulator and CKB-VM package
+   scenarios, and keep structural, runtime, and chain evidence separate.
 
 After the numbered path, use [Cookbook Recipes](Cookbook-Recipes.md) for small
 patterns and keep [CKB Glossary](CKB-Glossary.md) nearby for terminology.
@@ -146,28 +160,35 @@ cargo run --locked --bin cellc -- examples/token.cell --target riscv64-elf --tar
 cargo run --locked --bin cellc -- verify-artifact /tmp/token.elf --expect-target-profile ckb
 ```
 
-The compile step writes two files:
+The compile step writes four files:
 
 ```text
 /tmp/token.elf
 /tmp/token.elf.meta.json
+/tmp/token.elf.lowering.json
+/tmp/token.elf.sourcemap.json
 ```
 
-The ELF is the executable artifact. The metadata sidecar is the explanation:
-where the source came from, which profile was used, what schema was produced,
-and which obligations still need review.
+The ELF is the executable artifact. Metadata explains where the source came
+from, which profile was used, what schema was produced, and which obligations
+still need review. The lowering record exposes the bounded structural contract,
+and the source map binds it to final instruction ranges.
 
 ## Before You Call It Production
 
 `cellc verify-artifact` is an important first check, but it is not the whole
-story. It proves that an artifact and its metadata agree. It does not prove that
-a concrete CKB transaction can spend the right inputs, serialize the right
-witness, fit capacity rules, pass dry-run, and commit.
+story. For an ELF it proves that the four-file bundle agrees and that the
+standalone checker accepted the declared structural contract. It does not prove
+complete source-to-machine semantic equivalence or that a concrete CKB
+transaction can spend the right inputs, serialize the right witness, fit
+capacity rules, pass dry-run, and commit.
 
 Keep two levels separate:
 
-- compiler evidence: source, artifact, metadata, and selected policy flags
-  agree;
+- structural compiler evidence: source, artifact, metadata, lowering record,
+  source map, and selected checker policy agree;
+- runtime evidence: an explicitly named simulator or CKB-VM backend executed
+  the scenario, with the evidence tier retained;
 - CKB chain evidence: builder-generated transactions were checked on a local CKB
   chain with cycles, transaction size, capacity, and positive/negative behavior
   evidence.

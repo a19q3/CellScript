@@ -15,6 +15,8 @@ import { executeVerifierSubprocess } from "./verifier-subprocess";
 const databaseUrl = requiredEnv("DATABASE_URL");
 const objectRoot = resolve(requiredEnv("REGISTRY_OBJECTS_DIR"));
 const verifierBinary = process.env["REGISTRY_VERIFIER_BINARY"]?.trim() || "/usr/local/bin/cellscript-registry-verify";
+const artifactVerifierBinary = process.env["REGISTRY_ARTIFACT_VERIFIER_BINARY"]?.trim()
+  || "/usr/local/bin/cellscript-registry-artifact-verify";
 const workerId = process.env["REGISTRY_VERIFIER_WORKER_ID"]?.trim() || `${hostname()}:${process.pid}:${randomUUID()}`;
 const pollIntervalMs = integerEnv("REGISTRY_VERIFIER_POLL_INTERVAL_MS", 2_000, 100, 60_000);
 const jobTimeoutSeconds = integerEnv("REGISTRY_VERIFIER_JOB_TIMEOUT_SECONDS", 180, 5, 1_800);
@@ -49,6 +51,7 @@ async function initialize(): Promise<void> {
   await access(snapshotRoot, fsConstants.R_OK);
   await access(packageRoot, fsConstants.R_OK | fsConstants.W_OK);
   await access(verifierBinary, fsConstants.X_OK);
+  await access(artifactVerifierBinary, fsConstants.X_OK);
   await mkdir(dirname(sharedHeartbeatFile), { recursive: true, mode: 0o750 });
   await store.healthCheck();
   await store.getVerificationQueueMetrics();
@@ -112,7 +115,9 @@ async function processJob(job: VerificationJobRecord): Promise<void> {
           kind: "verified_build",
           producer: result.compiler_version
             ? `cellscript-registry-verifier/${result.compiler_version}`
-            : `cellscript-registry-verifier/${job.artifact.profile}`,
+            : result.checker_version
+              ? `cellscript-registry-artifact-verifier/${result.checker_version}`
+              : `cellscript-registry-verifier/${job.artifact.profile}`,
           generated_at: new Date().toISOString(),
           verification_status: "passed",
           verification_level: result.verification_level,
@@ -122,6 +127,9 @@ async function processJob(job: VerificationJobRecord): Promise<void> {
           ...(result.artifact_hash ? { artifact_hash: result.artifact_hash } : {}),
           metadata_hash: result.metadata_hash,
           ...(result.compiler_version ? { compiler_version: result.compiler_version } : {}),
+          ...(result.checker_version ? { checker_version: result.checker_version } : {}),
+          ...(result.checker_policy_schema ? { checker_policy_schema: result.checker_policy_schema } : {}),
+          ...(result.checker_report_hash ? { checker_report_hash: result.checker_report_hash } : {}),
           artifact_format: result.artifact_format,
           snapshot_hash: job.snapshot_hash,
           verification_job_id: job.id,
@@ -187,7 +195,7 @@ async function processJob(job: VerificationJobRecord): Promise<void> {
 
 interface BuildVerificationResult {
   status: "passed";
-  verification_level: "compiled" | "hash_bound" | "evidence_required";
+  verification_level: "compiled" | "hash_bound" | "evidence_required" | "structurally_verified";
   artifact_hash?: string;
   metadata_hash: string;
   compiler_version?: string;
@@ -195,6 +203,9 @@ interface BuildVerificationResult {
   manifest_hash: string;
   compatibility_profile_hash?: string;
   artifact_format: string;
+  checker_version?: string;
+  checker_policy_schema?: string;
+  checker_report_hash?: string;
 }
 
 async function runBuildVerification(job: VerificationJobRecord, version: PackageVersionRecord): Promise<BuildVerificationResult> {
@@ -247,7 +258,7 @@ async function runBuildVerification(job: VerificationJobRecord, version: Package
   let result: Awaited<ReturnType<typeof executeVerifierSubprocess>>;
   try {
     result = await executeVerifierSubprocess(
-      verifierBinary,
+      job.artifact.profile === "ckb_executable" ? artifactVerifierBinary : verifierBinary,
       verifierArgs,
       {
         cwd: "/tmp",
@@ -297,12 +308,21 @@ async function runBuildVerification(job: VerificationJobRecord, version: Package
       ? { compatibility_profile_hash: optionalHash(output, "compatibility_profile_hash")! }
       : {}),
     artifact_format: requiredOutputString(output, "artifact_format", 80),
+    ...(safeString(output["checker_version"]) ? { checker_version: requiredOutputString(output, "checker_version", 80) } : {}),
+    ...(safeString(output["checker_policy_schema"])
+      ? { checker_policy_schema: requiredOutputString(output, "checker_policy_schema", 120) }
+      : {}),
+    ...(optionalHash(output, "checker_report_hash") ? { checker_report_hash: optionalHash(output, "checker_report_hash")! } : {}),
   };
   requireSameHash(parsed.source_hash, job.source_hash, "source_hash");
   requireSameHash(parsed.manifest_hash, job.manifest_hash, "manifest_hash");
   if (job.compatibility_profile_hash) {
     if (!parsed.compatibility_profile_hash) throw new VerificationRejected("compatibility_profile_hash_missing", "verifier omitted compatibility_profile_hash");
     requireSameHash(parsed.compatibility_profile_hash, job.compatibility_profile_hash, "compatibility_profile_hash");
+  }
+  if (parsed.verification_level === "structurally_verified"
+    && (!parsed.checker_version || !parsed.checker_policy_schema || !parsed.checker_report_hash)) {
+    throw new VerificationRejected("checker_identity_missing", "artifact verifier omitted checker version, policy, or report hash");
   }
   return parsed;
 }
@@ -326,7 +346,7 @@ function optionalHash(value: Record<string, unknown>, key: string): string | und
 
 function requiredVerificationLevel(value: Record<string, unknown>): BuildVerificationResult["verification_level"] {
   const level = requiredOutputString(value, "verification_level", 80);
-  if (level !== "compiled" && level !== "hash_bound" && level !== "evidence_required") {
+  if (level !== "compiled" && level !== "hash_bound" && level !== "evidence_required" && level !== "structurally_verified") {
     throw new Error("CellScript verifier verification_level is not recognised");
   }
   return level;

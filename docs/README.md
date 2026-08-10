@@ -33,8 +33,16 @@ drafts. Released versions should use non-draft filenames.
   and live-registry line.
 - `docs/releases/CELLSCRIPT_0_21_RELEASE_NOTES.md` records semantic closure,
   authenticated evidence, the canonical CLI tree, MCP, and skill-pack scope.
-- `docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md` records the current typed
-  language, diagnostics, metadata schema 55, and bounded Fiber boundary.
+- `docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md` is the final stable 0.22
+  record for its typed language, diagnostics, metadata schema 55, and bounded
+  Fiber boundary.
+- `docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md` is the active development
+  record for Edition 2026, resolved compatibility profiles, metadata schema
+  57, recoverable browser tooling, and the Registry publisher-session flow.
+- `docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md` is the implementation
+  candidate record for metadata schema 58, independently checked ELF/lowering
+  evidence, executable package scenarios, and the least-privilege Registry
+  artifact worker.
 
 Release candidates and planning notes should not live here unless they are the
 final release record.
@@ -62,7 +70,8 @@ High-value active references include:
 - `CELLSCRIPT_CELLFABRIC_BRIDGE.md`
 - `CELLSCRIPT_PACKAGE_PROVENANCE_AND_DEPLOYMENT_IDENTITY.md`
 - `CELLSCRIPT_REGISTRY_PRODUCTION_BOUNDARY_ADR.md` for the accepted production
-  boundary of the JoyID-rooted public registry write/read architecture
+  boundary of the wallet-rooted public registry write/read architecture and
+  isolated Pudge testnet sandbox
 - `../services/registry-api/README.md` for the Cloudflare Workers + R2 + Neon
   write API implementation and deployment checklist
 - `CELLSCRIPT_COLLECTIONS_SUPPORT_MATRIX.md`
@@ -71,6 +80,9 @@ High-value active references include:
 - `CELLSCRIPT_LINEAR_OWNERSHIP.md`
 - `CELLSCRIPT_OUTPUT_BINDINGS.md`
 - `CELLSCRIPT_RUNTIME_ERROR_CODES.md`
+- `CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md`
+- `CELLSCRIPT_EXECUTABLE_TEST_SCENARIOS.md`
+- `CELLSCRIPT_MYELIN_0_24_HANDOFF.md`
 - `CELLSCRIPT_COMPILER_ERROR_CODES.md`
 - `CELLSCRIPT_SCHEDULER_HINTS.md`
 - `../examples/fiber/README.md` for the bounded 0.22 Fiber interoperability
@@ -130,6 +142,11 @@ to current branch-specific evidence or forward design:
   capability, and payload-enum design/implementation record
 - `../roadmap/CELLSCRIPT_0_22_FIBER_NATIVE_SUPPORT_PLAN.md` for the implemented
   bounded Fiber path and its still-pending production evidence
+- `../roadmap/CELLSCRIPT_0_23_ROADMAP.md` for the frozen Edition/ABI, Registry,
+  native-tooling, and bounded ecosystem-evidence implementation scope
+- `../roadmap/CELLSCRIPT_0_24_ROADMAP.md` for the implemented core independent
+  artifact checker, executable package tests, and source maps, plus the
+  explicitly pending external Myelin/Fiber/RGB++ evidence checkpoints
 
 ## Archive
 

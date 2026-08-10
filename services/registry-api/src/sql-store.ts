@@ -1196,6 +1196,7 @@ export class SqlRegistryStore implements RegistryStore {
                verification_status = case
                  when $4 = 'reproduced_build' then 'verified'
                  when $4 = 'verified_build' and $5 = 'compiled' then 'verified'
+                 when $4 = 'verified_build' and $5 = 'structurally_verified' then 'verified'
                  when $4 = 'verified_build' and $5 = 'hash_bound' then 'hash_bound'
                  when $4 = 'verified_build' and $5 = 'evidence_required' then 'evidence_required'
                  else verification_status
@@ -1898,6 +1899,7 @@ export class SqlRegistryStore implements RegistryStore {
                end,
                verification_status = case
                  when $4 = 'compiled' then 'verified'
+                 when $4 = 'structurally_verified' then 'verified'
                  when $4 = 'hash_bound' then 'hash_bound'
                  when $4 = 'evidence_required' then 'evidence_required'
                  else verification_status

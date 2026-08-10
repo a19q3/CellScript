@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- Implement the 0.24 trust-closure core. CKB ELF builds now emit canonical
+  `cellscript-verified-lowering-record-v1` and
+  `cellscript-source-artifact-map-v1` sidecars, bound by metadata schema 58 and
+  checked by the compiler-independent, budgeted
+  `cellscript-artifact-checker`. The checker independently parses static
+  ELF64/RISC-V layout, decodes the emitted instruction/call/branch surface,
+  checks CFG reachability, frames and stack restoration, ABI/ProofPlan/syscall
+  contracts, block digests, source ranges, and cross-file identities with
+  stable `V2400`-`V2418` rejection codes and deterministic mutations. Package
+  the checker independently and require checker-first crates.io publication
+  before the matching compiler crate. Extend
+  `verify-artifact` with separate binding, structural, lowering-record,
+  CKB-VM, chain, and semantic-equivalence states. Make `cellc test` require an
+  explicit simulator/CKB-VM backend for execution and add versioned,
+  fail-closed scenarios with exact runtime errors, local multi-step live-Cell
+  replacement, source-linked coverage, cycle/size/capacity limits, and exact
+  artifact/checker bindings. Add a least-privilege Registry artifact worker
+  whose production graph excludes the compiler. Freeze the CellScript side of
+  the Myelin handoff without a new profile or raw-witness alias; keep external
+  Myelin adoption and the incomplete Fiber/RGB++ matrices explicitly pending.
+- Freeze the 0.23 implementation scope around Edition 2026 and its resolved
+  profile/entry identities, the deployed Registry and publisher-session path,
+  native gate tooling, the recoverable website workbench, and the bounded Fiber
+  evidence actually obtained on this line. Keep mainnet Registry Script
+  activation, publisher-owned wallet adoption, and incomplete Fiber/RGB++
+  matrices as explicit external checkpoints. Retire the proposed CellScript
+  Off-Chain Session Runtime target: current Myelin uses an attested external
+  compiler process, production requests stay on `ckb`, and Myelin-owned
+  extended semantics remain outside the compiler. Add the 0.24 trust-closure
+  roadmap for an independent bounded artifact checker, executable package
+  tests, source maps, the Myelin adapter handoff, and conditional ecosystem
+  evidence promotion.
 - Make Registry chain confirmation compatible with the standard CKB v0.207.0
   RPC schema by resolving a live Cell's committed block through
   `get_transaction.tx_status` instead of depending on a proxy-specific
