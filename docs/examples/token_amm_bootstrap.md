@@ -183,9 +183,13 @@ which is the fillable skeleton a Rust builder can attach to the candidate
 transaction after replacing placeholders with concrete cell, capacity, and
 dry-run facts.
 
-`cellc entry-witness` emits the raw `_cellscript_entry` payload. Do not wrap it
-in `WitnessArgs.input_type` unless the CellScript source explicitly reads that
-separate CKB witness surface.
+`cellc entry-witness` emits the raw `_cellscript_entry` payload, not a complete
+transaction witness. For the canonical
+`cellscript-witnessargs-input-type-v2` placement ABI, parse or create the
+selected script-group `WitnessArgs`, preserve its `lock` and `output_type`
+fields, and place the payload in `input_type` before any lock-script signer
+runs. Never submit the raw `CSARGv1` payload as a transaction witness and never
+mutate `input_type` after signing.
 
 ## ProofPlan And Builder Assumptions
 

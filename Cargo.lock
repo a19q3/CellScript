@@ -383,6 +383,7 @@ name = "cellscript-ckb-sdk-builder-example"
 version = "0.1.0"
 dependencies = [
  "cellscript-ckb-adapter",
+ "ckb-types",
 ]
 
 [[package]]
