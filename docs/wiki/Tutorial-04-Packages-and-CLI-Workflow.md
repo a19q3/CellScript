@@ -133,9 +133,22 @@ Useful flags:
 cellc build --target riscv64-asm
 cellc build --target riscv64-elf
 cellc build --target-profile ckb
+cellc build --locked
+cellc build --frozen
+cellc build --offline
+cellc build --features audit,metrics
+cellc build --all-features
+cellc build --no-default-features
+cellc build --environment mainnet
 cellc build --production
 cellc build --json
 ```
+
+Dependency builds are lock-authoritative. Run `cellc lock` or `cellc update`
+when dependency selection is intended; `build`, `check`, and `test` otherwise
+consume only the existing graph. `--locked` makes that assertion explicit,
+`--frozen` also disables network access and every lockfile write, and
+`--offline` permits only already materialized exact source pins.
 
 `build` reads `Cell.toml`, compiles the current package entry, and writes the
 artifact plus metadata sidecar under the configured output directory. A CKB
@@ -330,7 +343,7 @@ cellc add my_lib --path ../my_lib
 graph and write `Cell.lock`, run:
 
 ```bash
-cellc install
+cellc lock
 ```
 
 You can also add and lock a local dependency in one command:
@@ -346,11 +359,10 @@ cellc add math --git https://example.com/math.git
 cellc install math --git https://example.com/math.git
 ```
 
-For reviewable package identity, prefer a manifest-level detailed dependency
-with `rev = "<full-commit-hash>"`, then run `cellc install` so `Cell.lock`
-records the resolved package source. Branch, tag, and default-branch Git
-dependencies are easier to move without changing `Cell.toml`, so treat them as
-development convenience rather than production evidence.
+For reviewable package identity, a manifest may name a branch or tag during
+development, but `cellc lock`/`update` immediately normalizes it to a full
+40-hex commit and immutable cache. A later branch movement does not affect
+builds until the next explicit repin.
 
 Remove it:
 
@@ -358,8 +370,70 @@ Remove it:
 cellc remove my_lib
 ```
 
-`install`, `update`, and normal dependency removal refresh the lockfile so
+`add`, `install`, `update`, and normal dependency removal refresh the lockfile so
 direct and transitive local path dependencies stay consistent.
+
+`Cell.lock` v3 is a graph rather than a flat list. It binds the exact root
+manifest digest, each dependency manifest and whole source tree, outgoing
+alias-to-node edges, feature/test modes, and named CKB environments. Local
+projects should commit it to version control: the lockfile is reviewed build
+input, not a local cache, and normal build/check/test commands do not silently
+repin it. Dependency aliases can differ from declared package names:
+
+```toml
+[dependencies.math]
+package = "canonical_math"
+version = "^1.2.0"
+```
+
+Optional dependencies are activated through versioned feature roots:
+
+```toml
+[dependencies.audit]
+version = "^1.0.0"
+optional = true
+
+[features]
+default = []
+auditing = ["dep:audit"]
+```
+
+`[dev_dependencies]` are present only in the `cellc test` graph. Feature
+cycles, unknown features, alias collisions, and unknown `dep:` targets fail
+closed. `[build.dependencies]` is reserved until CellScript has an isolated
+build-script execution contract.
+
+For chain-dependent selection, declare the chain, not an implicit label:
+
+```toml
+[environments.mainnet]
+chain_id = "ckb"
+genesis_hash = "0x...32-byte-genesis-hash..."
+
+[dependency_overrides.mainnet.registry_types]
+version = "=2.0.0"
+namespace = "cellscript"
+```
+
+When overrides exist, `--environment mainnet` is mandatory. The environment
+root in `Cell.lock` binds both `chain_id` and genesis hash.
+
+Advanced ecosystems may declare a hash-pinned bounded resolver. It runs only
+during explicit lock/update, without a shell or inherited environment, and
+must normalize its versioned JSON response to an exact Registry version or Git
+commit. Locked builds never invoke it:
+
+```toml
+[resolvers.vendor]
+command = "/absolute/path/to/vendor-resolver"
+sha256 = "sha256:<resolver-executable-digest>"
+args = ["resolve"]
+
+[dependencies.math]
+package = "canonical_math"
+version = "^1.2.0"
+resolver = "vendor"
+```
 
 ## Registry Resolver Boundaries
 
@@ -377,8 +451,10 @@ external CKB tooling artifacts such as bootstrapper outputs. Resolver profiles
 must stay narrower: an object can be discovered without being installable by
 `cellc add`.
 
-That means registry resolution is stricter than discovery. `cellc add` and
-`cellc install` accept only the `cellscript_source` + `dependency` contract.
+That means registry resolution is stricter than discovery. The versioned
+`cellscript-registry-profile-catalog-v1` marks only the
+`cellscript_source` + `dependency` contract as dependency-resolving. `cellc add`
+and `cellc install` reject every other profile.
 Other profiles use explicit `cellc artifact` commands and fail closed on
 unknown fields, identities, roles, or lifecycle state:
 

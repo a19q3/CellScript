@@ -1,8 +1,12 @@
 use crate::edition::{CellScriptEdition, CURRENT_EDITION};
 use crate::error::{CompileError, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use sha2::{Digest, Sha256};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub mod registry;
 
@@ -15,6 +19,14 @@ pub struct PackageManifest {
     pub dependencies: HashMap<String, Dependency>,
     #[serde(default)]
     pub dev_dependencies: HashMap<String, Dependency>,
+    #[serde(default)]
+    pub features: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub environments: BTreeMap<String, CkbEnvironment>,
+    #[serde(default)]
+    pub dependency_overrides: BTreeMap<String, BTreeMap<String, Dependency>>,
+    #[serde(default)]
+    pub resolvers: BTreeMap<String, ResolverConfig>,
     #[serde(default)]
     pub build: BuildConfig,
     #[serde(default)]
@@ -128,8 +140,28 @@ fn canonical_path(path: &Path) -> Result<PathBuf> {
     std::fs::canonicalize(path).map_err(|e| CompileError::without_span(format!("failed to canonicalize '{}': {}", path.display(), e)))
 }
 
+fn relative_path(from: &Path, to: &Path) -> Option<PathBuf> {
+    let from_components: Vec<_> = from.components().collect();
+    let to_components: Vec<_> = to.components().collect();
+    let common = from_components.iter().zip(&to_components).take_while(|(left, right)| left == right).count();
+    if common == 0 {
+        return None;
+    }
+    let mut relative = PathBuf::new();
+    for _ in common..from_components.len() {
+        relative.push("..");
+    }
+    for component in &to_components[common..] {
+        relative.push(component.as_os_str());
+    }
+    Some(if relative.as_os_str().is_empty() { PathBuf::from(".") } else { relative })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
+// Keep the public manifest API and untagged TOML representation source-compatible;
+// boxing Detailed would force every programmatic manifest author to wrap it.
+#[allow(clippy::large_enum_variant)]
 pub enum Dependency {
     Simple(String),
     Detailed(DetailedDependency),
@@ -141,6 +173,14 @@ pub struct DetailedDependency {
     pub version: String,
     #[serde(default)]
     pub namespace: Option<String>,
+    /// Declared package name when the dependency's local alias differs.
+    #[serde(default)]
+    pub package: Option<String>,
+    /// Name of a bounded external resolver declared in `[resolvers.<name>]`.
+    /// It is invoked only by explicit lock/update operations and is normalized
+    /// to an ordinary immutable Registry or Git source before Cell.lock is written.
+    #[serde(default)]
+    pub resolver: Option<String>,
     #[serde(default)]
     pub git: Option<String>,
     #[serde(default)]
@@ -165,6 +205,55 @@ pub struct DetailedDependency {
     #[serde(default, skip_serializing_if = "is_false")]
     pub allow_quarantined: bool,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolverConfig {
+    pub command: String,
+    pub sha256: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalResolverRequest<'a> {
+    schema: &'static str,
+    alias: &'a str,
+    package: &'a str,
+    version_requirement: &'a str,
+    environment: Option<ExternalResolverEnvironment<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalResolverEnvironment<'a> {
+    name: &'a str,
+    chain_id: &'a str,
+    genesis_hash: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalResolverResponse {
+    schema: String,
+    dependency: ExternalResolvedDependency,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalResolvedDependency {
+    package: String,
+    version: String,
+    #[serde(default)]
+    namespace: Option<String>,
+    #[serde(default)]
+    git: Option<String>,
+    #[serde(default)]
+    rev: Option<String>,
+}
+
+const EXTERNAL_RESOLVER_REQUEST_SCHEMA: &str = "cellscript-dependency-resolver-request-v1";
+const EXTERNAL_RESOLVER_RESPONSE_SCHEMA: &str = "cellscript-dependency-resolver-response-v1";
+const EXTERNAL_RESOLVER_TIMEOUT: Duration = Duration::from_secs(10);
+const EXTERNAL_RESOLVER_MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
 
 fn is_false(value: &bool) -> bool {
     !*value
@@ -248,20 +337,84 @@ pub struct CkbCellDepConfig {
     pub type_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CkbEnvironment {
+    pub chain_id: String,
+    pub genesis_hash: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DependencyScope {
+    Runtime,
+    Test,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolutionOptions {
+    pub scope: DependencyScope,
+    pub features: BTreeSet<String>,
+    pub all_features: bool,
+    pub no_default_features: bool,
+    pub environment: Option<String>,
+    pub offline: bool,
+}
+
+impl Default for ResolutionOptions {
+    fn default() -> Self {
+        Self {
+            scope: DependencyScope::Runtime,
+            features: BTreeSet::new(),
+            all_features: false,
+            no_default_features: false,
+            environment: None,
+            offline: false,
+        }
+    }
+}
+
+thread_local! {
+    static RESOLUTION_OPTIONS_STACK: RefCell<Vec<ResolutionOptions>> = const { RefCell::new(Vec::new()) };
+}
+
+pub fn with_resolution_options<T>(options: ResolutionOptions, operation: impl FnOnce() -> T) -> T {
+    RESOLUTION_OPTIONS_STACK.with(|stack| stack.borrow_mut().push(options));
+    struct PopResolutionOptions;
+    impl Drop for PopResolutionOptions {
+        fn drop(&mut self) {
+            RESOLUTION_OPTIONS_STACK.with(|stack| {
+                stack.borrow_mut().pop();
+            });
+        }
+    }
+    let _guard = PopResolutionOptions;
+    operation()
+}
+
+pub(crate) fn active_resolution_options(scope: DependencyScope) -> ResolutionOptions {
+    RESOLUTION_OPTIONS_STACK.with(|stack| {
+        let mut options = stack.borrow().last().cloned().unwrap_or_default();
+        options.scope = scope;
+        options
+    })
+}
+
 pub struct PackageManager {
     root: PathBuf,
-    resolved: HashMap<String, ResolvedPackage>,
+    resolved: BTreeMap<String, ResolvedPackage>,
+    root_dependencies: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ResolvedPackage {
+    pub node_id: String,
     pub name: String,
     pub version: String,
     pub path: PathBuf,
     pub source: PackageSource,
-    pub dependencies: Vec<String>,
+    pub dependencies: BTreeMap<String, String>,
     pub namespace: Option<String>,
     pub source_hash: Option<String>,
+    pub manifest_digest: String,
 }
 
 /// Emit yank-related notices to stderr during registry resolution.
@@ -283,11 +436,12 @@ fn emit_yank_notices(namespace: &str, name: &str, requested: &str, selected: &st
     // Prefer the publisher-declared replacement (`replaced_by`) when present;
     // otherwise fall back to the latest non-yanked version.
     let suggestion = entry.replaced_by.clone().or_else(|| {
-        index.versions.iter().filter(|v| !v.yanked && v.version != selected).map(|v| v.version.clone()).max_by(|a, b| {
-            let a_parts = parse_numeric_version(a);
-            let b_parts = parse_numeric_version(b);
-            compare_version_tuples(&a_parts, &b_parts)
-        })
+        index
+            .versions
+            .iter()
+            .filter(|v| !v.yanked && v.version != selected)
+            .map(|v| v.version.clone())
+            .max_by(|a, b| compare_semver(a, b))
     });
     let reason = entry.yanked_reason.as_deref().map(|r| format!(" (reason: {})", r)).unwrap_or_default();
     match suggestion {
@@ -331,20 +485,13 @@ fn registry_resolution_blocked_error(
     ))
 }
 
-fn parse_numeric_version(version: &str) -> Vec<u32> {
-    let core = version.split_once('-').map(|(c, _)| c).unwrap_or(version);
-    core.split('.').filter_map(|p| p.parse().ok()).collect()
-}
-
-fn compare_version_tuples(a: &[u32], b: &[u32]) -> std::cmp::Ordering {
-    let max_len = a.len().max(b.len());
-    for i in 0..max_len {
-        match a.get(i).cmp(&b.get(i)) {
-            std::cmp::Ordering::Equal => continue,
-            other => return other,
-        }
+fn compare_semver(left: &str, right: &str) -> std::cmp::Ordering {
+    match (semver::Version::parse(left), semver::Version::parse(right)) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Less,
+        (Err(_), Err(_)) => left.cmp(right),
     }
-    std::cmp::Ordering::Equal
 }
 
 #[derive(Debug, Clone)]
@@ -362,11 +509,168 @@ pub enum VersionReq {
     Any,
 }
 
+fn manifest_digest(bytes: &[u8]) -> String {
+    format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+}
+
+pub fn compute_manifest_digest(root: &Path) -> Result<String> {
+    let path = root.join("Cell.toml");
+    let bytes = std::fs::read(&path)
+        .map_err(|error| CompileError::without_span(format!("failed to read manifest '{}': {}", path.display(), error)))?;
+    Ok(manifest_digest(&bytes))
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
+fn read_bounded_resolver_output(path: &Path) -> Result<Vec<u8>> {
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() > EXTERNAL_RESOLVER_MAX_OUTPUT_BYTES {
+        return Err(CompileError::without_span(format!("external resolver output '{}' exceeds 1 MiB", path.display())));
+    }
+    Ok(std::fs::read(path)?)
+}
+
+fn sanitize_node_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| if character.is_ascii_alphanumeric() || character == '-' || character == '_' { character } else { '_' })
+        .take(80)
+        .collect()
+}
+
+fn package_node_id(package: &ResolvedPackage, options: &ResolutionOptions) -> String {
+    let source = match &package.source {
+        PackageSource::Local(path) => format!("path:{}", path.to_string_lossy().replace('\\', "/")),
+        PackageSource::Git { url, revision } => format!("git:{url}#{revision}"),
+        PackageSource::Registry { registry, namespace, version, revision, .. } => {
+            format!("registry:{registry}:{namespace}/{}@{version}#{revision}", package.name)
+        }
+    };
+    let mut features: Vec<_> = options.features.iter().cloned().collect();
+    if options.all_features {
+        features.push("*".to_string());
+    }
+    if !options.no_default_features {
+        features.push("default".to_string());
+    }
+    features.sort();
+    let environment = options.environment.as_deref().unwrap_or("default");
+    format!("{}@{}|{}|env={}|features={}", package.name, package.version, source, environment, features.join(","))
+}
+
+fn dependency_package_name(alias: &str, dependency: &Dependency) -> String {
+    match dependency {
+        Dependency::Detailed(detail) => detail.package.clone().unwrap_or_else(|| alias.to_string()),
+        Dependency::Simple(_) => alias.to_string(),
+    }
+}
+
+fn dependency_is_optional(dependency: &Dependency) -> bool {
+    matches!(dependency, Dependency::Detailed(detail) if detail.optional)
+}
+
+fn dependency_resolution_options(dependency: &Dependency, parent: &ResolutionOptions) -> ResolutionOptions {
+    let mut options = ResolutionOptions {
+        scope: DependencyScope::Runtime,
+        environment: parent.environment.clone(),
+        offline: parent.offline,
+        ..ResolutionOptions::default()
+    };
+    if let Dependency::Detailed(detail) = dependency {
+        options.features.extend(detail.features.iter().cloned());
+        options.no_default_features = !detail.default_features;
+    }
+    options
+}
+
+fn active_optional_dependencies(manifest: &PackageManifest, options: &ResolutionOptions) -> Result<BTreeSet<String>> {
+    let mut requested = options.features.clone();
+    if options.all_features {
+        requested.extend(manifest.features.keys().filter(|name| name.as_str() != "default").cloned());
+    }
+    if !options.no_default_features && manifest.features.contains_key("default") {
+        requested.insert("default".to_string());
+    }
+
+    let mut active_dependencies = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    let mut visiting = Vec::new();
+    for feature in requested {
+        expand_feature(manifest, &feature, &mut visited, &mut visiting, &mut active_dependencies)?;
+    }
+    Ok(active_dependencies)
+}
+
+fn expand_feature(
+    manifest: &PackageManifest,
+    feature: &str,
+    visited: &mut BTreeSet<String>,
+    visiting: &mut Vec<String>,
+    active_dependencies: &mut BTreeSet<String>,
+) -> Result<()> {
+    if visited.contains(feature) {
+        return Ok(());
+    }
+    if visiting.iter().any(|candidate| candidate == feature) {
+        let mut cycle = visiting.clone();
+        cycle.push(feature.to_string());
+        return Err(CompileError::without_span(format!("feature cycle detected: {}", cycle.join(" -> "))));
+    }
+    let members = manifest
+        .features
+        .get(feature)
+        .ok_or_else(|| CompileError::without_span(format!("unknown package feature '{}'", feature)))?
+        .clone();
+    visiting.push(feature.to_string());
+    for member in members {
+        if let Some(alias) = member.strip_prefix("dep:") {
+            let dependency = manifest.dependencies.get(alias).or_else(|| manifest.dev_dependencies.get(alias)).ok_or_else(|| {
+                CompileError::without_span(format!("feature '{}' activates unknown dependency alias '{}'", feature, alias))
+            })?;
+            if !dependency_is_optional(dependency) {
+                return Err(CompileError::without_span(format!(
+                    "feature '{}' uses dep:{} but dependency '{}' is not optional",
+                    feature, alias, alias
+                )));
+            }
+            active_dependencies.insert(alias.to_string());
+        } else {
+            expand_feature(manifest, &member, visited, visiting, active_dependencies)?;
+        }
+    }
+    visiting.pop();
+    visited.insert(feature.to_string());
+    Ok(())
+}
+
+fn validate_environment(name: &str, environment: &CkbEnvironment) -> Result<()> {
+    if name.trim().is_empty() || environment.chain_id.trim().is_empty() {
+        return Err(CompileError::without_span("package environment names and chain_id values must not be empty"));
+    }
+    let hash = environment.genesis_hash.strip_prefix("0x").unwrap_or(&environment.genesis_hash);
+    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CompileError::without_span(format!("environment '{}' genesis_hash must contain exactly 32 bytes of hex", name)));
+    }
+    Ok(())
+}
+
 impl PackageManager {
     pub fn new(root: impl AsRef<Path>) -> Self {
         let root = root.as_ref().to_path_buf();
 
-        Self { root, resolved: HashMap::new() }
+        Self { root, resolved: BTreeMap::new(), root_dependencies: BTreeMap::new() }
     }
 
     pub fn read_manifest(&self) -> Result<PackageManifest> {
@@ -435,6 +739,10 @@ impl PackageManager {
             workspace: None,
             dependencies: HashMap::new(),
             dev_dependencies: HashMap::new(),
+            features: BTreeMap::new(),
+            environments: BTreeMap::new(),
+            dependency_overrides: BTreeMap::new(),
+            resolvers: BTreeMap::new(),
             build: BuildConfig::default(),
             policy: PolicyConfig::default(),
             deploy: DeployConfig::default(),
@@ -473,13 +781,382 @@ dist/
     }
 
     pub fn resolve_dependencies(&mut self) -> Result<()> {
-        let manifest = self.read_manifest()?;
+        self.resolve_dependencies_with_options(&ResolutionOptions::default())
+    }
 
-        for (name, dep) in &manifest.dependencies {
-            self.resolve_dependency_from_root(name, dep, &self.root.clone(), &mut Vec::new())?;
+    pub fn resolve_dependencies_with_options(&mut self, options: &ResolutionOptions) -> Result<()> {
+        let manifest = self.read_manifest()?;
+        self.validate_manifest_package_contract(&manifest)?;
+        self.resolved.clear();
+        self.root_dependencies.clear();
+
+        let dependencies = self.selected_dependencies(&manifest, options, true)?;
+        for (alias, dep) in dependencies {
+            let node_id =
+                self.resolve_dependency_from_root(&alias, &dep, &self.root.clone(), options, &mut Vec::new(), &mut Vec::new())?;
+            self.root_dependencies.insert(alias, node_id);
         }
 
         Ok(())
+    }
+
+    pub fn resolve_locked_dependencies(&mut self, options: &ResolutionOptions) -> Result<()> {
+        let manifest = self.read_manifest()?;
+        self.validate_manifest_package_contract(&manifest)?;
+        let selected = self.selected_dependencies(&manifest, options, true)?;
+        self.resolved.clear();
+        self.root_dependencies.clear();
+        if selected.is_empty() {
+            if let Some(lockfile) = Lockfile::read_from_root(&self.root)? {
+                let actual_manifest_digest = compute_manifest_digest(&self.root)?;
+                if !lockfile.root.manifest_digest.is_empty() && lockfile.root.manifest_digest != actual_manifest_digest {
+                    return Err(CompileError::without_span(format!(
+                        "Cell.lock manifest digest '{}' does not match Cell.toml '{}'; run 'cellc lock' or 'cellc update' explicitly",
+                        lockfile.root.manifest_digest, actual_manifest_digest
+                    )));
+                }
+            }
+            return Ok(());
+        }
+
+        let lockfile = Lockfile::read_from_root(&self.root)?.ok_or_else(|| {
+            CompileError::without_span(
+                "Cell.toml declares dependencies but Cell.lock is missing; run 'cellc lock' or 'cellc update' explicitly",
+            )
+        })?;
+        let manifest_bytes = std::fs::read(self.root.join("Cell.toml"))?;
+        let actual_manifest_digest = manifest_digest(&manifest_bytes);
+        if lockfile.root.manifest_digest != actual_manifest_digest {
+            return Err(CompileError::without_span(format!(
+                "Cell.lock manifest digest '{}' does not match Cell.toml '{}'; run 'cellc lock' or 'cellc update' explicitly",
+                lockfile.root.manifest_digest, actual_manifest_digest
+            )));
+        }
+
+        let (runtime_edges, dev_edges) = if let Some(environment_name) = options.environment.as_deref() {
+            let locked_environment = lockfile.environments.get(environment_name).ok_or_else(|| {
+                CompileError::without_span(format!(
+                    "environment '{}' is not pinned in Cell.lock; run 'cellc lock --environment {}'",
+                    environment_name, environment_name
+                ))
+            })?;
+            let manifest_environment = manifest
+                .environments
+                .get(environment_name)
+                .ok_or_else(|| CompileError::without_span(format!("unknown package environment '{}'", environment_name)))?;
+            if locked_environment.chain_id != manifest_environment.chain_id
+                || !locked_environment.genesis_hash.eq_ignore_ascii_case(&manifest_environment.genesis_hash)
+            {
+                return Err(CompileError::without_span(format!(
+                    "environment '{}' chain identity differs between Cell.toml and Cell.lock; run 'cellc update --environment {}'",
+                    environment_name, environment_name
+                )));
+            }
+            (&locked_environment.dependencies, &locked_environment.dev_dependencies)
+        } else {
+            (&lockfile.root.dependencies, &lockfile.root.dev_dependencies)
+        };
+
+        for (alias, dependency) in selected {
+            let edges = if options.scope == DependencyScope::Test && manifest.dev_dependencies.contains_key(&alias) {
+                dev_edges
+            } else {
+                runtime_edges
+            };
+            let node_id = edges.get(&alias).ok_or_else(|| {
+                CompileError::without_span(format!(
+                    "dependency alias '{}' is not pinned for the selected mode/environment; run 'cellc lock' or 'cellc update' explicitly",
+                    alias
+                ))
+            })?;
+            let locked = lockfile
+                .dependencies
+                .get(node_id)
+                .ok_or_else(|| CompileError::without_span(format!("Cell.lock edge '{}' targets missing node '{}'", alias, node_id)))?;
+            let issues = lock_dependency_consistency_issues(&alias, &dependency, locked, manifest.package.namespace.as_deref());
+            if !issues.is_empty() {
+                return Err(CompileError::without_span(format!(
+                    "Cell.lock dependency '{}' is inconsistent with Cell.toml: {}; run 'cellc update' explicitly",
+                    alias,
+                    issues.join("; ")
+                )));
+            }
+            let node_options = dependency_resolution_options(&dependency, options);
+            self.materialize_locked_node(node_id, &lockfile, &node_options, &mut Vec::new())?;
+            self.root_dependencies.insert(alias, node_id.clone());
+        }
+
+        Ok(())
+    }
+
+    fn materialize_locked_node(
+        &mut self,
+        node_id: &str,
+        lockfile: &Lockfile,
+        options: &ResolutionOptions,
+        stack: &mut Vec<String>,
+    ) -> Result<()> {
+        if self.resolved.contains_key(node_id) {
+            return Ok(());
+        }
+        if stack.iter().any(|candidate| candidate == node_id) {
+            let mut cycle = stack.clone();
+            cycle.push(node_id.to_string());
+            return Err(CompileError::without_span(format!("Cell.lock dependency cycle: {}", cycle.join(" -> "))));
+        }
+        let locked = lockfile
+            .dependencies
+            .get(node_id)
+            .ok_or_else(|| CompileError::without_span(format!("Cell.lock is missing dependency node '{}'", node_id)))?;
+        let package_path = self.locked_source_path(locked, options.offline)?;
+        let manifest_path = package_path.join("Cell.toml");
+        let bytes = std::fs::read(&manifest_path).map_err(|error| {
+            CompileError::without_span(format!("failed to read locked dependency manifest '{}': {}", manifest_path.display(), error))
+        })?;
+        let digest = manifest_digest(&bytes);
+        if digest != locked.manifest_digest {
+            return Err(CompileError::without_span(format!(
+                "locked dependency '{}' manifest digest mismatch: expected '{}', got '{}'",
+                node_id, locked.manifest_digest, digest
+            )));
+        }
+        let manifest_source = std::str::from_utf8(&bytes).map_err(|error| {
+            CompileError::without_span(format!("locked dependency manifest '{}' is not UTF-8: {}", manifest_path.display(), error))
+        })?;
+        let manifest: PackageManifest = toml::from_str(manifest_source).map_err(|error| {
+            CompileError::without_span(format!("failed to parse locked dependency manifest '{}': {}", manifest_path.display(), error))
+        })?;
+        if manifest.package.name != locked.name || manifest.package.version != locked.version {
+            return Err(CompileError::without_span(format!(
+                "locked dependency '{}' manifest identity is '{}@{}', expected '{}@{}'",
+                node_id, manifest.package.name, manifest.package.version, locked.name, locked.version
+            )));
+        }
+        let source_hash = registry::compute_source_hash(&package_path)?;
+        if locked.source_hash.as_deref() != Some(source_hash.as_str()) {
+            return Err(CompileError::without_span(format!(
+                "locked dependency '{}' source hash mismatch: expected '{}', got '{}'",
+                node_id,
+                locked.source_hash.as_deref().unwrap_or("<missing>"),
+                source_hash
+            )));
+        }
+
+        let selected_dependencies = self.selected_dependencies(&manifest, options, false)?;
+        let mut selected_edges = BTreeMap::new();
+        stack.push(node_id.to_string());
+        for (alias, dependency) in selected_dependencies {
+            let target = locked.dependencies.get(&alias).ok_or_else(|| {
+                CompileError::without_span(format!(
+                    "locked dependency node '{}' has no edge for selected dependency alias '{}'",
+                    node_id, alias
+                ))
+            })?;
+            let target_lock = lockfile.dependencies.get(target).ok_or_else(|| {
+                CompileError::without_span(format!(
+                    "locked dependency node '{}' edge '{}' targets missing node '{}'",
+                    node_id, alias, target
+                ))
+            })?;
+            let issues = lock_dependency_consistency_issues(&alias, &dependency, target_lock, manifest.package.namespace.as_deref());
+            if !issues.is_empty() {
+                return Err(CompileError::without_span(format!(
+                    "locked dependency node '{}' edge '{}' is inconsistent with its manifest: {}",
+                    node_id,
+                    alias,
+                    issues.join("; ")
+                )));
+            }
+            let child_options = dependency_resolution_options(&dependency, options);
+            self.materialize_locked_node(target, lockfile, &child_options, stack)?;
+            selected_edges.insert(alias, target.clone());
+        }
+        stack.pop();
+
+        self.resolved.insert(
+            node_id.to_string(),
+            ResolvedPackage {
+                node_id: node_id.to_string(),
+                name: locked.name.clone(),
+                version: locked.version.clone(),
+                path: package_path,
+                source: locked_source_to_package_source(&locked.source),
+                dependencies: selected_edges,
+                namespace: locked.namespace.clone(),
+                source_hash: Some(source_hash),
+                manifest_digest: digest,
+            },
+        );
+        Ok(())
+    }
+
+    fn locked_source_path(&self, locked: &LockedDependency, offline: bool) -> Result<PathBuf> {
+        match &locked.source {
+            LockedSource::Path { path } => {
+                let path = self.root.join(path);
+                if !path.is_dir() {
+                    return Err(CompileError::without_span(format!("locked path dependency '{}' does not exist", path.display())));
+                }
+                Ok(path)
+            }
+            LockedSource::Git { url, revision } => {
+                let path = self.git_cache_dir().join(format!("{}-git-{}", locked.name, revision));
+                if !path.exists() {
+                    if offline {
+                        return Err(CompileError::without_span(format!(
+                            "offline mode cannot materialize missing git cache '{}' for {}",
+                            path.display(),
+                            locked.name
+                        )));
+                    }
+                    std::fs::create_dir_all(self.git_cache_dir())?;
+                    Self::git_materialize_locked(url, &path, revision).map_err(CompileError::without_span)?;
+                }
+                let actual = Self::git_revision(&path).map_err(CompileError::without_span)?;
+                if actual != *revision {
+                    return Err(CompileError::without_span(format!(
+                        "locked git cache '{}' has revision '{}', expected '{}'",
+                        path.display(),
+                        actual,
+                        revision
+                    )));
+                }
+                Ok(path)
+            }
+            LockedSource::Registry { url, revision, namespace, version, .. } => {
+                let suffix = revision.trim_start_matches("sha256:");
+                let path = self.git_cache_dir().join(format!("{}-snapshot-{}", locked.name, suffix));
+                if !path.exists() {
+                    if offline {
+                        return Err(CompileError::without_span(format!(
+                            "offline mode cannot materialize missing Registry cache '{}' for {}",
+                            path.display(),
+                            locked.name
+                        )));
+                    }
+                    registry::materialize_locked_public_source_snapshot(
+                        url,
+                        revision,
+                        &self.git_cache_dir(),
+                        namespace,
+                        &locked.name,
+                        version,
+                        locked.source_hash.as_deref().unwrap_or_default(),
+                    )?;
+                }
+                Ok(path)
+            }
+        }
+    }
+
+    fn validate_manifest_package_contract(&self, manifest: &PackageManifest) -> Result<()> {
+        semver::Version::parse(&manifest.package.version).map_err(|error| {
+            CompileError::without_span(format!(
+                "package '{}' has invalid semantic version '{}': {error}",
+                manifest.package.name, manifest.package.version
+            ))
+        })?;
+        for (name, environment) in &manifest.environments {
+            validate_environment(name, environment)?;
+        }
+        for environment in manifest.dependency_overrides.keys() {
+            if !manifest.environments.contains_key(environment) {
+                return Err(CompileError::without_span(format!(
+                    "dependency override environment '{}' has no matching [environments.{}] declaration",
+                    environment, environment
+                )));
+            }
+        }
+        for (name, resolver) in &manifest.resolvers {
+            if name.trim().is_empty() {
+                return Err(CompileError::without_span("resolver names must not be empty"));
+            }
+            let command = Path::new(&resolver.command);
+            if !command.is_absolute() {
+                return Err(CompileError::without_span(format!("resolver '{}' command must be an absolute executable path", name)));
+            }
+            let digest = resolver.sha256.strip_prefix("sha256:").unwrap_or(&resolver.sha256);
+            if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(CompileError::without_span(format!("resolver '{}' sha256 must contain exactly 32 bytes of hex", name)));
+            }
+        }
+        let declared_dependencies = manifest
+            .dependencies
+            .iter()
+            .chain(manifest.dev_dependencies.iter())
+            .chain(manifest.dependency_overrides.values().flat_map(|dependencies| dependencies.iter()));
+        for (alias, dependency) in declared_dependencies {
+            if let Dependency::Detailed(detail) = dependency {
+                if let Some(resolver) = detail.resolver.as_deref() {
+                    if detail.path.is_some() || detail.git.is_some() {
+                        return Err(CompileError::without_span(format!(
+                            "dependency '{}' cannot combine resolver with path or git",
+                            alias
+                        )));
+                    }
+                    if !manifest.resolvers.contains_key(resolver) {
+                        return Err(CompileError::without_span(format!(
+                            "dependency '{}' selects undeclared resolver '{}'",
+                            alias, resolver
+                        )));
+                    }
+                }
+            }
+        }
+        if !manifest.build.dependencies.is_empty() {
+            return Err(CompileError::without_span(
+                "[build.dependencies] is reserved until isolated build-script execution is implemented; use [dependencies] for compile-time imports",
+            ));
+        }
+        Ok(())
+    }
+
+    fn selected_dependencies(
+        &self,
+        manifest: &PackageManifest,
+        options: &ResolutionOptions,
+        root: bool,
+    ) -> Result<BTreeMap<String, Dependency>> {
+        let mut dependencies: BTreeMap<String, Dependency> =
+            manifest.dependencies.iter().map(|(name, dep)| (name.clone(), dep.clone())).collect();
+        if options.scope == DependencyScope::Test && root {
+            for (name, dep) in &manifest.dev_dependencies {
+                if dependencies.insert(name.clone(), dep.clone()).is_some() {
+                    return Err(CompileError::without_span(format!(
+                        "dependency alias '{}' is declared in both [dependencies] and [dev_dependencies]",
+                        name
+                    )));
+                }
+            }
+        }
+
+        if let Some(environment) = options.environment.as_deref() {
+            if root && !manifest.environments.contains_key(environment) {
+                return Err(CompileError::without_span(format!(
+                    "unknown package environment '{}'; declare [environments.{}] with chain_id and genesis_hash",
+                    environment, environment
+                )));
+            }
+            if let Some(overrides) = manifest.dependency_overrides.get(environment) {
+                for (alias, dependency) in overrides {
+                    if !dependencies.contains_key(alias) {
+                        return Err(CompileError::without_span(format!(
+                            "environment '{}' overrides unknown dependency alias '{}'",
+                            environment, alias
+                        )));
+                    }
+                    dependencies.insert(alias.clone(), dependency.clone());
+                }
+            }
+        } else if root && !manifest.dependency_overrides.is_empty() {
+            return Err(CompileError::without_span(
+                "Cell.toml declares environment-specific dependency overrides; select one explicitly with --environment",
+            ));
+        }
+
+        let active_optional = active_optional_dependencies(manifest, options)?;
+        dependencies.retain(|alias, dependency| !dependency_is_optional(dependency) || active_optional.contains(alias));
+        Ok(dependencies)
     }
 
     /// Extract the version-requirement string carried by a dependency, if any.
@@ -503,71 +1180,306 @@ dist/
         }
     }
 
-    fn resolve_dependency_from_root(&mut self, name: &str, dep: &Dependency, base_root: &Path, stack: &mut Vec<String>) -> Result<()> {
-        if stack.iter().any(|item| item == name) {
-            let mut cycle = stack.clone();
-            cycle.push(name.to_string());
-            return Err(CompileError::without_span(format!("Circular dependency detected: {}", cycle.join(" -> "))));
-        }
-
-        // Unified (single-version-per-package) resolution: if this package was
-        // already resolved elsewhere in the graph, the new version requirement
-        // must be satisfied by the already-selected version. If it is not, the
-        // dependency graph is unsatisfiable and we fail closed instead of
-        // silently keeping whichever version was resolved first.
-        if let Some(existing) = self.resolved.get(name) {
-            if let Some(req_str) = self.version_requirement_of(dep) {
-                let req = version::parse_version_req(&req_str)?;
-                if !version::satisfies(&existing.version, &req) {
-                    return Err(CompileError::without_span(format!(
-                        "version conflict for '{}': already resolved to '{}', which does not satisfy requirement '{}'",
-                        name, existing.version, req_str
-                    )));
-                }
-            }
-            return Ok(());
-        }
-
-        stack.push(name.to_string());
-
-        let (resolved, child_dependencies) = match dep {
+    fn resolve_dependency_from_root(
+        &mut self,
+        alias: &str,
+        dep: &Dependency,
+        base_root: &Path,
+        parent_options: &ResolutionOptions,
+        stack_ids: &mut Vec<String>,
+        stack_labels: &mut Vec<String>,
+    ) -> Result<String> {
+        let package_name = dependency_package_name(alias, dep);
+        let (mut resolved, manifest) = match dep {
             Dependency::Simple(version) => {
-                let (resolved, manifest) =
-                    self.resolve_from_registry_with_manifest(name, version, None, registry::RegistryResolutionPolicy::default())?;
-                (resolved, manifest.dependencies)
+                self.resolve_from_registry_with_manifest(&package_name, version, None, registry::RegistryResolutionPolicy::default())?
             }
             Dependency::Detailed(detailed) => {
-                if let Some(path) = &detailed.path {
-                    let (resolved, manifest) = self.resolve_from_path_at(name, path, base_root)?;
-                    (resolved, manifest.dependencies)
+                if detailed.resolver.is_some() {
+                    let normalized = self.resolve_external_dependency(alias, &package_name, detailed, base_root, parent_options)?;
+                    let resolved = if let Some(git) = &normalized.git {
+                        self.resolve_from_git_with_manifest(&package_name, git, &normalized)?
+                    } else {
+                        self.resolve_from_registry_with_manifest(
+                            &package_name,
+                            &normalized.version,
+                            normalized.namespace.as_deref(),
+                            registry::RegistryResolutionPolicy::default(),
+                        )?
+                    };
+                    let exact = version::parse_version_req(&normalized.version)?;
+                    if !version::satisfies(&resolved.0.version, &exact) {
+                        return Err(CompileError::without_span(format!(
+                            "external resolver for '{}' declared version inconsistent with materialized package '{}'",
+                            alias, resolved.0.version
+                        )));
+                    }
+                    resolved
+                } else if let Some(path) = &detailed.path {
+                    self.resolve_from_path_at(&package_name, path, base_root)?
                 } else if let Some(git) = &detailed.git {
-                    let (resolved, manifest) = self.resolve_from_git_with_manifest(name, git, detailed)?;
-                    (resolved, manifest.dependencies)
+                    self.resolve_from_git_with_manifest(&package_name, git, detailed)?
                 } else {
                     let ns = detailed.namespace.as_deref();
-                    let (resolved, manifest) = self.resolve_from_registry_with_manifest(
-                        name,
+                    self.resolve_from_registry_with_manifest(
+                        &package_name,
                         &detailed.version,
                         ns,
                         registry::RegistryResolutionPolicy {
                             allow_unverified: detailed.allow_unverified,
                             allow_quarantined: detailed.allow_quarantined,
                         },
-                    )?;
-                    (resolved, manifest.dependencies)
+                    )?
                 }
             }
         };
 
-        let package_root = resolved.path.clone();
-        self.resolved.insert(name.to_string(), resolved);
-
-        for (child_name, child_dep) in child_dependencies {
-            self.resolve_dependency_from_root(&child_name, &child_dep, &package_root, stack)?;
+        self.validate_manifest_package_contract(&manifest)?;
+        if manifest.package.name != package_name {
+            return Err(CompileError::without_span(format!(
+                "dependency alias '{}' expects package '{}' but '{}' declares package name '{}'",
+                alias,
+                package_name,
+                resolved.path.display(),
+                manifest.package.name
+            )));
+        }
+        let child_options = dependency_resolution_options(dep, parent_options);
+        let node_id = package_node_id(&resolved, &child_options);
+        if let Some(requirement) = self.version_requirement_of(dep) {
+            let requirement = version::parse_version_req(&requirement)?;
+            if !version::satisfies(&resolved.version, &requirement) {
+                return Err(CompileError::without_span(format!(
+                    "dependency alias '{}' resolved package '{}' to '{}', which does not satisfy its requirement",
+                    alias, package_name, resolved.version
+                )));
+            }
+        }
+        if let Some(existing) = self.resolved.get(&node_id) {
+            if existing.manifest_digest != resolved.manifest_digest || existing.source_hash != resolved.source_hash {
+                return Err(CompileError::without_span(format!(
+                    "dependency node '{}' resolved with conflicting manifest or source identity",
+                    node_id
+                )));
+            }
+            return Ok(node_id);
+        }
+        if let Some(position) = stack_ids.iter().position(|item| item == &node_id) {
+            let mut cycle = stack_labels[position..].to_vec();
+            cycle.push(alias.to_string());
+            return Err(CompileError::without_span(format!("Circular dependency detected: {}", cycle.join(" -> "))));
         }
 
-        stack.pop();
-        Ok(())
+        stack_ids.push(node_id.clone());
+        stack_labels.push(alias.to_string());
+        let child_dependencies = self.selected_dependencies(&manifest, &child_options, false)?;
+        let mut child_edges = BTreeMap::new();
+        for (child_alias, child_dep) in child_dependencies {
+            let child_id =
+                self.resolve_dependency_from_root(&child_alias, &child_dep, &resolved.path, &child_options, stack_ids, stack_labels)?;
+            child_edges.insert(child_alias, child_id);
+        }
+        stack_ids.pop();
+        stack_labels.pop();
+
+        resolved.node_id = node_id.clone();
+        resolved.dependencies = child_edges;
+        self.resolved.insert(node_id.clone(), resolved);
+        Ok(node_id)
+    }
+
+    fn resolve_external_dependency(
+        &self,
+        alias: &str,
+        package_name: &str,
+        dependency: &DetailedDependency,
+        owner_root: &Path,
+        options: &ResolutionOptions,
+    ) -> Result<DetailedDependency> {
+        if options.offline {
+            return Err(CompileError::without_span(format!(
+                "offline mode cannot invoke external resolver for dependency '{}'",
+                alias
+            )));
+        }
+        let resolver_name = dependency
+            .resolver
+            .as_deref()
+            .ok_or_else(|| CompileError::without_span(format!("dependency '{}' has no external resolver name", alias)))?;
+        let owner_manifest_path = owner_root.join("Cell.toml");
+        let owner_manifest: PackageManifest = toml::from_str(&std::fs::read_to_string(&owner_manifest_path).map_err(|error| {
+            CompileError::without_span(format!(
+                "failed to read resolver owner manifest '{}': {}",
+                owner_manifest_path.display(),
+                error
+            ))
+        })?)?;
+        let resolver = owner_manifest.resolvers.get(resolver_name).ok_or_else(|| {
+            CompileError::without_span(format!("dependency '{}' selects undeclared resolver '{}'", alias, resolver_name))
+        })?;
+        if resolver.args.len() > 64 || resolver.args.iter().any(|argument| argument.len() > 4096) {
+            return Err(CompileError::without_span(format!("resolver '{}' exceeds the bounded argument contract", resolver_name)));
+        }
+        let command_path = Path::new(&resolver.command);
+        if !command_path.is_absolute() || !command_path.is_file() {
+            return Err(CompileError::without_span(format!(
+                "resolver '{}' command must be an existing absolute executable path",
+                resolver_name
+            )));
+        }
+        let expected_digest = resolver.sha256.strip_prefix("sha256:").unwrap_or(&resolver.sha256).to_ascii_lowercase();
+        let actual_digest = sha256_file(command_path)?;
+        if actual_digest != expected_digest {
+            return Err(CompileError::without_span(format!(
+                "resolver '{}' executable digest mismatch: expected sha256:{}, got sha256:{}",
+                resolver_name, expected_digest, actual_digest
+            )));
+        }
+
+        let environment = options.environment.as_deref().map(|name| {
+            let config = owner_manifest.environments.get(name).expect("selected environment was validated");
+            ExternalResolverEnvironment { name, chain_id: &config.chain_id, genesis_hash: &config.genesis_hash }
+        });
+        let request = ExternalResolverRequest {
+            schema: EXTERNAL_RESOLVER_REQUEST_SCHEMA,
+            alias,
+            package: package_name,
+            version_requirement: &dependency.version,
+            environment,
+        };
+        let request = serde_json::to_vec(&request)?;
+        let temp_root = self.root.join(".cell/resolver-tmp");
+        std::fs::create_dir_all(&temp_root)?;
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let stem = format!("{}-{}-{nonce}", std::process::id(), sanitize_node_component(alias));
+        let stdout_path = temp_root.join(format!("{stem}.stdout"));
+        let stderr_path = temp_root.join(format!("{stem}.stderr"));
+        let stdout_file = std::fs::OpenOptions::new().write(true).create_new(true).open(&stdout_path)?;
+        let stderr_file = std::fs::OpenOptions::new().write(true).create_new(true).open(&stderr_path)?;
+        let mut child = std::process::Command::new(command_path)
+            .args(&resolver.args)
+            .current_dir(owner_root)
+            .env_clear()
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::from(stdout_file))
+            .stderr(std::process::Stdio::from(stderr_file))
+            .spawn()
+            .map_err(|error| CompileError::without_span(format!("failed to start resolver '{}': {}", resolver_name, error)))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(&request)?;
+            stdin.write_all(b"\n")?;
+        }
+
+        let started = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            let output_too_large = [&stdout_path, &stderr_path]
+                .iter()
+                .any(|path| std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > EXTERNAL_RESOLVER_MAX_OUTPUT_BYTES));
+            if output_too_large || started.elapsed() >= EXTERNAL_RESOLVER_TIMEOUT {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = std::fs::remove_file(&stdout_path);
+                let _ = std::fs::remove_file(&stderr_path);
+                let reason = if output_too_large { "output exceeded 1 MiB" } else { "timed out after 10 seconds" };
+                return Err(CompileError::without_span(format!("resolver '{}' {}", resolver_name, reason)));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let stdout = read_bounded_resolver_output(&stdout_path)?;
+        let stderr = read_bounded_resolver_output(&stderr_path)?;
+        let _ = std::fs::remove_file(&stdout_path);
+        let _ = std::fs::remove_file(&stderr_path);
+        if !status.success() {
+            return Err(CompileError::without_span(format!(
+                "resolver '{}' exited with {}: {}",
+                resolver_name,
+                status,
+                String::from_utf8_lossy(&stderr).trim()
+            )));
+        }
+        let response: ExternalResolverResponse = serde_json::from_slice(&stdout)
+            .map_err(|error| CompileError::without_span(format!("resolver '{}' returned invalid JSON: {}", resolver_name, error)))?;
+        if response.schema != EXTERNAL_RESOLVER_RESPONSE_SCHEMA {
+            return Err(CompileError::without_span(format!(
+                "resolver '{}' returned unsupported schema '{}'",
+                resolver_name, response.schema
+            )));
+        }
+        if response.dependency.package != package_name {
+            return Err(CompileError::without_span(format!(
+                "resolver '{}' returned package '{}', expected '{}'",
+                resolver_name, response.dependency.package, package_name
+            )));
+        }
+        semver::Version::parse(&response.dependency.version).map_err(|error| {
+            CompileError::without_span(format!(
+                "resolver '{}' version '{}' is not exact SemVer: {}",
+                resolver_name, response.dependency.version, error
+            ))
+        })?;
+        let requested = version::parse_version_req(&dependency.version)?;
+        if !version::satisfies(&response.dependency.version, &requested) {
+            return Err(CompileError::without_span(format!(
+                "resolver '{}' returned version '{}' outside requested range '{}'",
+                resolver_name, response.dependency.version, dependency.version
+            )));
+        }
+
+        match (&response.dependency.git, &response.dependency.namespace) {
+            (Some(git), None) => {
+                let revision =
+                    response.dependency.rev.as_deref().ok_or_else(|| {
+                        CompileError::without_span(format!("resolver '{}' Git response requires rev", resolver_name))
+                    })?;
+                if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err(CompileError::without_span(format!(
+                        "resolver '{}' Git rev must be a full 40-hex commit",
+                        resolver_name
+                    )));
+                }
+                Ok(DetailedDependency {
+                    version: format!("={}", response.dependency.version),
+                    namespace: None,
+                    package: dependency.package.clone(),
+                    resolver: None,
+                    git: Some(git.clone()),
+                    branch: None,
+                    tag: None,
+                    rev: Some(revision.to_string()),
+                    path: None,
+                    optional: dependency.optional,
+                    features: dependency.features.clone(),
+                    default_features: dependency.default_features,
+                    allow_unverified: false,
+                    allow_quarantined: false,
+                })
+            }
+            (None, Some(namespace)) => {
+                if response.dependency.rev.is_some() || namespace.trim().is_empty() {
+                    return Err(CompileError::without_span(format!("resolver '{}' Registry response is malformed", resolver_name)));
+                }
+                Ok(DetailedDependency {
+                    version: format!("={}", response.dependency.version),
+                    namespace: Some(namespace.clone()),
+                    package: dependency.package.clone(),
+                    resolver: None,
+                    git: None,
+                    branch: None,
+                    tag: None,
+                    rev: None,
+                    path: None,
+                    optional: dependency.optional,
+                    features: dependency.features.clone(),
+                    default_features: dependency.default_features,
+                    allow_unverified: dependency.allow_unverified,
+                    allow_quarantined: dependency.allow_quarantined,
+                })
+            }
+            _ => Err(CompileError::without_span(format!("resolver '{}' must return exactly one of git or namespace", resolver_name))),
+        }
     }
 
     pub fn resolve_from_registry(&self, name: &str, version: &str) -> Result<ResolvedPackage> {
@@ -789,6 +1701,7 @@ dist/
 
         Ok((
             ResolvedPackage {
+                node_id: String::new(),
                 name: name.to_string(),
                 version: manifest.package.version.clone(),
                 path: package_dir,
@@ -799,9 +1712,10 @@ dist/
                     namespace: resolved_namespace.clone(),
                     version: manifest.package.version.clone(),
                 },
-                dependencies: manifest.dependencies.keys().cloned().collect(),
+                dependencies: BTreeMap::new(),
                 namespace: Some(resolved_namespace),
                 source_hash: Some(computed_source_hash),
+                manifest_digest: manifest_digest(content.as_bytes()),
             },
             manifest,
         ))
@@ -817,7 +1731,10 @@ dist/
     }
 
     fn resolve_from_path_at(&self, name: &str, path: &str, base_root: &Path) -> Result<(ResolvedPackage, PackageManifest)> {
-        let package_path = base_root.join(path);
+        let requested_path = base_root.join(path);
+        let package_path = canonical_path(&requested_path).map_err(|_| {
+            CompileError::without_span(format!("Dependency '{}' not found at path '{}'", name, requested_path.display()))
+        })?;
         let manifest_path = package_path.join("Cell.toml");
 
         if !manifest_path.exists() {
@@ -826,22 +1743,22 @@ dist/
 
         let content = std::fs::read_to_string(&manifest_path)?;
         let manifest: PackageManifest = toml::from_str(&content)?;
+        let source_hash = registry::compute_source_hash(&package_path)?;
 
-        let source_path = if base_root == self.root {
-            PathBuf::from(path)
-        } else {
-            package_path.strip_prefix(&self.root).unwrap_or(&package_path).to_path_buf()
-        };
+        let canonical_root = canonical_path(&self.root)?;
+        let source_path = relative_path(&canonical_root, &package_path).unwrap_or_else(|| package_path.clone());
 
         Ok((
             ResolvedPackage {
+                node_id: String::new(),
                 name: name.to_string(),
                 version: manifest.package.version.clone(),
                 path: package_path,
                 source: PackageSource::Local(source_path),
-                dependencies: manifest.dependencies.keys().cloned().collect(),
+                dependencies: BTreeMap::new(),
                 namespace: manifest.package.namespace.clone(),
-                source_hash: None,
+                source_hash: Some(source_hash),
+                manifest_digest: manifest_digest(content.as_bytes()),
             },
             manifest,
         ))
@@ -878,14 +1795,39 @@ dist/
         git_result.map_err(|e| CompileError::without_span(format!("git dependency '{}' from '{}' failed: {}", name, url, e)))?;
 
         if let Some(ref_str) = requested_ref {
-            Self::git_checkout(&clone_dir, ref_str).map_err(|e| {
-                CompileError::without_span(format!("git dependency '{}' failed to checkout '{}': {}", name, ref_str, e))
+            let checkout_ref = detailed.branch.as_ref().map(|branch| format!("origin/{branch}")).unwrap_or_else(|| ref_str.clone());
+            Self::git_checkout(&clone_dir, &checkout_ref).map_err(|e| {
+                CompileError::without_span(format!("git dependency '{}' failed to checkout '{}': {}", name, checkout_ref, e))
             })?;
         }
 
-        let revision = Self::git_revision(&clone_dir).unwrap_or_else(|_| "unknown".to_string());
+        let revision = Self::git_revision(&clone_dir).map_err(|error| {
+            CompileError::without_span(format!("git dependency '{}' could not resolve an immutable revision: {}", name, error))
+        })?;
+        if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(CompileError::without_span(format!(
+                "git dependency '{}' resolved non-canonical revision '{}'; expected a full 40-hex commit",
+                name, revision
+            )));
+        }
+        let immutable_dir = cache_dir.join(format!("{}-git-{}", name, revision));
+        if immutable_dir.exists() {
+            let cached_revision = Self::git_revision(&immutable_dir).map_err(CompileError::without_span)?;
+            if cached_revision != revision {
+                return Err(CompileError::without_span(format!(
+                    "immutable git cache '{}' has revision '{}', expected '{}'",
+                    immutable_dir.display(),
+                    cached_revision,
+                    revision
+                )));
+            }
+        } else {
+            Self::git_materialize_immutable(&clone_dir, &immutable_dir, &revision).map_err(|error| {
+                CompileError::without_span(format!("failed to materialize immutable git dependency '{}': {}", name, error))
+            })?;
+        }
 
-        let manifest_path = clone_dir.join("Cell.toml");
+        let manifest_path = immutable_dir.join("Cell.toml");
         if !manifest_path.exists() {
             return Err(CompileError::without_span(format!(
                 "git dependency '{}' from '{}' does not contain Cell.toml at repository root",
@@ -895,16 +1837,19 @@ dist/
 
         let content = std::fs::read_to_string(&manifest_path)?;
         let manifest: PackageManifest = toml::from_str(&content)?;
+        let source_hash = registry::compute_source_hash(&immutable_dir)?;
 
         Ok((
             ResolvedPackage {
+                node_id: String::new(),
                 name: name.to_string(),
                 version: manifest.package.version.clone(),
-                path: clone_dir.clone(),
+                path: immutable_dir,
                 source: PackageSource::Git { url: url.to_string(), revision },
-                dependencies: manifest.dependencies.keys().cloned().collect(),
+                dependencies: BTreeMap::new(),
                 namespace: manifest.package.namespace.clone(),
-                source_hash: None,
+                source_hash: Some(source_hash),
+                manifest_digest: manifest_digest(content.as_bytes()),
             },
             manifest,
         ))
@@ -978,17 +1923,61 @@ dist/
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    pub fn get_resolved(&self) -> &HashMap<String, ResolvedPackage> {
+    fn git_materialize_immutable(source: &Path, target: &Path, revision: &str) -> std::result::Result<(), String> {
+        let output = std::process::Command::new("git")
+            .args(["clone", "--no-checkout", "--no-hardlinks", &source.to_string_lossy(), &target.to_string_lossy()])
+            .output()
+            .map_err(|error| format!("failed to clone immutable cache: {error}"))?;
+        if !output.status.success() {
+            return Err(format!("git clone failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        let output = std::process::Command::new("git")
+            .args(["checkout", "--detach", revision])
+            .current_dir(target)
+            .output()
+            .map_err(|error| format!("failed to checkout immutable revision: {error}"))?;
+        if !output.status.success() {
+            let _ = std::fs::remove_dir_all(target);
+            return Err(format!("git checkout failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        Ok(())
+    }
+
+    fn git_materialize_locked(url: &str, target: &Path, revision: &str) -> std::result::Result<(), String> {
+        let output = std::process::Command::new("git")
+            .args(["clone", "--no-checkout", url, &target.to_string_lossy()])
+            .output()
+            .map_err(|error| format!("failed to clone locked git source: {error}"))?;
+        if !output.status.success() {
+            return Err(format!("git clone failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        let output = std::process::Command::new("git")
+            .args(["checkout", "--detach", revision])
+            .current_dir(target)
+            .output()
+            .map_err(|error| format!("failed to checkout locked git revision: {error}"))?;
+        if !output.status.success() {
+            let _ = std::fs::remove_dir_all(target);
+            return Err(format!("git checkout failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+        }
+        Ok(())
+    }
+
+    pub fn get_resolved(&self) -> &BTreeMap<String, ResolvedPackage> {
         &self.resolved
+    }
+
+    pub fn root_dependencies(&self) -> &BTreeMap<String, String> {
+        &self.root_dependencies
     }
 
     pub fn build_dependency_graph(&self) -> DependencyGraph {
         let mut graph = DependencyGraph::new();
 
-        for (name, package) in &self.resolved {
-            graph.add_node(name.clone());
-            for dep in &package.dependencies {
-                graph.add_edge(name.clone(), dep.clone());
+        for (node_id, package) in &self.resolved {
+            graph.add_node(node_id.clone());
+            for dependency_id in package.dependencies.values() {
+                graph.add_edge(node_id.clone(), dependency_id.clone());
             }
         }
 
@@ -1007,6 +1996,20 @@ dist/
 
     pub fn get_source_paths(&self) -> Vec<PathBuf> {
         self.resolved.values().map(|p| p.path.join("src")).collect()
+    }
+}
+
+fn locked_source_to_package_source(source: &LockedSource) -> PackageSource {
+    match source {
+        LockedSource::Path { path } => PackageSource::Local(PathBuf::from(path)),
+        LockedSource::Git { url, revision } => PackageSource::Git { url: url.clone(), revision: revision.clone() },
+        LockedSource::Registry { registry, url, revision, namespace, version } => PackageSource::Registry {
+            registry: registry.clone(),
+            url: url.clone(),
+            revision: revision.clone(),
+            namespace: namespace.clone(),
+            version: version.clone(),
+        },
     }
 }
 
@@ -1087,12 +2090,36 @@ fn simple_hash(s: &str) -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Lockfile {
     pub version: u32,
+    pub schema: String,
     pub package: LockfilePackageInfo,
+    pub root: LockedRootGraph,
     pub dependencies: BTreeMap<String, LockedDependency>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environments: BTreeMap<String, LockedEnvironment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_build: Option<LockedBuildInfo>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub deployment: BTreeMap<String, LockfileDeploymentRef>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LockedRootGraph {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub manifest_digest: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dependencies: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dev_dependencies: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockedEnvironment {
+    pub chain_id: String,
+    pub genesis_hash: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dependencies: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dev_dependencies: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1125,13 +2152,17 @@ pub struct LockfileDeploymentRef {
 }
 
 impl Lockfile {
-    pub const CURRENT_VERSION: u32 = 2;
+    pub const CURRENT_VERSION: u32 = 3;
+    pub const CURRENT_SCHEMA: &'static str = "cellscript-lock-v0.24-graph-v1";
 
     pub fn new() -> Self {
         Self {
             version: Self::CURRENT_VERSION,
+            schema: Self::CURRENT_SCHEMA.to_string(),
             package: LockfilePackageInfo::default(),
+            root: LockedRootGraph::default(),
             dependencies: BTreeMap::new(),
+            environments: BTreeMap::new(),
             package_build: None,
             deployment: BTreeMap::new(),
         }
@@ -1166,6 +2197,13 @@ impl Lockfile {
                 Self::CURRENT_VERSION
             )));
         }
+        if self.schema != Self::CURRENT_SCHEMA {
+            return Err(CompileError::without_span(format!(
+                "unsupported Cell.lock schema '{}'; expected '{}'",
+                self.schema,
+                Self::CURRENT_SCHEMA
+            )));
+        }
         if let Some(build) = &self.package_build {
             if build.edition != self.package.edition {
                 return Err(CompileError::without_span(format!(
@@ -1174,15 +2212,78 @@ impl Lockfile {
                 )));
             }
             if build.compatibility_profile_hash.is_empty() {
-                return Err(CompileError::without_span("Cell.lock v2 package_build requires compatibility_profile_hash"));
+                return Err(CompileError::without_span("Cell.lock v3 package_build requires compatibility_profile_hash"));
+            }
+        }
+        self.validate_graph()?;
+        Ok(())
+    }
+
+    fn validate_graph(&self) -> Result<()> {
+        for (node_id, dependency) in &self.dependencies {
+            if dependency.name.is_empty()
+                || dependency.manifest_digest.is_empty()
+                || dependency.source_hash.as_deref().is_none_or(str::is_empty)
+            {
+                return Err(CompileError::without_span(format!(
+                    "Cell.lock dependency node '{}' requires name, manifest_digest, and source_hash",
+                    node_id
+                )));
+            }
+            for (alias, target) in &dependency.dependencies {
+                if !self.dependencies.contains_key(target) {
+                    return Err(CompileError::without_span(format!(
+                        "Cell.lock dependency node '{}' edge '{}' targets missing node '{}'",
+                        node_id, alias, target
+                    )));
+                }
+            }
+        }
+        self.validate_root_edges("root dependencies", &self.root.dependencies)?;
+        self.validate_root_edges("root dev-dependencies", &self.root.dev_dependencies)?;
+        for (name, environment) in &self.environments {
+            validate_environment(
+                name,
+                &CkbEnvironment { chain_id: environment.chain_id.clone(), genesis_hash: environment.genesis_hash.clone() },
+            )?;
+            self.validate_root_edges(&format!("environment '{}' dependencies", name), &environment.dependencies)?;
+            self.validate_root_edges(&format!("environment '{}' dev-dependencies", name), &environment.dev_dependencies)?;
+        }
+        let graph = self.dependency_graph();
+        if let Some(cycle) = graph.find_cycle() {
+            return Err(CompileError::without_span(format!("Cell.lock dependency graph contains a cycle: {}", cycle.join(" -> "))));
+        }
+        Ok(())
+    }
+
+    fn validate_root_edges(&self, label: &str, edges: &BTreeMap<String, String>) -> Result<()> {
+        for (alias, target) in edges {
+            if !self.dependencies.contains_key(target) {
+                return Err(CompileError::without_span(format!(
+                    "Cell.lock {} edge '{}' targets missing node '{}'",
+                    label, alias, target
+                )));
             }
         }
         Ok(())
     }
 
-    pub fn update_from_resolved(&mut self, resolved: &HashMap<String, ResolvedPackage>) {
-        for (name, package) in resolved {
+    fn dependency_graph(&self) -> DependencyGraph {
+        let mut graph = DependencyGraph::new();
+        for (node_id, dependency) in &self.dependencies {
+            graph.add_node(node_id.clone());
+            for target in dependency.dependencies.values() {
+                graph.add_edge(node_id.clone(), target.clone());
+            }
+        }
+        graph
+    }
+
+    pub fn update_from_resolved(&mut self, resolved: &BTreeMap<String, ResolvedPackage>) {
+        for (node_id, package) in resolved {
             let locked = LockedDependency {
+                name: package.name.clone(),
+                namespace: package.namespace.clone(),
                 version: package.version.clone(),
                 source: match &package.source {
                     PackageSource::Local(path) => LockedSource::Path { path: path.to_string_lossy().to_string() },
@@ -1196,15 +2297,70 @@ impl Lockfile {
                     },
                 },
                 source_hash: package.source_hash.clone(),
+                manifest_digest: package.manifest_digest.clone(),
+                dependencies: package.dependencies.clone(),
                 build: None,
             };
-            self.dependencies.insert(name.clone(), locked);
+            self.dependencies.insert(node_id.clone(), locked);
         }
     }
 
-    pub fn replace_with_resolved(&mut self, resolved: &HashMap<String, ResolvedPackage>) {
+    pub fn replace_with_resolved(&mut self, resolved: &BTreeMap<String, ResolvedPackage>) {
         self.dependencies.clear();
         self.update_from_resolved(resolved);
+    }
+
+    pub fn replace_with_resolution(
+        &mut self,
+        manager: &PackageManager,
+        manifest: &PackageManifest,
+        options: &ResolutionOptions,
+    ) -> Result<()> {
+        self.dependencies.clear();
+        self.root = LockedRootGraph::default();
+        self.environments.clear();
+        self.merge_resolution(manager, manifest, options)
+    }
+
+    pub fn merge_resolution(
+        &mut self,
+        manager: &PackageManager,
+        manifest: &PackageManifest,
+        options: &ResolutionOptions,
+    ) -> Result<()> {
+        self.update_from_resolved(manager.get_resolved());
+        let manifest_bytes = std::fs::read(manager.root.join("Cell.toml"))?;
+        self.root.manifest_digest = manifest_digest(&manifest_bytes);
+
+        let mut runtime = BTreeMap::new();
+        let mut dev = BTreeMap::new();
+        for (alias, node_id) in manager.root_dependencies() {
+            if options.scope == DependencyScope::Test && manifest.dev_dependencies.contains_key(alias) {
+                dev.insert(alias.clone(), node_id.clone());
+            } else {
+                runtime.insert(alias.clone(), node_id.clone());
+            }
+        }
+
+        if let Some(environment_name) = options.environment.as_deref() {
+            let environment = manifest
+                .environments
+                .get(environment_name)
+                .ok_or_else(|| CompileError::without_span(format!("unknown package environment '{}'", environment_name)))?;
+            self.environments.insert(
+                environment_name.to_string(),
+                LockedEnvironment {
+                    chain_id: environment.chain_id.clone(),
+                    genesis_hash: environment.genesis_hash.clone(),
+                    dependencies: runtime,
+                    dev_dependencies: dev,
+                },
+            );
+        } else {
+            self.root.dependencies = runtime;
+            self.root.dev_dependencies = dev;
+        }
+        self.validate_schema()
     }
 
     pub fn is_consistent(&self, manifest: &PackageManifest) -> bool {
@@ -1218,7 +2374,7 @@ impl Lockfile {
     pub fn consistency_issues_with_resolved(
         &self,
         manifest: &PackageManifest,
-        resolved: &HashMap<String, ResolvedPackage>,
+        resolved: &BTreeMap<String, ResolvedPackage>,
     ) -> Vec<String> {
         self.consistency_issues_with_expected(manifest, Some(resolved))
     }
@@ -1226,7 +2382,7 @@ impl Lockfile {
     fn consistency_issues_with_expected(
         &self,
         manifest: &PackageManifest,
-        resolved: Option<&HashMap<String, ResolvedPackage>>,
+        resolved: Option<&BTreeMap<String, ResolvedPackage>>,
     ) -> Vec<String> {
         let mut issues = Vec::new();
         if self.version != Self::CURRENT_VERSION {
@@ -1239,46 +2395,158 @@ impl Lockfile {
             ));
         }
 
-        for name in manifest.dependencies.keys() {
-            let Some(locked) = self.dependencies.get(name) else {
-                issues.push(format!("dependency '{}' is missing from Cell.lock", name));
+        if manifest.dependency_overrides.is_empty() {
+            issues.extend(self.root_graph_consistency_issues(
+                "root",
+                &manifest.dependencies,
+                &manifest.dev_dependencies,
+                &self.root.dependencies,
+                &self.root.dev_dependencies,
+                manifest.package.namespace.as_deref(),
+            ));
+        }
+        for (environment_name, environment) in &manifest.environments {
+            let Some(locked_environment) = self.environments.get(environment_name) else {
+                issues.push(format!("environment '{}' is missing from Cell.lock", environment_name));
                 continue;
             };
-            if let Some(dep) = manifest.dependencies.get(name) {
-                issues.extend(lock_dependency_consistency_issues(name, dep, locked, manifest.package.namespace.as_deref()));
+            if locked_environment.chain_id != environment.chain_id
+                || !locked_environment.genesis_hash.eq_ignore_ascii_case(&environment.genesis_hash)
+            {
+                issues.push(format!("environment '{}' chain identity differs between Cell.toml and Cell.lock", environment_name));
             }
+            let mut dependencies = manifest.dependencies.clone();
+            if let Some(overrides) = manifest.dependency_overrides.get(environment_name) {
+                dependencies.extend(overrides.clone());
+            }
+            issues.extend(self.root_graph_consistency_issues(
+                &format!("environment '{}'", environment_name),
+                &dependencies,
+                &manifest.dev_dependencies,
+                &locked_environment.dependencies,
+                &locked_environment.dev_dependencies,
+                manifest.package.namespace.as_deref(),
+            ));
         }
 
         if let Some(resolved) = resolved {
-            for (name, package) in resolved {
-                let Some(locked) = self.dependencies.get(name) else {
-                    issues.push(format!("resolved dependency '{}' is missing from Cell.lock", name));
+            for (node_id, package) in resolved {
+                let Some(locked) = self.dependencies.get(node_id) else {
+                    issues.push(format!("resolved dependency node '{}' is missing from Cell.lock", node_id));
                     continue;
                 };
-                issues.extend(resolved_dependency_consistency_issues(name, package, locked));
+                issues.extend(resolved_dependency_consistency_issues(node_id, package, locked));
             }
         }
 
-        for name in self.dependencies.keys() {
-            let expected_by_manifest = manifest.dependencies.contains_key(name);
-            let expected_by_resolved = resolved.is_some_and(|resolved| resolved.contains_key(name));
-            if !expected_by_manifest && !expected_by_resolved {
-                issues.push(format!("Cell.lock contains stale dependency '{}' not present in Cell.toml", name));
+        let reachable = self.reachable_nodes();
+        for node_id in self.dependencies.keys() {
+            if !reachable.contains(node_id) {
+                issues.push(format!("Cell.lock contains unreachable dependency node '{}'", node_id));
             }
         }
 
         issues
+    }
+
+    fn root_graph_consistency_issues(
+        &self,
+        label: &str,
+        dependencies: &HashMap<String, Dependency>,
+        dev_dependencies: &HashMap<String, Dependency>,
+        locked_dependencies: &BTreeMap<String, String>,
+        locked_dev_dependencies: &BTreeMap<String, String>,
+        namespace: Option<&str>,
+    ) -> Vec<String> {
+        let mut issues = Vec::new();
+        for (alias, dependency) in dependencies {
+            let Some(node_id) = locked_dependencies.get(alias) else {
+                if !dependency_is_optional(dependency) {
+                    issues.push(format!("{} dependency '{}' is missing from Cell.lock", label, alias));
+                }
+                continue;
+            };
+            match self.dependencies.get(node_id) {
+                Some(locked) => issues.extend(lock_dependency_consistency_issues(alias, dependency, locked, namespace)),
+                None => issues.push(format!("{} dependency '{}' targets missing node '{}'", label, alias, node_id)),
+            }
+        }
+        for (alias, dependency) in dev_dependencies {
+            let Some(node_id) = locked_dev_dependencies.get(alias) else {
+                if !dependency_is_optional(dependency) {
+                    issues.push(format!("{} dev-dependency '{}' is missing from Cell.lock", label, alias));
+                }
+                continue;
+            };
+            match self.dependencies.get(node_id) {
+                Some(locked) => issues.extend(lock_dependency_consistency_issues(alias, dependency, locked, namespace)),
+                None => issues.push(format!("{} dev-dependency '{}' targets missing node '{}'", label, alias, node_id)),
+            }
+        }
+        for alias in locked_dependencies.keys() {
+            if !dependencies.contains_key(alias) {
+                issues.push(format!("{} contains stale dependency alias '{}'", label, alias));
+            }
+        }
+        for alias in locked_dev_dependencies.keys() {
+            if !dev_dependencies.contains_key(alias) {
+                issues.push(format!("{} contains stale dev-dependency alias '{}'", label, alias));
+            }
+        }
+        issues
+    }
+
+    fn reachable_nodes(&self) -> BTreeSet<String> {
+        let mut pending: Vec<String> = self
+            .root
+            .dependencies
+            .values()
+            .chain(self.root.dev_dependencies.values())
+            .chain(
+                self.environments
+                    .values()
+                    .flat_map(|environment| environment.dependencies.values().chain(environment.dev_dependencies.values())),
+            )
+            .cloned()
+            .collect();
+        let mut reachable = BTreeSet::new();
+        while let Some(node_id) = pending.pop() {
+            if !reachable.insert(node_id.clone()) {
+                continue;
+            }
+            if let Some(node) = self.dependencies.get(&node_id) {
+                pending.extend(node.dependencies.values().cloned());
+            }
+        }
+        reachable
     }
 }
 
 fn resolved_dependency_consistency_issues(name: &str, package: &ResolvedPackage, locked: &LockedDependency) -> Vec<String> {
     let mut issues = Vec::new();
 
+    if locked.name != package.name {
+        issues.push(format!(
+            "resolved dependency node '{}' has package name '{}' but Cell.lock records '{}'",
+            name, package.name, locked.name
+        ));
+    }
+
     if locked.version != package.version {
         issues.push(format!(
             "resolved dependency '{}' has package version '{}' but Cell.lock records '{}'",
             name, package.version, locked.version
         ));
+    }
+
+    if locked.manifest_digest != package.manifest_digest {
+        issues.push(format!(
+            "resolved dependency node '{}' manifest digest '{}' does not match Cell.lock '{}'",
+            name, package.manifest_digest, locked.manifest_digest
+        ));
+    }
+    if locked.dependencies != package.dependencies {
+        issues.push(format!("resolved dependency node '{}' edges do not match Cell.lock", name));
     }
 
     match (&package.source, &locked.source) {
@@ -1316,8 +2584,8 @@ fn resolved_dependency_consistency_issues(name: &str, package: &ResolvedPackage,
             )),
             None => issues.push(format!("resolved dependency '{}' is missing source_hash in Cell.lock", name)),
         }
-    } else if matches!(package.source, PackageSource::Registry { .. }) {
-        issues.push(format!("resolved registry dependency '{}' did not produce a source_hash", name));
+    } else {
+        issues.push(format!("resolved dependency '{}' did not produce a source_hash", name));
     }
 
     issues
@@ -1330,11 +2598,18 @@ fn lock_dependency_consistency_issues(
     consuming_namespace: Option<&str>,
 ) -> Vec<String> {
     let mut issues = Vec::new();
+    let expected_package = dependency_package_name(name, dep);
+    if locked.name != expected_package {
+        issues.push(format!(
+            "dependency alias '{}' expects package '{}' but Cell.lock node declares '{}'",
+            name, expected_package, locked.name
+        ));
+    }
 
     match dep {
         Dependency::Simple(version) => match &locked.source {
             LockedSource::Registry { namespace: locked_namespace, version: locked_version, .. }
-                if Some(locked_namespace.as_str()) == consuming_namespace && locked_version == version => {}
+                if Some(locked_namespace.as_str()) == consuming_namespace && locked_version == &locked.version => {}
             source => issues.push(format!(
                 "dependency '{}' expects registry source {}@{} but Cell.lock records {}",
                 name,
@@ -1344,7 +2619,10 @@ fn lock_dependency_consistency_issues(
             )),
         },
         Dependency::Detailed(detail) => {
-            if let Some(path) = &detail.path {
+            if detail.resolver.is_some() {
+                // Update-time resolvers are normalized into the immutable
+                // source recorded here. Locked builds never invoke them.
+            } else if let Some(path) = &detail.path {
                 match &locked.source {
                     LockedSource::Path { path: locked_path } if locked_path == path => {}
                     source => issues.push(format!(
@@ -1354,7 +2632,6 @@ fn lock_dependency_consistency_issues(
                         locked_source_display(source)
                     )),
                 }
-                push_locked_version_issue(name, &detail.version, &locked.version, &mut issues);
             } else if let Some(git) = &detail.git {
                 match &locked.source {
                     LockedSource::Git { url, revision } if url == git => {
@@ -1375,12 +2652,11 @@ fn lock_dependency_consistency_issues(
                         locked_source_display(source)
                     )),
                 }
-                push_locked_version_issue(name, &detail.version, &locked.version, &mut issues);
             } else {
                 match &locked.source {
                     LockedSource::Registry { namespace: locked_namespace, version: locked_version, .. }
                         if Some(locked_namespace.as_str()) == detail.namespace.as_deref().or(consuming_namespace)
-                            && locked_version == &detail.version => {}
+                            && locked_version == &locked.version => {}
                     source => issues.push(format!(
                         "dependency '{}' expects registry source {}@{} but Cell.lock records {}",
                         name,
@@ -1393,13 +2669,22 @@ fn lock_dependency_consistency_issues(
         }
     }
 
-    issues
-}
-
-fn push_locked_version_issue(name: &str, expected: &str, actual: &str, issues: &mut Vec<String>) {
-    if expected != "*" && expected != actual {
-        issues.push(format!("dependency '{}' expects package version '{}' but Cell.lock records '{}'", name, expected, actual));
+    if let Some(requirement) = match dep {
+        Dependency::Simple(requirement) => Some(requirement.as_str()),
+        Dependency::Detailed(detail) if detail.version != "*" && !detail.version.is_empty() => Some(detail.version.as_str()),
+        Dependency::Detailed(_) => None,
+    } {
+        match version::parse_version_req(requirement) {
+            Ok(requirement) if version::satisfies(&locked.version, &requirement) => {}
+            Ok(_) => issues.push(format!(
+                "dependency '{}' requires '{}' but Cell.lock records package version '{}'",
+                name, requirement, locked.version
+            )),
+            Err(error) => issues.push(error.message.clone()),
+        }
     }
+
+    issues
 }
 
 fn locked_source_display(source: &LockedSource) -> String {
@@ -1448,10 +2733,18 @@ pub struct LockedBuildInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LockedDependency {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
     pub version: String,
     pub source: LockedSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub manifest_digest: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dependencies: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<LockedBuildInfo>,
 }
@@ -1467,114 +2760,40 @@ pub mod version {
     use super::*;
 
     pub fn parse_version_req(req: &str) -> Result<VersionReq> {
-        if req == "*" {
-            return Ok(VersionReq::Any);
-        }
-
-        if let Some(stripped) = req.strip_prefix('^') {
-            return Ok(VersionReq::Compatible(stripped.to_string()));
-        }
-
-        if let Some(stripped) = req.strip_prefix('=') {
-            return Ok(VersionReq::Exact(stripped.to_string()));
-        }
-
-        if req.contains(',') || req.contains('>') || req.contains('<') {
-            return Ok(VersionReq::Range(req.to_string()));
-        }
-
-        Ok(VersionReq::Compatible(req.to_string()))
+        let req = req.trim();
+        let parsed = if req == "*" {
+            VersionReq::Any
+        } else if let Some(stripped) = req.strip_prefix('^') {
+            VersionReq::Compatible(stripped.to_string())
+        } else if let Some(stripped) = req.strip_prefix('=') {
+            VersionReq::Exact(stripped.to_string())
+        } else if req.contains(',') || req.contains('>') || req.contains('<') || req.contains('~') {
+            VersionReq::Range(req.to_string())
+        } else {
+            // Preserve CellScript's historical bare-version-as-compatible
+            // surface while using the standard SemVer compatibility rules.
+            VersionReq::Compatible(req.to_string())
+        };
+        standard_requirement(&parsed)?;
+        Ok(parsed)
     }
 
     pub fn satisfies(version: &str, req: &VersionReq) -> bool {
-        match req {
-            VersionReq::Any => true,
-            VersionReq::Exact(v) => version == v,
-            VersionReq::Compatible(v) => is_compatible(version, v),
-            VersionReq::Range(r) => satisfies_range(version, r),
-        }
-    }
-
-    fn is_compatible(version: &str, base: &str) -> bool {
-        let Some(v_parts) = parse_numeric_version(version) else {
+        let Ok(version) = semver::Version::parse(version) else {
             return false;
         };
-        let Some(b_parts) = parse_numeric_version(base) else {
-            return false;
+        standard_requirement(req).is_ok_and(|requirement| requirement.matches(&version))
+    }
+
+    fn standard_requirement(req: &VersionReq) -> Result<semver::VersionReq> {
+        let source = match req {
+            VersionReq::Any => "*".to_string(),
+            VersionReq::Exact(version) => format!("={version}"),
+            VersionReq::Compatible(version) => format!("^{version}"),
+            VersionReq::Range(range) => range.clone(),
         };
-
-        if v_parts[0] != b_parts[0] {
-            return false;
-        }
-
-        if v_parts[0] == 0 {
-            if v_parts.len() < 2 || b_parts.len() < 2 {
-                return false;
-            }
-            if v_parts[1] != b_parts[1] {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    fn satisfies_range(_version: &str, _range: &str) -> bool {
-        for clause in _range.split(',').map(str::trim).filter(|clause| !clause.is_empty()) {
-            let Some((op, expected)) = parse_range_clause(clause) else {
-                return false;
-            };
-            let Some(ordering) = compare_versions(_version, expected) else {
-                return false;
-            };
-            let satisfied = match op {
-                ">" => ordering.is_gt(),
-                ">=" => ordering.is_gt() || ordering.is_eq(),
-                "<" => ordering.is_lt(),
-                "<=" => ordering.is_lt() || ordering.is_eq(),
-                "=" | "==" => ordering.is_eq(),
-                _ => false,
-            };
-            if !satisfied {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn parse_range_clause(clause: &str) -> Option<(&str, &str)> {
-        for op in [">=", "<=", "==", ">", "<", "="] {
-            if let Some(version) = clause.strip_prefix(op) {
-                return Some((op, version.trim()));
-            }
-        }
-        None
-    }
-
-    fn compare_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
-        let left = parse_numeric_version(left)?;
-        let right = parse_numeric_version(right)?;
-        let max_len = left.len().max(right.len());
-        for idx in 0..max_len {
-            let lhs = *left.get(idx).unwrap_or(&0);
-            let rhs = *right.get(idx).unwrap_or(&0);
-            match lhs.cmp(&rhs) {
-                std::cmp::Ordering::Equal => {}
-                ordering => return Some(ordering),
-            }
-        }
-        Some(std::cmp::Ordering::Equal)
-    }
-
-    fn parse_numeric_version(version: &str) -> Option<Vec<u32>> {
-        let core = version.split_once('-').map(|(core, _)| core).unwrap_or(version);
-        let parts: Option<Vec<u32>> = core.split('.').map(|part| part.parse().ok()).collect();
-        let parts = parts?;
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts)
-        }
+        semver::VersionReq::parse(&source)
+            .map_err(|error| CompileError::without_span(format!("invalid semantic version requirement '{source}': {error}")))
     }
 }
 
@@ -1811,6 +3030,10 @@ mod tests {
             workspace: None,
             dependencies: HashMap::new(),
             dev_dependencies: HashMap::new(),
+            features: BTreeMap::new(),
+            environments: BTreeMap::new(),
+            dependency_overrides: BTreeMap::new(),
+            resolvers: BTreeMap::new(),
             build: BuildConfig::default(),
             policy: PolicyConfig::default(),
             deploy: DeployConfig::default(),
@@ -1874,19 +3097,51 @@ version = "0.1.0"
         assert!(graph.find_cycle().is_some());
     }
 
+    fn locked_path(name: &str, version: &str, path: &str, dependencies: BTreeMap<String, String>) -> LockedDependency {
+        LockedDependency {
+            name: name.to_string(),
+            namespace: None,
+            version: version.to_string(),
+            source: LockedSource::Path { path: path.to_string() },
+            source_hash: Some(format!("hash-{name}")),
+            manifest_digest: format!("manifest-{name}"),
+            dependencies,
+            build: None,
+        }
+    }
+
+    fn resolved_path(name: &str, version: &str, path: &str, dependencies: BTreeMap<String, String>) -> ResolvedPackage {
+        ResolvedPackage {
+            node_id: name.to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+            path: PathBuf::from(path),
+            source: PackageSource::Local(PathBuf::from(path)),
+            dependencies,
+            namespace: None,
+            source_hash: Some(format!("hash-{name}")),
+            manifest_digest: format!("manifest-{name}"),
+        }
+    }
+
     #[test]
     fn test_version_compatibility() {
         assert!(version::satisfies("1.2.3", &VersionReq::Compatible("1.0.0".to_string())));
         assert!(version::satisfies("1.5.0", &VersionReq::Compatible("1.2.3".to_string())));
+        assert!(!version::satisfies("1.1.9", &VersionReq::Compatible("1.2.3".to_string())));
         assert!(!version::satisfies("2.0.0", &VersionReq::Compatible("1.0.0".to_string())));
         assert!(!version::satisfies("0.2.0", &VersionReq::Compatible("0.1.0".to_string())));
         assert!(version::satisfies("0.1.5", &VersionReq::Compatible("0.1.0".to_string())));
+        assert!(!version::satisfies("0.1.0-alpha.1", &VersionReq::Compatible("0.1.0".to_string())));
+        assert!(version::satisfies("0.1.0-alpha.2", &VersionReq::Compatible("0.1.0-alpha.1".to_string())));
+        assert!(version::satisfies("1.2.3+build.7", &VersionReq::Exact("1.2.3".to_string())));
         assert!(version::satisfies("1.2.3", &VersionReq::Range(">=1.0.0, <2.0.0".to_string())));
         assert!(!version::satisfies("2.0.0", &VersionReq::Range(">=1.0.0, <2.0.0".to_string())));
         assert!(!version::satisfies("1.2.3", &VersionReq::Range(">=1.3.0".to_string())));
         assert!(!version::satisfies("1.bad", &VersionReq::Compatible("1.0.0".to_string())));
         assert!(!version::satisfies("1.2.3", &VersionReq::Compatible("1.bad".to_string())));
         assert!(!version::satisfies("1.bad", &VersionReq::Range(">=1.0.0".to_string())));
+        assert!(version::parse_version_req("^1.bad").is_err());
     }
 
     #[test]
@@ -1922,7 +3177,8 @@ version = "0.1.0"
         let mut manager = PackageManager::new(root);
         manager.resolve_dependencies().unwrap();
 
-        let math = manager.get_resolved().get("math").expect("path dependency should resolve");
+        let math_id = manager.root_dependencies().get("math").expect("root math edge");
+        let math = manager.get_resolved().get(math_id).expect("path dependency should resolve");
         assert_eq!(math.name, "math");
         assert_eq!(math.version, "0.1.0");
         assert!(matches!(math.source, PackageSource::Local(_)));
@@ -1961,7 +3217,8 @@ version = "0.2.0"
         let mut manager = PackageManager::new(root);
         manager.resolve_dependencies().unwrap();
 
-        let math = manager.get_resolved().get("math").expect("path dependency should resolve");
+        let math_id = manager.root_dependencies().get("math").expect("root math edge");
+        let math = manager.get_resolved().get(math_id).expect("path dependency should resolve");
         assert_eq!(math.version, "0.2.0");
     }
 
@@ -2013,9 +3270,10 @@ version = "0.1.0"
         let mut manager = PackageManager::new(root);
         manager.resolve_dependencies().unwrap();
 
-        assert!(manager.get_resolved().contains_key("math"));
-        assert!(manager.get_resolved().contains_key("util"));
-        assert_eq!(manager.get_resolved()["math"].dependencies, vec!["util"]);
+        let math_id = manager.root_dependencies().get("math").expect("root math edge");
+        let math = manager.get_resolved().get(math_id).expect("math node");
+        let util_id = math.dependencies.get("util").expect("math util edge");
+        assert!(manager.get_resolved().contains_key(util_id));
     }
 
     #[test]
@@ -2071,6 +3329,355 @@ path = "../a"
         assert!(error.message.contains("a -> b -> a"), "{}", error.message);
     }
 
+    fn write_test_lock(root: &Path, options: &ResolutionOptions) {
+        let mut manager = PackageManager::new(root);
+        let manifest = manager.read_manifest().unwrap();
+        manager.resolve_dependencies_with_options(options).unwrap();
+        let mut lockfile = Lockfile::new();
+        lockfile.package = LockfilePackageInfo {
+            edition: manifest.package.edition,
+            name: manifest.package.name.clone(),
+            version: manifest.package.version.clone(),
+            namespace: manifest.package.namespace.clone(),
+            source_hash: Some(registry::compute_source_hash(root).unwrap()),
+            compiler_source_hash: None,
+        };
+        lockfile.replace_with_resolution(&manager, &manifest, options).unwrap();
+        lockfile.write_to_root(root).unwrap();
+    }
+
+    fn write_path_package(root: &Path, relative: &str, name: &str, version: &str) {
+        let package = root.join(relative);
+        std::fs::create_dir_all(package.join("src")).unwrap();
+        std::fs::write(
+            package.join("Cell.toml"),
+            format!("[package]\nedition = \"2026\"\nname = \"{name}\"\nversion = \"{version}\"\n"),
+        )
+        .unwrap();
+        std::fs::write(package.join("src/lib.cell"), format!("module {name};\n")).unwrap();
+    }
+
+    #[test]
+    fn locked_resolution_requires_explicit_lock_and_detects_source_drift() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        write_path_package(root, "deps/math", "math", "1.2.3");
+        std::fs::write(
+            root.join("Cell.toml"),
+            r#"
+[package]
+edition = "2026"
+name = "app"
+version = "0.1.0"
+
+[dependencies.math]
+path = "deps/math"
+version = "^1.2.0"
+"#,
+        )
+        .unwrap();
+
+        let mut manager = PackageManager::new(root);
+        let missing = manager.resolve_locked_dependencies(&ResolutionOptions::default()).unwrap_err();
+        assert!(missing.message.contains("Cell.lock is missing"), "{}", missing.message);
+
+        write_test_lock(root, &ResolutionOptions::default());
+        let mut manager = PackageManager::new(root);
+        manager.resolve_locked_dependencies(&ResolutionOptions::default()).unwrap();
+        std::fs::write(root.join("deps/math/src/lib.cell"), "module math;\n// changed\n").unwrap();
+        let mut manager = PackageManager::new(root);
+        let drift = manager.resolve_locked_dependencies(&ResolutionOptions::default()).unwrap_err();
+        assert!(drift.message.contains("source hash mismatch"), "{}", drift.message);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_resolver_is_bounded_normalized_and_absent_from_locked_builds() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        let dependency_repo = root.join("resolver-package");
+        write_path_package(root, "resolver-package", "resolved_math", "1.2.3");
+        for arguments in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "tests@cellscript.dev"],
+            vec!["config", "user.name", "CellScript Tests"],
+            vec!["add", "."],
+            vec!["commit", "-q", "-m", "initial"],
+        ] {
+            let status = std::process::Command::new("git").args(arguments).current_dir(&dependency_repo).status().unwrap();
+            assert!(status.success());
+        }
+        let revision = PackageManager::git_revision(&dependency_repo).unwrap();
+        let response = serde_json::json!({
+            "schema": EXTERNAL_RESOLVER_RESPONSE_SCHEMA,
+            "dependency": {
+                "package": "resolved_math",
+                "version": "1.2.3",
+                "git": dependency_repo.to_string_lossy(),
+                "rev": revision,
+            }
+        });
+        let resolver_path = root.join("resolver.sh");
+        std::fs::write(&resolver_path, format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", response)).unwrap();
+        let mut permissions = std::fs::metadata(&resolver_path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&resolver_path, permissions).unwrap();
+        let resolver_digest = sha256_file(&resolver_path).unwrap();
+        std::fs::write(
+            root.join("Cell.toml"),
+            format!(
+                r#"
+[package]
+edition = "2026"
+name = "app"
+version = "0.1.0"
+
+[resolvers.local]
+command = "{}"
+sha256 = "sha256:{}"
+
+[dependencies.math]
+package = "resolved_math"
+version = "^1.2.0"
+resolver = "local"
+"#,
+                resolver_path.display(),
+                resolver_digest
+            ),
+        )
+        .unwrap();
+
+        write_test_lock(root, &ResolutionOptions::default());
+        let lockfile = Lockfile::read_from_root(root).unwrap().unwrap();
+        let target = lockfile.root.dependencies.get("math").unwrap();
+        assert!(matches!(lockfile.dependencies[target].source, LockedSource::Git { .. }));
+
+        std::fs::remove_file(&resolver_path).unwrap();
+        let mut locked = PackageManager::new(root);
+        locked.resolve_locked_dependencies(&ResolutionOptions::default()).unwrap();
+        assert_eq!(locked.get_resolved()[target].version, "1.2.3");
+    }
+
+    #[test]
+    fn moving_git_branch_changes_only_after_explicit_repin() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        let dependency_repo = root.join("moving-package");
+        write_path_package(root, "moving-package", "moving_math", "1.2.3");
+        for arguments in [
+            vec!["init", "-q", "--initial-branch=main"],
+            vec!["config", "user.email", "tests@cellscript.dev"],
+            vec!["config", "user.name", "CellScript Tests"],
+            vec!["add", "."],
+            vec!["commit", "-q", "-m", "first"],
+        ] {
+            let status = std::process::Command::new("git").args(arguments).current_dir(&dependency_repo).status().unwrap();
+            assert!(status.success());
+        }
+        std::fs::write(
+            root.join("Cell.toml"),
+            format!(
+                r#"
+[package]
+edition = "2026"
+name = "app"
+version = "0.1.0"
+
+[dependencies.math]
+package = "moving_math"
+version = "^1.2.0"
+git = "{}"
+branch = "main"
+"#,
+                dependency_repo.display()
+            ),
+        )
+        .unwrap();
+
+        write_test_lock(root, &ResolutionOptions::default());
+        let first_lock = Lockfile::read_from_root(root).unwrap().unwrap();
+        let first_target = first_lock.root.dependencies.get("math").unwrap();
+        let first_revision = match &first_lock.dependencies[first_target].source {
+            LockedSource::Git { revision, .. } => revision.clone(),
+            source => panic!("expected Git source, got {source:?}"),
+        };
+
+        std::fs::write(dependency_repo.join("src/lib.cell"), "module moving_math;\n// second commit\n").unwrap();
+        for arguments in [vec!["add", "."], vec!["commit", "-q", "-m", "second"]] {
+            let status = std::process::Command::new("git").args(arguments).current_dir(&dependency_repo).status().unwrap();
+            assert!(status.success());
+        }
+        let second_revision = PackageManager::git_revision(&dependency_repo).unwrap();
+        assert_ne!(first_revision, second_revision);
+
+        let mut locked = PackageManager::new(root);
+        locked.resolve_locked_dependencies(&ResolutionOptions::default()).unwrap();
+        assert!(locked.get_resolved().contains_key(first_target));
+
+        write_test_lock(root, &ResolutionOptions::default());
+        let repinned = Lockfile::read_from_root(root).unwrap().unwrap();
+        let repinned_target = repinned.root.dependencies.get("math").unwrap();
+        let repinned_revision = match &repinned.dependencies[repinned_target].source {
+            LockedSource::Git { revision, .. } => revision,
+            source => panic!("expected Git source, got {source:?}"),
+        };
+        assert_eq!(repinned_revision, &second_revision);
+        assert_ne!(repinned_revision, &first_revision);
+    }
+
+    #[test]
+    fn optional_features_and_dev_dependencies_select_locked_subgraphs() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        write_path_package(root, "deps/base", "base", "1.0.0");
+        write_path_package(root, "deps/extra", "extra", "1.0.0");
+        write_path_package(root, "deps/test-kit", "test-kit", "1.0.0");
+        std::fs::write(
+            root.join("Cell.toml"),
+            r#"
+[package]
+edition = "2026"
+name = "app"
+version = "0.1.0"
+
+[dependencies.base]
+path = "deps/base"
+
+[dependencies.extra]
+path = "deps/extra"
+optional = true
+
+[dev_dependencies.test]
+package = "test-kit"
+path = "deps/test-kit"
+
+[features]
+default = []
+extended = ["dep:extra"]
+"#,
+        )
+        .unwrap();
+        write_test_lock(root, &ResolutionOptions { scope: DependencyScope::Test, all_features: true, ..ResolutionOptions::default() });
+
+        let mut runtime = PackageManager::new(root);
+        runtime.resolve_locked_dependencies(&ResolutionOptions::default()).unwrap();
+        assert_eq!(runtime.root_dependencies().keys().cloned().collect::<Vec<_>>(), vec!["base"]);
+
+        let mut extended = PackageManager::new(root);
+        extended
+            .resolve_locked_dependencies(&ResolutionOptions {
+                features: BTreeSet::from(["extended".to_string()]),
+                ..ResolutionOptions::default()
+            })
+            .unwrap();
+        assert_eq!(extended.root_dependencies().keys().cloned().collect::<Vec<_>>(), vec!["base", "extra"]);
+
+        let mut tests = PackageManager::new(root);
+        tests
+            .resolve_locked_dependencies(&ResolutionOptions { scope: DependencyScope::Test, ..ResolutionOptions::default() })
+            .unwrap();
+        assert_eq!(tests.root_dependencies().keys().cloned().collect::<Vec<_>>(), vec!["base", "test"]);
+        let test_node = tests.root_dependencies().get("test").unwrap();
+        assert_eq!(tests.get_resolved()[test_node].name, "test-kit");
+    }
+
+    #[test]
+    fn environment_overrides_bind_chain_identity_and_dependency_graph() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        write_path_package(root, "deps/mainnet", "contracts", "1.0.0");
+        write_path_package(root, "deps/testnet", "contracts", "2.0.0");
+        std::fs::write(
+            root.join("Cell.toml"),
+            format!(
+                r#"
+[package]
+edition = "2026"
+name = "app"
+version = "0.1.0"
+
+[dependencies.contracts]
+path = "deps/mainnet"
+
+[environments.mainnet]
+chain_id = "ckb-mainnet"
+genesis_hash = "0x{}"
+
+[environments.testnet]
+chain_id = "ckb-testnet"
+genesis_hash = "0x{}"
+
+[dependency_overrides.testnet.contracts]
+path = "deps/testnet"
+"#,
+                "11".repeat(32),
+                "22".repeat(32)
+            ),
+        )
+        .unwrap();
+
+        let manifest = PackageManager::new(root).read_manifest().unwrap();
+        let mut lockfile = Lockfile::new();
+        lockfile.package.edition = CURRENT_EDITION;
+        for environment in manifest.environments.keys() {
+            let options = ResolutionOptions {
+                environment: Some(environment.clone()),
+                scope: DependencyScope::Test,
+                all_features: true,
+                ..ResolutionOptions::default()
+            };
+            let mut manager = PackageManager::new(root);
+            manager.resolve_dependencies_with_options(&options).unwrap();
+            lockfile.merge_resolution(&manager, &manifest, &options).unwrap();
+        }
+        lockfile.write_to_root(root).unwrap();
+
+        let mut mainnet = PackageManager::new(root);
+        mainnet
+            .resolve_locked_dependencies(&ResolutionOptions {
+                environment: Some("mainnet".to_string()),
+                ..ResolutionOptions::default()
+            })
+            .unwrap();
+        let mainnet_node = mainnet.root_dependencies().get("contracts").unwrap();
+        assert_eq!(mainnet.get_resolved()[mainnet_node].version, "1.0.0");
+
+        let mut testnet = PackageManager::new(root);
+        testnet
+            .resolve_locked_dependencies(&ResolutionOptions {
+                environment: Some("testnet".to_string()),
+                ..ResolutionOptions::default()
+            })
+            .unwrap();
+        let testnet_node = testnet.root_dependencies().get("contracts").unwrap();
+        assert_eq!(testnet.get_resolved()[testnet_node].version, "2.0.0");
+
+        let missing = PackageManager::new(root).resolve_locked_dependencies(&ResolutionOptions::default()).unwrap_err();
+        assert!(missing.message.contains("--environment"), "{}", missing.message);
+    }
+
+    #[test]
+    fn build_dependencies_fail_closed_until_isolated_execution_exists() {
+        let manifest: PackageManifest = toml::from_str(
+            r#"
+[package]
+edition = "2026"
+name = "app"
+version = "0.1.0"
+
+[build.dependencies]
+codegen = "1.0.0"
+"#,
+        )
+        .unwrap();
+        let temp = tempdir().unwrap();
+        PackageManager::new(temp.path()).write_manifest(&manifest).unwrap();
+        let error = PackageManager::new(temp.path()).resolve_dependencies().unwrap_err();
+        assert!(error.message.contains("reserved"), "{}", error.message);
+    }
+
     #[test]
     fn lockfile_consistency_reports_stale_and_mismatched_path_sources() {
         let manifest: PackageManifest = toml::from_str(
@@ -2087,18 +3694,13 @@ path = "deps/math"
         )
         .unwrap();
         let mut lockfile = Lockfile::new();
+        lockfile.root.dependencies.insert("math".to_string(), "math-node".to_string());
+        lockfile.dependencies.insert("math-node".to_string(), locked_path("math", "0.2.0", "deps/old-math", BTreeMap::new()));
         lockfile.dependencies.insert(
-            "math".to_string(),
+            "stale-node".to_string(),
             LockedDependency {
-                version: "0.2.0".to_string(),
-                source: LockedSource::Path { path: "deps/old-math".to_string() },
-                source_hash: None,
-                build: None,
-            },
-        );
-        lockfile.dependencies.insert(
-            "stale".to_string(),
-            LockedDependency {
+                name: "stale".to_string(),
+                namespace: Some("stale".to_string()),
                 version: "1.0.0".to_string(),
                 source: LockedSource::Registry {
                     registry: "cellscript-registry".to_string(),
@@ -2107,7 +3709,9 @@ path = "deps/math"
                     namespace: "stale".to_string(),
                     version: "1.0.0".to_string(),
                 },
-                source_hash: None,
+                source_hash: Some("hash-stale".to_string()),
+                manifest_digest: "manifest-stale".to_string(),
+                dependencies: BTreeMap::new(),
                 build: None,
             },
         );
@@ -2115,8 +3719,8 @@ path = "deps/math"
         let issues = lockfile.consistency_issues(&manifest);
 
         assert!(issues.iter().any(|issue| issue.contains("expects path source 'deps/math'")), "{issues:?}");
-        assert!(issues.iter().any(|issue| issue.contains("expects package version '0.1.0'")), "{issues:?}");
-        assert!(issues.iter().any(|issue| issue.contains("stale dependency 'stale'")), "{issues:?}");
+        assert!(issues.iter().any(|issue| issue.contains("requires '0.1.0'")), "{issues:?}");
+        assert!(issues.iter().any(|issue| issue.contains("unreachable dependency node 'stale-node'")), "{issues:?}");
         assert!(!lockfile.is_consistent(&manifest));
     }
 
@@ -2136,49 +3740,13 @@ path = "deps/math"
         )
         .unwrap();
         let mut lockfile = Lockfile::new();
-        lockfile.dependencies.insert(
-            "math".to_string(),
-            LockedDependency {
-                version: "0.1.0".to_string(),
-                source: LockedSource::Path { path: "deps/math".to_string() },
-                source_hash: None,
-                build: None,
-            },
-        );
-        lockfile.dependencies.insert(
-            "util".to_string(),
-            LockedDependency {
-                version: "0.1.0".to_string(),
-                source: LockedSource::Path { path: "deps/math/../util".to_string() },
-                source_hash: None,
-                build: None,
-            },
-        );
-        let mut resolved = HashMap::new();
-        resolved.insert(
-            "math".to_string(),
-            ResolvedPackage {
-                name: "math".to_string(),
-                version: "0.1.0".to_string(),
-                path: PathBuf::from("deps/math"),
-                source: PackageSource::Local(PathBuf::from("deps/math")),
-                dependencies: vec!["util".to_string()],
-                namespace: None,
-                source_hash: None,
-            },
-        );
-        resolved.insert(
-            "util".to_string(),
-            ResolvedPackage {
-                name: "util".to_string(),
-                version: "0.1.0".to_string(),
-                path: PathBuf::from("deps/util"),
-                source: PackageSource::Local(PathBuf::from("deps/math/../util")),
-                dependencies: Vec::new(),
-                namespace: None,
-                source_hash: None,
-            },
-        );
+        lockfile.root.dependencies.insert("math".to_string(), "math-node".to_string());
+        let math_edges = BTreeMap::from([("util".to_string(), "util-node".to_string())]);
+        lockfile.dependencies.insert("math-node".to_string(), locked_path("math", "0.1.0", "deps/math", math_edges.clone()));
+        lockfile.dependencies.insert("util-node".to_string(), locked_path("util", "0.1.0", "deps/math/../util", BTreeMap::new()));
+        let mut resolved = BTreeMap::new();
+        resolved.insert("math-node".to_string(), resolved_path("math", "0.1.0", "deps/math", math_edges));
+        resolved.insert("util-node".to_string(), resolved_path("util", "0.1.0", "deps/math/../util", BTreeMap::new()));
 
         let issues = lockfile.consistency_issues_with_resolved(&manifest, &resolved);
 
@@ -2191,6 +3759,8 @@ path = "deps/math"
         lockfile.dependencies.insert(
             "old".to_string(),
             LockedDependency {
+                name: "old".to_string(),
+                namespace: Some("old".to_string()),
                 version: "1.0.0".to_string(),
                 source: LockedSource::Registry {
                     registry: "cellscript-registry".to_string(),
@@ -2199,24 +3769,15 @@ path = "deps/math"
                     namespace: "old".to_string(),
                     version: "1.0.0".to_string(),
                 },
-                source_hash: None,
+                source_hash: Some("hash-old".to_string()),
+                manifest_digest: "manifest-old".to_string(),
+                dependencies: BTreeMap::new(),
                 build: None,
             },
         );
 
-        let mut resolved = HashMap::new();
-        resolved.insert(
-            "math".to_string(),
-            ResolvedPackage {
-                name: "math".to_string(),
-                version: "0.1.0".to_string(),
-                path: PathBuf::from("deps/math"),
-                source: PackageSource::Local(PathBuf::from("deps/math")),
-                dependencies: Vec::new(),
-                namespace: None,
-                source_hash: None,
-            },
-        );
+        let mut resolved = BTreeMap::new();
+        resolved.insert("math".to_string(), resolved_path("math", "0.1.0", "deps/math", BTreeMap::new()));
 
         lockfile.replace_with_resolved(&resolved);
 
@@ -2238,7 +3799,10 @@ path = "deps/math"
     fn lockfile_requires_package_and_build_profile_identity() {
         let missing_package = toml::from_str::<Lockfile>(
             r#"
-version = 2
+version = 3
+schema = "cellscript-lock-v0.24-graph-v1"
+
+[root]
 
 [dependencies]
 "#,
@@ -2248,10 +3812,13 @@ version = 2
 
         let missing_profile = toml::from_str::<Lockfile>(
             r#"
-version = 2
+version = 3
+schema = "cellscript-lock-v0.24-graph-v1"
 
 [package]
 edition = "2026"
+
+[root]
 
 [package_build]
 edition = "2026"

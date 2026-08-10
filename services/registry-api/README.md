@@ -44,6 +44,15 @@ an artifact descriptor:
 ```
 
 Profile/kind/language/consumption combinations are closed and validated. The
+single extension point is the exported
+`cellscript-registry-profile-catalog-v1`: every profile names a versioned
+validator, allowed kind/language/consumption contracts, whether a profile
+contract is required, and a `dependency` or `non_resolving` capability. Only
+`cellscript_source` is dependency-resolving. Unknown profiles and attempts to
+use CKB executables, reproducible builds, or copy material as dependencies fail
+closed.
+
+The
 generic profiles additionally carry a closed
 `cellscript-registry-profile-contract-v1` object. Admission, the publisher CLI,
 and the isolated verifier independently canonicalize it, bind its hash, reject

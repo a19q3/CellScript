@@ -653,7 +653,7 @@ CKB cycle/capacity estimates.
 
 | Module | What it does |
 |---|---|
-| **Package workflow** (`package/`) | `Cell.toml` parsing, path/git/registry source-package dependency resolution, transitive `Cell.lock` reproducibility, `cellc init`/`add`/`remove`/`install --path`/`install namespace/pkg@version`/`update`/`info`. Registry source packages are selected from the production API's accepted status, then installed from a content-addressed Registry snapshot after descriptor SHA-256, per-file BLAKE2b, Edition/profile identity, and whole-tree `source_hash` verification; non-CellScript registry artifact profiles remain fail-closed. |
+| **Package workflow** (`package/`) | `Cell.toml` parsing, standard SemVer, path/git/registry source resolution, manifest-bound `Cell.lock` v3 graphs, aliases, features/dev modes, genesis-bound environments, and bounded update-time resolvers; `cellc init`/`add`/`remove`/`lock`/`install`/`update`/`info`. Builds consume exact immutable Git/Registry pins and verified source hashes without mutable discovery; the Registry profile catalog keeps non-CellScript artifacts non-resolving. |
 | **Incremental compiler** (`incremental/`) | Dependency-graph-aware build cache — skips recompilation when inputs are unchanged. |
 | **Build integration** (`lib.rs`) | Resolves `Cell.toml` → `CellBuildConfig`, merges CLI + manifest options, selects entry scope, runs policy gates, writes artifacts + metadata. |
 
@@ -760,10 +760,11 @@ for a build or CI job. The full contract is in the
 ### Package Workflow
 
 CellScript ships a local-first package workflow in `cellc`. Local packages,
-source roots, path/git/registry source-package dependencies, lockfile refresh,
+source roots, path/git/registry source-package dependencies, explicit lock refresh,
 and package build/check/doc/fmt flows are production-style. Registry resolution
-is deliberately narrow: `cellc install`, `cellc build`, and `cellc update`
-query the public API for an accepted CellScript source-package version, then
+is deliberately narrow: `cellc lock`, `cellc install`, and `cellc update`
+query the public API for an accepted CellScript source-package version, while
+`build`, `check`, and `test` consume only the pinned graph. Resolution commands
 download its immutable Registry source snapshot, reject unsafe paths or opaque
 archive formats, and verify snapshot SHA-256, every file's BLAKE2b, `Cell.toml`
 identity, Edition/profile identity, and the whole-tree `source_hash`.
@@ -778,6 +779,8 @@ Non-CellScript artifact profiles still fail closed.
 - top-level `cellc <input>` and report commands accept `.cell` files, package
   directories, or `Cell.toml` manifests where the command supports an input
 - `cellc add --path` — records local path dependencies in `Cell.toml`
+- `cellc lock` — explicitly resolve the complete runtime/test/feature and CKB
+  environment graph and write `Cell.lock` v3
 - `cellc install --path` and `cellc update` — resolve local path dependency
   graphs and refresh `Cell.lock`
 - `cellc install cellscript/pkg@1.2.0` — resolve a registry source-package
@@ -786,8 +789,22 @@ Non-CellScript artifact profiles still fail closed.
   verification
 - Local path dependencies are resolved recursively and included in module
   loading, source hashing, and metadata
-- `Cell.lock` — captures direct and transitive resolved dependency identity
-  for reproducible checks
+- `Cell.lock` v3 — binds the root manifest digest, canonical dependency nodes,
+  outgoing alias edges, dependency manifests, whole-tree hashes, exact Git or
+  Registry pins, feature/test modes, and genesis-bound CKB environments
+- Commit `Cell.lock` to version control. It is reviewed build input, not a local
+  cache; only `cellc lock`, `cellc update`, or dependency-editing commands may
+  repin its dependency graph
+- `build`/`check`/`test --locked` — explicitly assert the existing dependency
+  graph; the graph is authoritative even without the flag
+- `--frozen` — imply offline mode and suppress all lockfile writes;
+  `--offline` permits only materialized exact sources
+- `[features]`, optional `dep:<alias>`, `[dev_dependencies]`, local
+  `package = "..."` aliases, and environment overrides are lock-graph inputs;
+  `[build.dependencies]` remains fail-closed pending isolated execution
+- `[resolvers.<name>]` — optional absolute-path/SHA-256-bound, time/output
+  bounded update-time resolver; its versioned response must normalize to an
+  exact Registry version or Git commit and is never executed by locked builds
 - `cellc info --json` — exposes package metadata for CI and tooling
 - `cellc package verify --json` — fails closed when `Cell.toml`, source hash,
   dependency resolution, or build identity disagree with `Cell.lock`
@@ -873,7 +890,10 @@ the manual, CI, recovery, and external-wallet path.
   read-only service exposes `/source-snapshots/*` independently of Postgres and
   the API; the lockfile records that URL plus its `sha256:` revision so Registry
   installs do not silently depend on Git availability.
-- Non-CellScript registry artifact profiles remain future-facing or fail-closed
+- The versioned `cellscript-registry-profile-catalog-v1` keeps only
+  `cellscript_source` dependency-resolving; non-CellScript artifact profiles
+  remain discoverable through explicit artifact commands and fail closed in
+  package resolution
 - Git dependencies are explicit remote source fetches; treat them as
   review-required inputs, not the registry production path
 
@@ -931,7 +951,7 @@ the manual, CI, recovery, and external-wallet path.
 | `cellc fmt` | Format `.cell` sources or check formatting |
 | `cellc init` | Create a package skeleton |
 | `cellc add` / `remove` | Mutate local package dependencies |
-| `cellc install --path` / `install namespace/pkg@version` / `update` | Resolve local, git, or registry CellScript source-package dependencies and refresh `Cell.lock` |
+| `cellc lock` / `install --path` / `install namespace/pkg@version` / `update` | Explicitly resolve local, git, or registry CellScript source-package dependencies and refresh `Cell.lock` v3 |
 | `cellc info` | Print manifest and package information |
 | `cellc package verify` | Verify package/source/build identity against `Cell.lock` |
 | `cellc registry verify` | Verify deployment identity against `Cell.lock` and `Deployed.toml`; `--live` adds CKB RPC evidence |

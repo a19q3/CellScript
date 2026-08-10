@@ -55,11 +55,12 @@ verifiable lowering boundary before machine code plus a separate structural
 ELF checker. Recovering the complete CellScript type/resource semantics from an
 arbitrary ELF is not a credible 0.24 promise.
 
-The same comparison informs, but does not expand, the package scope. Sui's new
-package design records complete dependency graphs, manifest digests,
-environment-specific resolution, and explicit repinning. Those ideas are
-inputs to a future CellScript lock/upgrade track, not reasons to destabilise
-`Cell.lock` in the trust-closure release. See the pinned upstream
+The same comparison informed the package trust closure. Sui's new package
+design records complete dependency graphs, manifest digests,
+environment-specific resolution, and explicit repinning. CellScript adopts
+those resolution principles in `Cell.lock` v3, adapted to CKB genesis identity
+and immutable Registry snapshots, without importing Move/Sui package or object
+identity. See the pinned upstream
 [package design](https://github.com/MystenLabs/sui/blob/5a9f37431c473fa2f6d49abecbcc6a6d7190f533/external-crates/move/crates/move-package-alt/design/DESIGN.md).
 
 ## Release Principles
@@ -361,27 +362,30 @@ criteria.
 - Failure to obtain external evidence does not relax or relabel the core
   compiler/checker/test outcomes.
 
-## Package Evolution Design Handoff
+## Package Evolution Closure
 
-0.24 may write and review design records for the next package-evolution line,
-but it does not ship `Cell.lock` v3 or a new visibility edition by stealth.
+0.24 now ships the resolution subset of the package-evolution design:
 
-The design work should cover:
+- `Cell.lock` v3 carries a canonical source DAG with outgoing alias edges,
+  dependency-manifest digests, source hashes, and exact source identities;
+- build/check/test are lock-authoritative, while lock/update/add/remove/install
+  are the explicit repin boundary;
+- standard SemVer, local package aliases, features, optional dependencies, and
+  test-only roots are resolved into mode-qualified graph nodes;
+- CKB environment roots bind `chain_id` plus genesis hash and require explicit
+  selection when dependency overrides exist;
+- Git branches normalize to full commits, Registry versions to exact snapshot
+  URLs and SHA-256 revisions, and frozen/offline builds use only immutable
+  caches; and
+- bounded SHA-256-pinned external resolvers normalize to ordinary immutable
+  sources at update time and never execute during a locked build.
 
-- a canonical source dependency DAG with outgoing edges and per-manifest
-  digests, separated from chain-specific deployment overlays;
-- explicit update/repin conditions and deterministic offline rebuilds;
-- package-local import aliases and the type-identity requirements that would be
-  needed before resolving two versions of one dependency;
-- semantic upgrade reports covering source API, action/lock ABI, Cell/Molecule
-  layout, ProofPlan/effects, builders, Type ID, and CellDep facts; and
-- two independent compatibility axes: existing live-state readability/
-  spendability and authorization/predicate security. Constraint tightening can
-  strand old Cells; constraint loosening can weaken security, so neither is
-  automatically called compatible.
-
-Implementation belongs to a later release after the verified artifact and test
-boundaries are stable.
+The remaining package-evolution work stays later-release scope: source/API and
+action/lock ABI upgrade reports; Cell/Molecule layout, ProofPlan/effect,
+builder, Type ID, and CellDep compatibility; visibility-default changes; and
+the independent live-state readability/spendability versus authorization/
+predicate-security axes. Merely resolving two nodes does not make conflicting
+CellScript module/type identities compatible.
 
 ## Gate Integration
 
@@ -433,6 +437,8 @@ boundaries are stable.
 7. Coordinate the Myelin adapter-lock handoff to the completed 0.23 identities
    and then to the 0.24 checker contract.
 8. Promote Fiber/RGB++ only if their external evidence independently closes.
+9. Land the lock-authoritative package graph and versioned Registry profile
+   catalog without expanding the source edition or artifact resolver boundary.
 
 Source-map and record schemas land before checker or debugger UX so later
 surfaces consume one contract. Myelin handoff follows checker stabilization;
@@ -460,9 +466,12 @@ it must not force compatibility aliases into the compiler.
 - **External matrices block core progress**. Fiber/RGB++ depend on external
   binaries, networks, and operators. Mitigation: preserve independent pending
   states and never lower the core checker/test exit criteria.
-- **0.24 scope expands into package redesign**. Lock graph, visibility,
-  compatibility, and transaction composition are each release-sized.
-  Mitigation: design handoff only; implementation follows trust closure.
+- **Package extensibility expands the build TCB**. Mutable branch lookup,
+  plugin execution, and broad artifact coercion could make builds
+  non-reproducible. Mitigation: explicit repinning, exact cached sources,
+  bounded hash-pinned update-time resolvers, and a fail-closed profile catalog;
+  visibility, semantic upgrade policy, and transaction composition remain out
+  of scope.
 
 ## Non-Goals
 
@@ -475,8 +484,9 @@ it must not force compatibility aliases into the compiler.
 - No `MyelinExtended` CellScript target profile.
 - No Fiber-specific compiler profile or name-matched structural widening.
 - No claim that local CKB-VM evidence is mainnet deployment or commitment.
-- No `Cell.lock` v3, multi-version resolver, visibility-default break, or
-  upgrade-policy implementation before the design handoff is accepted.
+- No visibility-default break, implicit environment selection, unrestricted
+  resolver plugins, automatic semantic upgrade policy, or claim that
+  multi-node resolution makes conflicting module/type identities compatible.
 - No formal prover clone as a substitute for executable and independently
   checked evidence.
 
@@ -503,6 +513,12 @@ evidence from the remaining external handoff and promotion checkpoints:
   instruction ranges.
 - [x] Registry artifact-only verification uses the standalone checker in a
   bounded worker and records its version/policy.
+- [x] `Cell.lock` v3 is manifest-bound and graph-structured; standard SemVer,
+  feature/test roots, aliases, exact Git/Registry pins, CKB environments,
+  frozen/offline behavior, explicit repinning, and bounded external resolver
+  normalization have positive and fail-closed regressions.
+- [x] Registry profile admission uses a versioned catalog and only
+  `cellscript_source` is dependency-resolving.
 - [ ] The Myelin adapter pins and verifies the upstream compiler/checker
   contract without vendoring compiler source or accepting raw-witness aliases.
   CellScript publishes and tests the versioned handoff contract; Myelin's exact

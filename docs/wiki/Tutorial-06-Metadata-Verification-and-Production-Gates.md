@@ -614,6 +614,16 @@ code CellDeps can produce current `on_chain_committed` state. Scheduled
 reconciliation demotes that current state when the commitment or deployment
 Cell is spent or no longer sufficiently confirmed.
 
+Package resolution is an earlier, separate gate. `Cell.lock` v3 binds the
+exact `Cell.toml` digest, dependency graph edges, dependency manifests,
+whole-tree hashes, exact Git/Registry source pins, feature/test modes, and CKB
+environment genesis identity. Build/check/test never perform mutable version
+selection. A changed manifest or source requires explicit `cellc lock` or
+`cellc update`; `--frozen` additionally forbids network access and lockfile
+writes. The Registry's versioned profile catalog allows only
+`cellscript_source` to enter this graph. Executable, reproducible, TCB, and copy
+artifacts retain their separate evidence and consumption paths.
+
 For the current NovaSeal profile set, production-ready source-package evidence
 means the live local devnet runners pass for core, Agreement, and the six
 planned profiles: BTC transaction commitment, BTC UTXO seal, dual seal, Fiber

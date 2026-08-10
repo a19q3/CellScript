@@ -297,17 +297,21 @@ The package manager supports:
 - `cellc doc`
 - `cellc add --path`
 - `cellc remove`
+- `cellc lock`
 - `cellc info`
 - `cellc package verify`
 - `cellc registry verify`
-- lockfile consistency checks for local dependencies
+- manifest-bound `Cell.lock` v3 graph checks for local, Git, and Registry
+  dependencies, feature/test modes, and named CKB environments
 
 Use the top-level `cellc path/to/file.cell` form for one-off file compilation.
 Use `cellc build` for package builds.
 
-Local `cellc install --path`, registry source-package `cellc install`, and
-`cellc update` are supported lockfile workflows for packages that can be
-resolved and source-hash verified. For an interactive first Registry write,
+`cellc lock`, local `cellc install --path`, registry source-package
+`cellc install`, and `cellc update` are explicit lockfile workflows for
+packages that can be resolved and source-hash verified. Normal build/check/test
+consume that graph; `--frozen` adds offline, no-write behavior. For an
+interactive first Registry write,
 `cellc publish --authorise` obtains a wallet-rooted delegated capability and
 resumes the publish; later `cellc publish` calls use the active scoped key.
 `cellc registry add` remains the local/offline discovery metadata path.

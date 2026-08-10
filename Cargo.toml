@@ -81,6 +81,7 @@ serde_json = "1.0"
 blake2b_simd = "1.0"
 toml = "0.8"
 hex = "0.4"
+semver = "1.0"
 cellscript-artifact-checker = { version = "=0.22.0", path = "crates/cellscript-artifact-checker" }
 
 indexmap = "=2.2.6"

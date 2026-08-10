@@ -27,7 +27,6 @@ editors/vscode-cellscript/dist/
 *.meta.json
 
 .cell/
-Cell.lock
 
 proposals/*
 !proposals/novaseal/

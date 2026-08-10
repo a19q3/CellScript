@@ -28,6 +28,16 @@ then verifies the `cellscript` package offline with an exact local crates.io
 patch. A real crates.io release must preserve that dependency order: publish
 and confirm the checker version before publishing the compiler version.
 
+Package-manager changes must preserve the lock-authority regression matrix:
+standard SemVer edge cases; missing/stale manifest digests; direct/transitive
+source drift; alias and graph-edge identity; optional/default/all feature and
+test-only roots; environment override plus CKB genesis binding; moving Git
+branches remaining pinned until explicit update; exact offline/frozen cache
+use; and bounded external resolvers normalizing to immutable sources without
+running during locked builds. Registry API checks also validate the complete
+`cellscript-registry-profile-catalog-v1` and prove that only CellScript source
+profiles are dependency-resolving.
+
 `dev` and `ci` run `cellc fmt --check` against
 `examples/language/canonical_style.cell`. The formatter's comma-terminated
 field form is the canonical checked-in surface; the parser may continue to

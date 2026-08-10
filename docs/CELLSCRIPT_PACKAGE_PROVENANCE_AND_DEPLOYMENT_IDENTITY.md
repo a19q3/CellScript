@@ -412,8 +412,10 @@ through the `namespace` field:
 |---|---|
 | `token = "0.3.0"` | Auto-resolve: search discovery index for `token`; if ambiguous, default to the consuming package's namespace |
 | `token = { version = "0.3.0", namespace = "cellscript" }` | Explicit: look up `cellscript/token` in discovery index |
+| `local_token = { package = "token", version = "0.3.0", namespace = "cellscript" }` | Resolve declared package `token` under local alias `local_token` |
 | `token = { version = "0.3.0", path = "../token" }` | Local path, bypasses registry |
 | `token = { version = "0.3.0", git = "...", tag = "v0.3.0" }` | Git clone, bypasses registry |
+| `token = { package = "token", version = "^0.3.0", resolver = "vendor" }` | Invoke a declared bounded resolver only during explicit lock/update, then normalize to Registry or exact Git source |
 
 The resolution priority is: `path` > `git` > `registry`. If `path` or `git`
 is specified, the dependency is resolved locally and the `namespace` field
@@ -429,16 +431,18 @@ Source code references types via their full module path (e.g.,
 should be), not deployment *facts* (which specific out_point was deployed to).
 Intents are determined at compile time; facts are determined after deployment.
 
-### Cell.lock — Build Identity Lock (Extended)
+### Cell.lock — Graph And Build Identity Lock
 
-The existing `Cell.lock` records dependency versions and sources. The registry
-extension adds build identity hashes, deployment references, and enriches the
-registry source type with git provenance.
+`Cell.lock` v3 separates mutable resolution from compilation. It records the
+root manifest digest, canonical dependency nodes and outgoing alias edges,
+runtime/test and environment roots, exact source/content identity, build
+identity hashes, and deployment references.
 
 **Lockfile schema**:
 
 ```toml
-version = 2
+version = 3
+schema = "cellscript-lock-v0.24-graph-v1"
 
 [package]
 edition = "2026"
@@ -458,25 +462,25 @@ schema_hash = "blake2b:0x9abc..."
 abi_hash = "blake2b:0xdef0..."
 constraints_hash = "blake2b:0x1111..."
 
-# Registry dependency — resolved from discovery index
-[dependencies.token]
-version = "0.3.0"
-namespace = "cellscript"
-source = { registry = "cellscript/token", url = "https://github.com/cellscript/token", revision = "a1b2c3d4..." }
-source_hash = "blake2b:0x2222..."
-build = { artifact_hash = "blake2b:0x3333...", abi_hash = "blake2b:0x4444..." }
+[root]
+manifest_digest = "sha256:..."
 
-# Path dependency (unchanged)
-[dependencies.helper]
-version = "0.1.0"
-source = { path = "../helper" }
-source_hash = "blake2b:0x5555..."
+[root.dependencies]
+token = "token@0.3.0|registry:...|env=default|features=default"
 
-# Git dependency (unchanged)
-[dependencies.legacy]
-version = "1.0.0"
-source = { git = "https://github.com/other/legacy", revision = "e5f6g7h8..." }
-source_hash = "blake2b:0x6666..."
+[root.dev_dependencies]
+test_helper = "test_helper@0.1.0|path:...|env=default|features=default"
+
+# Each entry under [dependencies] is keyed by canonical node ID and records:
+# name, namespace, version, exact Path/Git/Registry source, source_hash,
+# manifest_digest, outgoing alias-to-node dependencies, and optional build facts.
+
+[environments.mainnet]
+chain_id = "ckb"
+genesis_hash = "0x..."
+
+[environments.mainnet.dependencies]
+token = "token@0.3.0|registry:...|env=mainnet|features=default"
 
 [deployment.ckb.aggron4]
 status = "deployed"
@@ -501,11 +505,11 @@ discovery index:
 | `revision` | Exact git commit hash | Phase 1 |
 | `version` | Package version string | Phase 1 (existing) |
 
-The `url` and `revision` fields make the lockfile self-sufficient for
-re-verification: `cellc package verify` can clone the exact source commit
-without re-querying the discovery index. This is analogous to how `go.sum`
-records the exact module version and hash, making the `go.mod` file
-independently verifiable.
+The `url` and `revision` fields make the lockfile self-sufficient for exact
+materialization without re-querying discovery or selecting versions. Public
+Registry revisions are snapshot SHA-256 identities; Git revisions are full
+40-hex commits. Whole-tree and manifest digests are verified after
+materialization.
 
 The existing `LockedSource::Path { path }` and `LockedSource::Git { url, revision }`
 are unchanged.
@@ -528,7 +532,9 @@ checks that it matches the actual `Deployed.toml` entry; if absent, the
 verification step is skipped with a warning. Future phases may require
 `record_hash` for production packages.
 
-**No backward compatibility**: readers accept only lockfile version 2.
+**No implicit backward compatibility**: readers accept only lockfile version 3
+and schema `cellscript-lock-v0.24-graph-v1`. Explicit `cellc lock`/`update` may
+replace a version 1 or 2 lock; build/check/test never migrate or repin it.
 `[package]` is required. When `[package_build]` exists, both `edition` and
 `compatibility_profile_hash` are required fields; readers do not infer them.
 The `[deployment.*]` sections may remain absent until a deployment exists.
@@ -1497,7 +1503,8 @@ the resolved compatibility profile; they are not derived from the edition year.
 
 ### Edition 2026 Breaking Boundary
 
-- `Cell.lock` version 2 records the package edition. A present
+- `Cell.lock` version 3 records the package edition and manifest-bound source
+  graph. A present
   `[package_build]` must use the same edition and a non-empty compatibility
   profile hash.
 - `Deployed.toml` version 2 uses
@@ -1550,9 +1557,12 @@ this. No code change needed; the document should reference this convention.
 **Gap**: `version = 1` and `lock_schema = "cellscript-lock-v1"` are redundant.
 No migration path is defined between lockfile schema generations.
 
-**Resolution**: `Cell.lock` version 2 is the sole accepted lock generation.
-Readers reject older versions and never rewrite them implicitly. Edition and
-compatibility profile are part of the build identity.
+**Resolution**: `Cell.lock` version 3 with
+`cellscript-lock-v0.24-graph-v1` is the sole accepted build-time lock
+generation. Readers reject older versions and never rewrite them implicitly;
+explicit lock/update may repin them. Edition and compatibility profile remain
+part of build identity, while root/dependency manifest digests and graph edges
+form dependency identity.
 
 #### 3. Deployed.toml Schema — Dual Version Identifier
 

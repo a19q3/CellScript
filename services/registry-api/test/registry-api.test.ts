@@ -6,6 +6,8 @@ import {
   AUTH_ACTION,
   AUTH_PROTOCOL,
   AUTH_REVOKE_CAPABILITY_ACTION,
+  ARTIFACT_PROFILE_CATALOG,
+  ARTIFACT_PROFILE_CATALOG_SCHEMA,
   AVAILABILITY_ACTION,
   AVAILABILITY_PROTOCOL,
   DEPLOYMENT_ACTION,
@@ -19,9 +21,11 @@ import {
   ckbBlake2bHex,
   ckbScriptHash,
   ckbSecp256k1PrincipalIdFromPublicKey,
+  artifactProfileSupportsDependencyResolution,
   joyidPrincipalIdFromBinding,
   scopeAllows,
   validatePublishPayload,
+  validateArtifactDescriptor,
   type CapabilityAuthorisationPayload,
   type CapabilityRevocationPayload,
   type AvailabilityPayload,
@@ -442,6 +446,33 @@ function declareReproducibleBuild(payload: PublishPayload): void {
 }
 
 describe("generic artifact profile contracts", () => {
+  it("exposes one versioned, fail-closed definition for every artifact profile", () => {
+    expect(Object.keys(ARTIFACT_PROFILE_CATALOG).sort()).toEqual([
+      "cellscript_source",
+      "ckb_executable",
+      "copy_material",
+      "reproducible_build",
+    ]);
+    expect(Object.values(ARTIFACT_PROFILE_CATALOG).every((definition) => definition.schema === ARTIFACT_PROFILE_CATALOG_SCHEMA)).toBe(true);
+    expect(artifactProfileSupportsDependencyResolution("cellscript_source")).toBe(true);
+    expect(artifactProfileSupportsDependencyResolution("ckb_executable")).toBe(false);
+  });
+
+  it("keeps unknown profiles and non-source dependency contracts out of the resolver surface", () => {
+    expect(() => validateArtifactDescriptor({
+      kind: "source_library",
+      profile: "future_profile",
+      consumption_mode: "dependency",
+      language: "cellscript",
+    })).toThrow(/artifact.profile must be one of/);
+    expect(() => validateArtifactDescriptor({
+      kind: "deployable_contract",
+      profile: "ckb_executable",
+      consumption_mode: "dependency",
+      language: "rust",
+    })).toThrow(/do not match its kind/);
+  });
+
   it("requires a typed profile contract for non-CellScript releases", async () => {
     const payload = await ckbExecutablePublishPayload("cap_test");
     delete payload.registry_entry.versions[0].profile_contract;

@@ -604,6 +604,105 @@ pub fn materialize_public_source_snapshot(
     materialized
 }
 
+/// Materialize an already-pinned public Registry snapshot without consulting
+/// mutable discovery or version-selection state. The URL is transport only;
+/// the lockfile's exact SHA-256 snapshot identity and whole-tree source hash
+/// remain authoritative.
+#[cfg(feature = "cli")]
+pub fn materialize_locked_public_source_snapshot(
+    url: &str,
+    snapshot_hash: &str,
+    cache_root: &Path,
+    namespace: &str,
+    name: &str,
+    version: &str,
+    expected_source_hash: &str,
+) -> Result<PathBuf> {
+    let digest = snapshot_hash
+        .strip_prefix("sha256:")
+        .ok_or_else(|| CompileError::without_span("locked Registry snapshot hash must use sha256:<hex>"))?;
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CompileError::without_span("locked Registry snapshot hash must contain 32 bytes of hex"));
+    }
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|error| CompileError::without_span(format!("locked Registry snapshot URL is invalid: {error}")))?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(CompileError::without_span("locked Registry snapshot URL must be HTTP(S) without credentials or a fragment"));
+    }
+    std::fs::create_dir_all(cache_root)?;
+    let target = cache_root.join(format!("{name}-snapshot-{digest}"));
+    if target.exists() {
+        return Ok(target);
+    }
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| CompileError::without_span(format!("failed to initialize locked snapshot client: {error}")))?;
+    let response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, "application/vnd.cellscript.source-snapshot+json")
+        .header(reqwest::header::USER_AGENT, format!("cellc/{}", env!("CARGO_PKG_VERSION")))
+        .send()
+        .map_err(|error| CompileError::without_span(format!("locked snapshot request '{url}' failed: {error}")))?;
+    if !response.status().is_success() {
+        return Err(CompileError::without_span(format!("locked snapshot request '{url}' returned HTTP {}", response.status())));
+    }
+    if response.content_length().is_some_and(|length| length == 0 || length > MAX_PUBLIC_SOURCE_SNAPSHOT_BYTES) {
+        return Err(CompileError::without_span("locked Registry snapshot Content-Length exceeds the bounded source contract"));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_PUBLIC_SOURCE_SNAPSHOT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| CompileError::without_span(format!("failed to read locked snapshot '{url}': {error}")))?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_PUBLIC_SOURCE_SNAPSHOT_BYTES {
+        return Err(CompileError::without_span("locked Registry snapshot exceeds the bounded source contract"));
+    }
+    let actual = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+    if !actual.eq_ignore_ascii_case(snapshot_hash) {
+        return Err(CompileError::without_span(format!(
+            "locked Registry snapshot hash mismatch: expected '{}', got '{}'",
+            snapshot_hash, actual
+        )));
+    }
+    let temporary = unique_snapshot_temp_dir(cache_root, name)?;
+    let result = (|| {
+        materialize_generated_source_snapshot_bytes(&bytes, &temporary, namespace, name, version, expected_source_hash)?;
+        std::fs::rename(&temporary, &target).map_err(|error| {
+            CompileError::without_span(format!(
+                "failed to commit locked Registry snapshot '{}' to '{}': {error}",
+                temporary.display(),
+                target.display()
+            ))
+        })?;
+        Ok(target.clone())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&temporary);
+    }
+    result
+}
+
+#[cfg(not(feature = "cli"))]
+pub fn materialize_locked_public_source_snapshot(
+    _url: &str,
+    _snapshot_hash: &str,
+    _cache_root: &Path,
+    namespace: &str,
+    name: &str,
+    version: &str,
+    _expected_source_hash: &str,
+) -> Result<PathBuf> {
+    Err(CompileError::without_span(format!(
+        "locked Registry dependency resolution for '{namespace}/{name}@{version}' requires the 'cli' feature"
+    )))
+}
+
 /// Authenticate and materialize the generated JSON source-snapshot profile
 /// into a caller-owned, non-existent directory. This is shared by dependency
 /// resolution and the isolated Registry build-verification worker so both
@@ -1285,12 +1384,7 @@ impl RegistryIndex {
             .iter()
             .filter(|v| v.resolver_block_reason(policy, allow_suppressed_exact_pin).is_none())
             .filter(|v| crate::package::version::satisfies(&v.version, req))
-            .max_by(|a, b| {
-                // Compare versions numerically
-                let a_parts = parse_version_parts(&a.version);
-                let b_parts = parse_version_parts(&b.version);
-                compare_version_parts(&a_parts, &b_parts)
-            })
+            .max_by(|a, b| compare_registry_versions(&a.version, &b.version))
     }
 }
 
@@ -1538,22 +1632,13 @@ fn simple_hash(s: &str) -> u64 {
     hash
 }
 
-fn parse_version_parts(version: &str) -> Vec<u32> {
-    let core = version.split_once('-').map(|(c, _)| c).unwrap_or(version);
-    core.split('.').filter_map(|p| p.parse().ok()).collect()
-}
-
-fn compare_version_parts(a: &[u32], b: &[u32]) -> std::cmp::Ordering {
-    let max_len = a.len().max(b.len());
-    for i in 0..max_len {
-        let av = a.get(i).unwrap_or(&0);
-        let bv = b.get(i).unwrap_or(&0);
-        match av.cmp(bv) {
-            std::cmp::Ordering::Equal => continue,
-            other => return other,
-        }
+fn compare_registry_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    match (semver::Version::parse(left), semver::Version::parse(right)) {
+        (Ok(left), Ok(right)) => left.cmp(&right),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Less,
+        (Err(_), Err(_)) => left.cmp(right),
     }
-    std::cmp::Ordering::Equal
 }
 
 /// A streaming blake2b-256 hasher (simplified, using the existing ckb_blake2b256 on final content).

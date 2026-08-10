@@ -222,6 +222,7 @@ dependencies = [
  "log",
  "reqwest",
  "ring",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

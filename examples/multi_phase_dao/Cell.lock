@@ -1,0 +1,23 @@
+version = 3
+schema = "cellscript-lock-v0.24-graph-v1"
+
+[package]
+edition = "2026"
+name = "multi_phase_dao"
+version = "0.1.0"
+source_hash = "f7ddc4c23c8bb9de7f6981df3ab2da9d98a964cf1c1388e8238966d5d4bb8dd9"
+
+[root]
+manifest_digest = "sha256:5eb057483ad083caedc98337cea0ffcbd66a540869ea3d78b487acce98fb2847"
+
+[root.dependencies]
+token = "token@0.1.0|path:../token|env=default|features=default"
+
+[dependencies."token@0.1.0|path:../token|env=default|features=default"]
+name = "token"
+version = "0.1.0"
+source_hash = "d5ecb3241eeb97983005b9622cbe7a9540cbdec133ec22105c07955f99c7b889"
+manifest_digest = "sha256:3adaae2b8a70a8a49246c28c95a6bd3686fefaed383dfb598c7d35da2a2ad4f9"
+
+[dependencies."token@0.1.0|path:../token|env=default|features=default".source.Path]
+path = "../token"

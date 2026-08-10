@@ -13,6 +13,7 @@ export const AVAILABILITY_PROTOCOL = "cellscript-registry-availability-v1";
 export const AVAILABILITY_ACTION = "set_availability";
 export const REGISTRY_SCHEMA_VERSION = 1;
 export const ARTIFACT_PROFILE_CONTRACT_SCHEMA = "cellscript-registry-profile-contract-v1";
+export const ARTIFACT_PROFILE_CATALOG_SCHEMA = "cellscript-registry-profile-catalog-v1";
 export const CELLSCRIPT_EDITION = "2026";
 export const DEFAULT_REGISTRY_ORIGIN = "https://api.registry.cellscript.dev";
 export const DEFAULT_STATIC_REGISTRY_ORIGIN = "https://registry.cellscript.dev";
@@ -49,6 +50,19 @@ export interface ArtifactDescriptor {
   profile: ArtifactProfile;
   consumption_mode: ConsumptionMode;
   language: ArtifactLanguage;
+}
+
+export interface ArtifactProfileDefinition {
+  schema: typeof ARTIFACT_PROFILE_CATALOG_SCHEMA;
+  profile: ArtifactProfile;
+  validator_id:
+    | "cellscript-source-package-v1"
+    | "ckb-executable-profile-v1"
+    | "reproducible-build-profile-v1"
+    | "copy-material-profile-v1";
+  resolver_capability: "dependency" | "non_resolving";
+  requires_profile_contract: boolean;
+  contracts: Partial<Record<ArtifactKind, { consumption_mode: ConsumptionMode; languages: readonly ArtifactLanguage[] }>>;
 }
 
 export type RegistryEntryStatus =
@@ -754,33 +768,39 @@ function validateRegistryEntry(
     throw new ApiError(400, "invalid_initial_artifact_state", "new releases must use the profile's initial verification, deployment, and availability states");
   }
 
-  if (artifact.profile === "cellscript_source") {
-    if (published["profile_contract"] !== undefined) {
-      throw new ApiError(400, "invalid_profile_contract", "CellScript source releases do not use profile_contract");
+  const profileDefinition = ARTIFACT_PROFILE_CATALOG[artifact.profile];
+  switch (profileDefinition.validator_id) {
+    case "cellscript-source-package-v1": {
+      if (published["profile_contract"] !== undefined) {
+        throw new ApiError(400, "invalid_profile_contract", "CellScript source releases do not use profile_contract");
+      }
+      requireString(published, "cellscript_version");
+      if (published["edition"] !== CELLSCRIPT_EDITION) {
+        throw new ApiError(400, "unsupported_cellscript_edition", `registry version edition must be ${CELLSCRIPT_EDITION}`);
+      }
+      const compatibilityProfileHash = requireString(published, "compatibility_profile_hash");
+      validateHash(compatibilityProfileHash, "compatibility_profile_hash", "invalid_compatibility_profile_hash");
+      const dependencies = assertPlainObject(published["dependencies"], "invalid_registry_dependencies");
+      for (const [dependencyName, dependencyValue] of Object.entries(dependencies)) {
+        validatePackageIdent(dependencyName, "dependency name");
+        const dependency = assertPlainObject(dependencyValue, "invalid_registry_dependency");
+        validatePackageIdent(requireString(dependency, "namespace"), "dependency namespace");
+        validateVersion(requireString(dependency, "version"));
+      }
+      break;
     }
-    requireString(published, "cellscript_version");
-    if (published["edition"] !== CELLSCRIPT_EDITION) {
-      throw new ApiError(400, "unsupported_cellscript_edition", `registry version edition must be ${CELLSCRIPT_EDITION}`);
-    }
-    const compatibilityProfileHash = requireString(published, "compatibility_profile_hash");
-    validateHash(compatibilityProfileHash, "compatibility_profile_hash", "invalid_compatibility_profile_hash");
-    const dependencies = assertPlainObject(published["dependencies"], "invalid_registry_dependencies");
-    for (const [dependencyName, dependencyValue] of Object.entries(dependencies)) {
-      validatePackageIdent(dependencyName, "dependency name");
-      const dependency = assertPlainObject(dependencyValue, "invalid_registry_dependency");
-      validatePackageIdent(requireString(dependency, "namespace"), "dependency namespace");
-      validateVersion(requireString(dependency, "version"));
-    }
+    case "ckb-executable-profile-v1":
+      validateHash(requireString(published, "artifact_hash"), "artifact_hash", "invalid_artifact_hash");
+      validateHash(requireString(published, "abi_hash"), "abi_hash", "invalid_abi_hash");
+      break;
+    case "reproducible-build-profile-v1":
+      validateHash(requireString(published, "artifact_hash"), "artifact_hash", "invalid_artifact_hash");
+      validateHash(requireString(published, "build_recipe_hash"), "build_recipe_hash", "invalid_build_recipe_hash");
+      break;
+    case "copy-material-profile-v1":
+      break;
   }
-  if (artifact.profile === "ckb_executable") {
-    validateHash(requireString(published, "artifact_hash"), "artifact_hash", "invalid_artifact_hash");
-    validateHash(requireString(published, "abi_hash"), "abi_hash", "invalid_abi_hash");
-  }
-  if (artifact.profile === "reproducible_build") {
-    validateHash(requireString(published, "artifact_hash"), "artifact_hash", "invalid_artifact_hash");
-    validateHash(requireString(published, "build_recipe_hash"), "build_recipe_hash", "invalid_build_recipe_hash");
-  }
-  if (artifact.profile !== "cellscript_source") {
+  if (profileDefinition.requires_profile_contract) {
     validateArtifactProfileContract(published["profile_contract"], artifact, published, outer.manifestHash);
   }
 
@@ -939,14 +959,54 @@ function requireSameContentHash(actual: string, expected: string, label: string)
   }
 }
 
-const ARTIFACT_CONTRACTS: Record<ArtifactKind, Omit<ArtifactDescriptor, "kind" | "language"> & { languages: ArtifactLanguage[] }> = {
-  source_library: { profile: "cellscript_source", consumption_mode: "dependency", languages: ["cellscript"] },
-  profile_library: { profile: "cellscript_source", consumption_mode: "dependency", languages: ["cellscript"] },
-  runtime_verifier: { profile: "ckb_executable", consumption_mode: "tcb", languages: ["cellscript", "rust", "c", "javascript", "other"] },
-  deployable_contract: { profile: "ckb_executable", consumption_mode: "deployment", languages: ["cellscript", "rust", "c", "javascript", "other"] },
-  reproducible_binary: { profile: "reproducible_build", consumption_mode: "tcb", languages: ["rust", "c", "other"] },
-  template: { profile: "copy_material", consumption_mode: "copy", languages: ["cellscript", "rust", "c", "javascript", "other", "unspecified"] },
-};
+export const ARTIFACT_PROFILE_CATALOG = {
+  cellscript_source: {
+    schema: ARTIFACT_PROFILE_CATALOG_SCHEMA,
+    profile: "cellscript_source",
+    validator_id: "cellscript-source-package-v1",
+    resolver_capability: "dependency",
+    requires_profile_contract: false,
+    contracts: {
+      source_library: { consumption_mode: "dependency", languages: ["cellscript"] },
+      profile_library: { consumption_mode: "dependency", languages: ["cellscript"] },
+    },
+  },
+  ckb_executable: {
+    schema: ARTIFACT_PROFILE_CATALOG_SCHEMA,
+    profile: "ckb_executable",
+    validator_id: "ckb-executable-profile-v1",
+    resolver_capability: "non_resolving",
+    requires_profile_contract: true,
+    contracts: {
+      runtime_verifier: { consumption_mode: "tcb", languages: ["cellscript", "rust", "c", "javascript", "other"] },
+      deployable_contract: { consumption_mode: "deployment", languages: ["cellscript", "rust", "c", "javascript", "other"] },
+    },
+  },
+  reproducible_build: {
+    schema: ARTIFACT_PROFILE_CATALOG_SCHEMA,
+    profile: "reproducible_build",
+    validator_id: "reproducible-build-profile-v1",
+    resolver_capability: "non_resolving",
+    requires_profile_contract: true,
+    contracts: {
+      reproducible_binary: { consumption_mode: "tcb", languages: ["rust", "c", "other"] },
+    },
+  },
+  copy_material: {
+    schema: ARTIFACT_PROFILE_CATALOG_SCHEMA,
+    profile: "copy_material",
+    validator_id: "copy-material-profile-v1",
+    resolver_capability: "non_resolving",
+    requires_profile_contract: true,
+    contracts: {
+      template: { consumption_mode: "copy", languages: ["cellscript", "rust", "c", "javascript", "other", "unspecified"] },
+    },
+  },
+} as const satisfies Record<ArtifactProfile, ArtifactProfileDefinition>;
+
+export function artifactProfileSupportsDependencyResolution(profile: ArtifactProfile): boolean {
+  return ARTIFACT_PROFILE_CATALOG[profile].resolver_capability === "dependency";
+}
 
 export function validateArtifactDescriptor(input: unknown): ArtifactDescriptor {
   const value = assertPlainObject(input, "invalid_artifact_descriptor");
@@ -957,8 +1017,15 @@ export function validateArtifactDescriptor(input: unknown): ArtifactDescriptor {
   if (!ARTIFACT_KINDS.includes(kind)) {
     throw new ApiError(400, "invalid_artifact_kind", `artifact.kind must be one of ${ARTIFACT_KINDS.join(", ")}`);
   }
-  const contract = ARTIFACT_CONTRACTS[kind];
-  if (profile !== contract.profile || consumptionMode !== contract.consumption_mode || !contract.languages.includes(language)) {
+  if (!ARTIFACT_PROFILES.includes(profile)) {
+    throw new ApiError(400, "invalid_artifact_profile", `artifact.profile must be one of ${ARTIFACT_PROFILES.join(", ")}`);
+  }
+  const profileDefinition = ARTIFACT_PROFILE_CATALOG[profile];
+  const contracts = profileDefinition.contracts as Partial<
+    Record<ArtifactKind, { consumption_mode: ConsumptionMode; languages: readonly ArtifactLanguage[] }>
+  >;
+  const contract = contracts[kind];
+  if (!contract || consumptionMode !== contract.consumption_mode || !(contract.languages as readonly string[]).includes(language)) {
     throw new ApiError(400, "invalid_artifact_contract", "artifact profile, consumption mode, and language do not match its kind");
   }
   return { kind, profile, consumption_mode: consumptionMode, language };

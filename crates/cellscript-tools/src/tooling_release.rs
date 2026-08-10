@@ -537,7 +537,7 @@ pub fn run(root: &Path) -> Result<()> {
             "allow_unverified: detailed.allow_unverified",
             "Git { url: String, revision: String }",
             "pub fn consistency_issues(&self, manifest: &PackageManifest) -> Vec<String>",
-            "pub fn replace_with_resolved(&mut self, resolved: &HashMap<String, ResolvedPackage>)",
+            "pub fn replace_with_resolved(&mut self, resolved: &BTreeMap<String, ResolvedPackage>)",
         ],
     )?;
     require_contains(

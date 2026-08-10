@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Ship the 0.24 package and Registry trust closure, informed by Sui Move's
+  package-alt separation of resolution from compilation. Replace permissive
+  custom version checks with standard SemVer; make `Cell.lock` v3 a
+  manifest-digest-bound dependency graph with exact source/content identity,
+  outgoing alias edges, runtime/test feature roots, and genesis-bound CKB
+  environments. Add explicit `cellc lock`, lock-authoritative build/check/test,
+  `--locked`/`--frozen`/`--offline`, package aliases, optional features,
+  test-only dependencies, environment overrides, immutable Git-commit and
+  Registry-snapshot caches, and bounded hash-pinned external resolvers that
+  normalize to an ordinary source pin and never execute during locked builds.
+  Keep build dependencies fail-closed until isolated execution exists. Replace
+  scattered Registry artifact-profile conditionals with the versioned,
+  fail-closed `cellscript-registry-profile-catalog-v1`; only CellScript source
+  profiles are dependency-resolving, while executable, reproducible, and copy
+  profiles remain explicit non-resolving artifacts.
 - Implement the 0.24 trust-closure core. CKB ELF builds now emit canonical
   `cellscript-verified-lowering-record-v1` and
   `cellscript-source-artifact-map-v1` sidecars, bound by metadata schema 58 and

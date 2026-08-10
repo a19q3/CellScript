@@ -742,6 +742,8 @@ fn lockfile_with_build_and_deployment_round_trip() {
     lockfile.dependencies.insert(
         "token".to_string(),
         LockedDependency {
+            name: "token".to_string(),
+            namespace: Some("cellscript".to_string()),
             version: "0.3.0".to_string(),
             source: LockedSource::Registry {
                 registry: "https://github.com/cellscript/cellscript-registry".to_string(),
@@ -751,6 +753,8 @@ fn lockfile_with_build_and_deployment_round_trip() {
                 version: "0.3.0".to_string(),
             },
             source_hash: Some("blake2b:0xaaaa".to_string()),
+            manifest_digest: "sha256:test-token-manifest".to_string(),
+            dependencies: BTreeMap::new(),
             build: Some(LockedBuildInfo {
                 edition: cellscript::CURRENT_EDITION,
                 compatibility_profile_hash: "test-compatibility-profile".to_string(),
@@ -805,6 +809,8 @@ namespace = "cellscript"
     lockfile.dependencies.insert(
         "token".to_string(),
         LockedDependency {
+            name: "token".to_string(),
+            namespace: Some("cellscript".to_string()),
             version: "0.3.0".to_string(),
             source: LockedSource::Registry {
                 registry: "https://github.com/cellscript/cellscript-registry".to_string(),
@@ -814,9 +820,12 @@ namespace = "cellscript"
                 version: "0.3.0".to_string(),
             },
             source_hash: None,
+            manifest_digest: "sha256:test-token-manifest".to_string(),
+            dependencies: BTreeMap::new(),
             build: None,
         },
     );
+    lockfile.root.dependencies.insert("token".to_string(), "token".to_string());
 
     let issues = lockfile.consistency_issues(&manifest);
     assert!(issues.is_empty(), "lockfile with matching registry source should be consistent: {issues:?}");
@@ -1015,12 +1024,12 @@ namespace = "cellscript"
     let _env = RegistryEnvGuard::new(&api.origin);
     let mut manager = PackageManager::new(&consumer);
     manager.resolve_dependencies().unwrap();
-    let resolved = manager.get_resolved().get("token").unwrap();
+    let resolved = manager.get_resolved().values().find(|package| package.name == "token").unwrap();
     assert_eq!(resolved.source_hash.as_deref(), Some(source_hash.as_str()));
 
     let mut lockfile = Lockfile::new();
     lockfile.update_from_resolved(manager.get_resolved());
-    let token = lockfile.dependencies.get("token").unwrap();
+    let token = lockfile.dependencies.values().find(|package| package.name == "token").unwrap();
     assert_eq!(token.source_hash.as_deref(), Some(source_hash.as_str()));
     assert!(
         matches!(token.source, LockedSource::Registry { ref namespace, ref version, .. } if namespace == "cellscript" && version == "0.3.0")
@@ -1178,7 +1187,8 @@ allow_unverified = true
     let _env = RegistryEnvGuard::new(&api.origin);
     let mut manager = PackageManager::new(&consumer);
     manager.resolve_dependencies().unwrap();
-    assert_eq!(manager.get_resolved()["token"].source_hash.as_deref(), Some(source_hash.as_str()));
+    let token = manager.get_resolved().values().find(|package| package.name == "token").unwrap();
+    assert_eq!(token.source_hash.as_deref(), Some(source_hash.as_str()));
 }
 
 #[test]
@@ -1315,6 +1325,8 @@ namespace = "cellscript"
     lockfile.dependencies.insert(
         "token".to_string(),
         LockedDependency {
+            name: "token".to_string(),
+            namespace: Some("other".to_string()),
             version: "0.3.0".to_string(),
             source: LockedSource::Registry {
                 registry: "https://github.com/cellscript/cellscript-registry".to_string(),
@@ -1324,9 +1336,12 @@ namespace = "cellscript"
                 version: "0.3.0".to_string(),
             },
             source_hash: None,
+            manifest_digest: "sha256:test-token-manifest".to_string(),
+            dependencies: BTreeMap::new(),
             build: None,
         },
     );
+    lockfile.root.dependencies.insert("token".to_string(), "token".to_string());
 
     let issues = lockfile.consistency_issues(&manifest);
     assert!(!issues.is_empty(), "wrong namespace should cause consistency issues: {issues:?}");
@@ -1359,6 +1374,8 @@ namespace = "cellscript"
     lockfile.dependencies.insert(
         "token".to_string(),
         LockedDependency {
+            name: "token".to_string(),
+            namespace: Some("cellscript".to_string()),
             version: "0.3.0".to_string(),
             source: LockedSource::Registry {
                 registry: "https://github.com/cellscript/cellscript-registry".to_string(),
@@ -1368,9 +1385,12 @@ namespace = "cellscript"
                 version: "0.3.0".to_string(),
             },
             source_hash: None,
+            manifest_digest: "sha256:test-token-manifest".to_string(),
+            dependencies: BTreeMap::new(),
             build: None,
         },
     );
+    lockfile.root.dependencies.insert("token".to_string(), "token".to_string());
 
     let issues = lockfile.consistency_issues(&manifest);
     assert!(issues.is_empty(), "matching registry source should have no issues: {issues:?}");

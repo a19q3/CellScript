@@ -130,6 +130,7 @@ pub enum Command {
     RegistryAdd(RegistryAddArgs),
     RegistryEdit(RegistryEditArgs),
     Certify(CertifyArgs),
+    Lock(PackageLockArgs),
     Update,
     Info(InfoArgs),
     Login(LoginArgs),
@@ -152,6 +153,10 @@ pub struct BuildArgs {
     pub features: Vec<String>,
     pub all_features: bool,
     pub no_default_features: bool,
+    pub locked: bool,
+    pub frozen: bool,
+    pub offline: bool,
+    pub environment: Option<String>,
     pub verbose: bool,
     pub json: bool,
     pub production: bool,
@@ -176,6 +181,13 @@ pub struct TestArgs {
     pub fail_fast: bool,
     pub doc: bool,
     pub json: bool,
+    pub features: Vec<String>,
+    pub all_features: bool,
+    pub no_default_features: bool,
+    pub locked: bool,
+    pub frozen: bool,
+    pub offline: bool,
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -215,6 +227,7 @@ pub struct NewArgs {
 #[derive(Debug, Default)]
 pub struct AddArgs {
     pub crates: Vec<String>,
+    pub package: Option<String>,
     pub dev: bool,
     pub build: bool,
     pub git: Option<String>,
@@ -243,10 +256,21 @@ pub struct InfoArgs {
 }
 
 #[derive(Debug, Default)]
+pub struct PackageLockArgs {
+    pub json: bool,
+}
+
+#[derive(Debug, Default)]
 pub struct CheckArgs {
     pub all_targets: bool,
     pub target_profile: Option<String>,
     pub features: Vec<String>,
+    pub all_features: bool,
+    pub no_default_features: bool,
+    pub locked: bool,
+    pub frozen: bool,
+    pub offline: bool,
+    pub environment: Option<String>,
     pub json: bool,
     pub production: bool,
     pub deny_fail_closed: bool,
@@ -824,6 +848,7 @@ impl CommandExecutor {
             Command::Artifact(args) => super::artifact::execute(args),
             Command::Publish(args) => Self::publish(args),
             Command::Install(args) => Self::install(args),
+            Command::Lock(args) => Self::lock(args),
             Command::Update => Self::update(),
             Command::Info(args) => Self::info(args),
             Command::Login(args) => Self::login(args),
@@ -872,12 +897,15 @@ impl CommandExecutor {
             return Err(crate::error::CompileError::without_span("--entry-action and --entry-lock are mutually exclusive"));
         }
         let cache_options = options.clone();
-        let result = match (args.entry_action.as_deref(), args.entry_lock.as_deref()) {
-            (Some(action), None) => compile_path_with_entry_action(input, options, action),
-            (None, Some(lock)) => compile_path_with_entry_lock(input, options, lock),
-            (None, None) => compile_path(input, options),
-            (Some(_), Some(_)) => unreachable!("validated above"),
-        }?;
+        let resolution_options = build_resolution_options(&args, crate::package::DependencyScope::Runtime);
+        let result = crate::package::with_resolution_options(resolution_options, || {
+            match (args.entry_action.as_deref(), args.entry_lock.as_deref()) {
+                (Some(action), None) => compile_path_with_entry_action(input, options, action),
+                (None, Some(lock)) => compile_path_with_entry_lock(input, options, lock),
+                (None, None) => compile_path(input, options),
+                (Some(_), Some(_)) => unreachable!("validated above"),
+            }
+        })?;
         let policy_args = effective_build_check_args(&args)?;
         validate_check_policy(&result.metadata, &policy_args)?;
         let resolved = resolve_input_path(input)?;
@@ -887,7 +915,9 @@ impl CommandExecutor {
         result.write_metadata_to_path(&metadata_path)?;
         let verified_sidecars = result.write_verified_artifact_sidecars(&output_path)?;
 
-        refresh_lockfile_from_build(std::path::Path::new("."), &result.metadata)?;
+        if !args.frozen {
+            refresh_lockfile_from_build(std::path::Path::new("."), &result.metadata)?;
+        }
         if args.entry_action.is_none() && args.entry_lock.is_none() {
             crate::refresh_incremental_cache_for_input(input, &cache_options, &result)?;
         }
@@ -939,6 +969,21 @@ impl CommandExecutor {
             "constraints": &result.metadata.constraints,
         });
         if let Some(object) = summary.as_object_mut() {
+            object.insert(
+                "dependency_lock_mode".to_string(),
+                serde_json::json!(if args.frozen {
+                    "frozen"
+                } else if args.locked {
+                    "locked"
+                } else {
+                    "authoritative"
+                }),
+            );
+            object.insert("dependency_environment".to_string(), serde_json::json!(args.environment.as_deref()));
+            object.insert("dependency_offline".to_string(), serde_json::json!(args.offline || args.frozen));
+            object.insert("dependency_features".to_string(), serde_json::json!(&args.features));
+            object.insert("dependency_all_features".to_string(), serde_json::json!(args.all_features));
+            object.insert("dependency_default_features".to_string(), serde_json::json!(!args.no_default_features));
             object
                 .insert("lowering_record".to_string(), serde_json::json!(verified_sidecars.as_ref().map(|paths| paths.0.to_string())));
             object.insert("source_map".to_string(), serde_json::json!(verified_sidecars.as_ref().map(|paths| paths.1.to_string())));
@@ -1002,11 +1047,14 @@ impl CommandExecutor {
                 primitive_compat: args.primitive_compat.clone(),
             };
 
-            let compile_result = match (args.entry_action.as_deref(), args.entry_lock.as_deref()) {
-                (Some(action), None) => compile_path_with_entry_action(member_dir, options, action),
-                (None, Some(lock)) => compile_path_with_entry_lock(member_dir, options, lock),
-                _ => compile_path(member_dir, options),
-            };
+            let resolution_options = build_resolution_options(&args, crate::package::DependencyScope::Runtime);
+            let compile_result = crate::package::with_resolution_options(resolution_options, || {
+                match (args.entry_action.as_deref(), args.entry_lock.as_deref()) {
+                    (Some(action), None) => compile_path_with_entry_action(member_dir, options, action),
+                    (None, Some(lock)) => compile_path_with_entry_lock(member_dir, options, lock),
+                    _ => compile_path(member_dir, options),
+                }
+            });
 
             match compile_result {
                 Ok(result) => {
@@ -1078,9 +1126,13 @@ impl CommandExecutor {
                     lockfile.dependencies.insert(
                         member_name.to_string(),
                         crate::package::LockedDependency {
+                            name: member_name.to_string(),
+                            namespace: None,
                             version: String::new(),
                             source: crate::package::LockedSource::Path { path: member_name.to_string() },
                             source_hash: Some(artifact_hash.to_string()),
+                            manifest_digest: "workspace-member-artifact".to_string(),
+                            dependencies: BTreeMap::new(),
                             build: None,
                         },
                     );
@@ -1107,6 +1159,11 @@ impl CommandExecutor {
     }
 
     fn test(args: TestArgs) -> Result<()> {
+        let options = test_resolution_options(&args);
+        crate::package::with_resolution_options(options, || Self::test_inner(args))
+    }
+
+    fn test_inner(args: TestArgs) -> Result<()> {
         let doc_output = if args.doc {
             Some(Self::generate_docs(&DocArgs { output_format: OutputFormat::Markdown, ..Default::default() })?)
         } else {
@@ -1545,6 +1602,9 @@ impl CommandExecutor {
         if args.git.is_some() && args.path.is_some() {
             return Err(crate::error::CompileError::without_span("cellc add accepts either --git or --path, not both"));
         }
+        if args.package.is_some() && args.crates.len() != 1 {
+            return Err(crate::error::CompileError::without_span("cellc add --package requires exactly one local dependency alias"));
+        }
 
         let pm = PackageManager::new(".");
         let mut manifest = pm.read_manifest()?;
@@ -1559,6 +1619,7 @@ impl CommandExecutor {
         }
 
         pm.write_manifest(&manifest)?;
+        refresh_lockfile_from_manifest(Path::new("."))?;
 
         CommandOutcome {
             machine: serde_json::json!({
@@ -1589,7 +1650,7 @@ impl CommandExecutor {
         }
 
         pm.write_manifest(&manifest)?;
-        if !args.dev && !args.build && !removed.is_empty() {
+        if !removed.is_empty() {
             refresh_lockfile_from_manifest(Path::new("."))?;
         }
 
@@ -1667,13 +1728,15 @@ impl CommandExecutor {
                 target_profile: compile_target_profile.clone(),
                 primitive_compat: args.primitive_compat.clone(),
             };
-            let result = match compile_path(".", compile_options.clone()) {
-                Ok(result) => result,
-                Err(error) => {
-                    let diagnostics = compile_failure_diagnostics(Utf8Path::new("."), compile_options, error);
-                    return Err(diagnostics_to_error(&diagnostics));
-                }
-            };
+            let resolution_options = check_resolution_options(&args, crate::package::DependencyScope::Runtime);
+            let result =
+                match crate::package::with_resolution_options(resolution_options, || compile_path(".", compile_options.clone())) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let diagnostics = compile_failure_diagnostics(Utf8Path::new("."), compile_options, error);
+                        return Err(diagnostics_to_error(&diagnostics));
+                    }
+                };
             validate_check_policy(&result.metadata, &args)?;
             let target_profile_policy_violations =
                 target_profile_policy_violations(&result.metadata, result.artifact_format, requested_profile);
@@ -1777,18 +1840,18 @@ impl CommandExecutor {
         let mut failed = 0;
 
         for member_dir in &members {
-            let compile_result = compile_path(
-                member_dir,
-                CompileOptions {
-                    edition: crate::CURRENT_EDITION,
-                    opt_level: 0,
-                    output: None,
-                    debug: false,
-                    target: None,
-                    target_profile: args.target_profile.clone(),
-                    primitive_compat: args.primitive_compat.clone(),
-                },
-            );
+            let compile_options = CompileOptions {
+                edition: crate::CURRENT_EDITION,
+                opt_level: 0,
+                output: None,
+                debug: false,
+                target: None,
+                target_profile: args.target_profile.clone(),
+                primitive_compat: args.primitive_compat.clone(),
+            };
+            let resolution_options = check_resolution_options(&args, crate::package::DependencyScope::Runtime);
+            let compile_result =
+                crate::package::with_resolution_options(resolution_options, || compile_path(member_dir, compile_options));
 
             match compile_result {
                 Ok(result) => {
@@ -3987,6 +4050,8 @@ impl CommandExecutor {
             let dep = DetailedDependency {
                 version: args.version.clone().unwrap_or_else(|| "*".to_string()),
                 namespace: None,
+                package: None,
+                resolver: None,
                 git: Some(git_url.clone()),
                 branch: None,
                 tag: None,
@@ -4016,6 +4081,8 @@ impl CommandExecutor {
             let dep = DetailedDependency {
                 version: args.version.clone().unwrap_or_else(|| "*".to_string()),
                 namespace: None,
+                package: None,
+                resolver: None,
                 git: None,
                 branch: None,
                 tag: None,
@@ -4078,6 +4145,8 @@ impl CommandExecutor {
                 Dependency::Detailed(DetailedDependency {
                     version,
                     namespace: resolved_namespace.clone(),
+                    package: None,
+                    resolver: None,
                     git: None,
                     branch: None,
                     tag: None,
@@ -4104,12 +4173,7 @@ impl CommandExecutor {
             println!("{}", format!("Installed {}/{} from registry", ns_display, resolved_name).green());
             Ok(())
         } else {
-            let mut pm = PackageManager::new(".");
-            pm.resolve_dependencies()?;
-
-            let mut lockfile = Lockfile::read_from_root(std::path::Path::new("."))?.unwrap_or_default();
-            lockfile.replace_with_resolved(pm.get_resolved());
-            lockfile.write_to_root(std::path::Path::new("."))?;
+            refresh_lockfile_from_manifest(std::path::Path::new("."))?;
 
             println!("{}", "Dependencies resolved and lockfile updated".green());
             Ok(())
@@ -4117,42 +4181,44 @@ impl CommandExecutor {
     }
 
     fn update() -> Result<()> {
-        let mut pm = PackageManager::new(".");
-        let manifest = pm.read_manifest()?;
-
-        pm.resolve_dependencies()?;
-
-        let mut lockfile = Lockfile::read_from_root(std::path::Path::new("."))?.unwrap_or_default();
-
-        lockfile.replace_with_resolved(pm.get_resolved());
-        lockfile.write_to_root(std::path::Path::new("."))?;
-
-        let resolved = pm.get_resolved();
-        if resolved.is_empty() {
+        refresh_lockfile_from_manifest(std::path::Path::new("."))?;
+        let lockfile = Lockfile::read_from_root(std::path::Path::new("."))?.expect("lockfile was just written");
+        if lockfile.dependencies.is_empty() {
             println!("{}", "No dependencies to update".green());
         } else {
-            println!("{}", format!("Updated {} dependencies", resolved.len()).green());
-            for (name, package) in resolved {
+            println!("{}", format!("Updated {} dependency nodes", lockfile.dependencies.len()).green());
+            for (node_id, package) in &lockfile.dependencies {
                 let source = match &package.source {
-                    crate::package::PackageSource::Local(path) => format!("path: {}", path.display()),
-                    crate::package::PackageSource::Git { url, revision } => format!("git: {}#{}", url, revision),
-                    crate::package::PackageSource::Registry { registry, namespace, version, .. } => {
+                    crate::package::LockedSource::Path { path } => format!("path: {}", path),
+                    crate::package::LockedSource::Git { url, revision } => format!("git: {}#{}", url, revision),
+                    crate::package::LockedSource::Registry { registry, namespace, version, .. } => {
                         format!("registry: {}/{}@{}", registry, namespace, version)
                     }
                 };
-                println!("  {} v{} ({})", name, package.version, source);
-            }
-        }
-
-        let lockfile_issues = lockfile.consistency_issues_with_resolved(&manifest, resolved);
-        if !lockfile_issues.is_empty() {
-            println!("{}", "Warning: lockfile is not consistent with Cell.toml".yellow());
-            for issue in lockfile_issues {
-                println!("  - {}", issue);
+                println!("  {} {} v{} ({})", node_id, package.name, package.version, source);
             }
         }
 
         Ok(())
+    }
+
+    fn lock(args: PackageLockArgs) -> Result<()> {
+        refresh_lockfile_from_manifest(std::path::Path::new("."))?;
+        let lockfile = Lockfile::read_from_root(std::path::Path::new("."))?.expect("lockfile was just written");
+        CommandOutcome {
+            machine: serde_json::json!({
+                "status": "ok",
+                "lockfile": "Cell.lock",
+                "schema": lockfile.schema,
+                "dependency_nodes": lockfile.dependencies.len(),
+                "environments": lockfile.environments.keys().collect::<Vec<_>>(),
+            }),
+            human_lines: vec![
+                "Dependency graph locked".green().to_string(),
+                format!("  {} dependency node(s)", lockfile.dependencies.len()),
+            ],
+        }
+        .emit(args.json)
     }
 
     fn info(args: InfoArgs) -> Result<()> {
@@ -4176,6 +4242,10 @@ impl CommandExecutor {
                 "package": manifest.package,
                 "dependencies": manifest.dependencies,
                 "dev_dependencies": manifest.dev_dependencies,
+                "features": manifest.features,
+                "environments": manifest.environments,
+                "dependency_overrides": manifest.dependency_overrides,
+                "resolvers": manifest.resolvers,
                 "build": manifest.build,
                 "policy": manifest.policy,
                 "deploy": manifest.deploy,
@@ -4696,7 +4766,7 @@ impl CommandExecutor {
 
     fn package_verify(args: PackageVerifyArgs) -> Result<()> {
         let root = std::path::Path::new(".");
-        let mut pm = PackageManager::new(root);
+        let pm = PackageManager::new(root);
         let manifest = pm.read_manifest()?;
 
         // Read Cell.lock
@@ -4745,9 +4815,39 @@ impl CommandExecutor {
             None => violations.push("Cell.lock has no [package.build]; run 'cellc build' to populate build identity".to_string()),
         }
 
-        pm.resolve_dependencies()?;
-        for issue in lockfile.consistency_issues_with_resolved(&manifest, pm.get_resolved()) {
+        let computed_manifest_digest = crate::package::compute_manifest_digest(root)?;
+        if lockfile.root.manifest_digest != computed_manifest_digest {
+            violations.push(format!(
+                "manifest digest mismatch: Cell.lock has '{}', computed '{}'",
+                lockfile.root.manifest_digest, computed_manifest_digest
+            ));
+        }
+        for issue in lockfile.consistency_issues(&manifest) {
             violations.push(issue);
+        }
+        let mut verification_modes = Vec::new();
+        if manifest.dependency_overrides.is_empty() {
+            verification_modes.push(None);
+        }
+        verification_modes.extend(manifest.environments.keys().cloned().map(Some));
+        let mut resolved = BTreeMap::new();
+        for environment in verification_modes {
+            let options = crate::package::ResolutionOptions {
+                scope: crate::package::DependencyScope::Test,
+                all_features: true,
+                environment,
+                ..crate::package::ResolutionOptions::default()
+            };
+            let mut mode_manager = PackageManager::new(root);
+            match mode_manager.resolve_locked_dependencies(&options) {
+                Ok(()) => resolved.extend(mode_manager.get_resolved().clone()),
+                Err(error) => violations.push(format!("locked dependency materialization failed: {}", error)),
+            }
+        }
+        for issue in lockfile.consistency_issues_with_resolved(&manifest, &resolved) {
+            if !violations.contains(&issue) {
+                violations.push(issue);
+            }
         }
         for (name, locked) in &lockfile.dependencies {
             if matches!(locked.source, crate::package::LockedSource::Registry { .. }) && locked.source_hash.is_none() {
@@ -11004,6 +11104,61 @@ fn proof_plan_read_label(read: &str) -> String {
     }
 }
 
+fn resolution_options(
+    features: &[String],
+    all_features: bool,
+    no_default_features: bool,
+    environment: Option<&str>,
+    offline: bool,
+    frozen: bool,
+    scope: crate::package::DependencyScope,
+) -> crate::package::ResolutionOptions {
+    crate::package::ResolutionOptions {
+        scope,
+        features: features.iter().cloned().collect(),
+        all_features,
+        no_default_features,
+        environment: environment.map(str::to_string),
+        offline: offline || frozen,
+    }
+}
+
+fn build_resolution_options(args: &BuildArgs, scope: crate::package::DependencyScope) -> crate::package::ResolutionOptions {
+    resolution_options(
+        &args.features,
+        args.all_features,
+        args.no_default_features,
+        args.environment.as_deref(),
+        args.offline,
+        args.frozen,
+        scope,
+    )
+}
+
+fn check_resolution_options(args: &CheckArgs, scope: crate::package::DependencyScope) -> crate::package::ResolutionOptions {
+    resolution_options(
+        &args.features,
+        args.all_features,
+        args.no_default_features,
+        args.environment.as_deref(),
+        args.offline,
+        args.frozen,
+        scope,
+    )
+}
+
+fn test_resolution_options(args: &TestArgs) -> crate::package::ResolutionOptions {
+    resolution_options(
+        &args.features,
+        args.all_features,
+        args.no_default_features,
+        args.environment.as_deref(),
+        args.offline,
+        args.frozen,
+        crate::package::DependencyScope::Test,
+    )
+}
+
 fn effective_check_args(mut args: CheckArgs) -> Result<CheckArgs> {
     // In a workspace root (virtual manifest without [package]), fall back to default policy.
     let policy = PackageManager::new(".").read_manifest().map(|m| m.policy).unwrap_or_default();
@@ -11100,6 +11255,11 @@ fn validate_dependency_target_flags(dev: bool, build: bool) -> Result<()> {
     if dev && build {
         return Err(crate::error::CompileError::without_span("dependency target flags --dev and --build are mutually exclusive"));
     }
+    if build {
+        return Err(crate::error::CompileError::without_span(
+            "--build dependencies are reserved until isolated build-script execution is implemented",
+        ));
+    }
     Ok(())
 }
 
@@ -11158,6 +11318,8 @@ fn dependency_from_add_args(args: &AddArgs) -> Dependency {
         (Some(git), _) => Dependency::Detailed(DetailedDependency {
             version: "*".to_string(),
             namespace: None,
+            package: args.package.clone(),
+            resolver: None,
             git: Some(git.clone()),
             branch: None,
             tag: None,
@@ -11172,11 +11334,29 @@ fn dependency_from_add_args(args: &AddArgs) -> Dependency {
         (_, Some(path)) => Dependency::Detailed(DetailedDependency {
             version: "*".to_string(),
             namespace: None,
+            package: args.package.clone(),
+            resolver: None,
             git: None,
             branch: None,
             tag: None,
             rev: None,
             path: Some(path.display().to_string()),
+            optional: false,
+            features: Vec::new(),
+            default_features: true,
+            allow_unverified: false,
+            allow_quarantined: false,
+        }),
+        _ if args.package.is_some() => Dependency::Detailed(DetailedDependency {
+            version: "*".to_string(),
+            namespace: None,
+            package: args.package.clone(),
+            resolver: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+            path: None,
             optional: false,
             features: Vec::new(),
             default_features: true,
@@ -11243,25 +11423,67 @@ fn auth_capability_revoke_args_from_matches(m: &clap::ArgMatches) -> AuthCapabil
 }
 
 fn refresh_lockfile_from_manifest(root: &Path) -> Result<()> {
-    let mut manager = PackageManager::new(root);
-    manager.resolve_dependencies()?;
+    let manager = PackageManager::new(root);
+    let manifest = manager.read_manifest()?;
+    let mut lockfile = read_lockfile_for_explicit_repin(root)?;
+    lockfile.dependencies.clear();
+    lockfile.root = crate::package::LockedRootGraph::default();
+    lockfile.environments.clear();
+    lockfile.package = lockfile_package_info(root, &manifest)?;
 
-    let mut lockfile = Lockfile::read_from_root(root)?.unwrap_or_default();
-    lockfile.replace_with_resolved(manager.get_resolved());
+    let mut environments: Vec<Option<String>> = Vec::new();
+    if manifest.dependency_overrides.is_empty() {
+        environments.push(None);
+    }
+    environments.extend(manifest.environments.keys().cloned().map(Some));
+    for environment in environments {
+        let mut manager = PackageManager::new(root);
+        let options = crate::package::ResolutionOptions {
+            scope: crate::package::DependencyScope::Test,
+            all_features: true,
+            environment,
+            ..crate::package::ResolutionOptions::default()
+        };
+        manager.resolve_dependencies_with_options(&options)?;
+        lockfile.merge_resolution(&manager, &manifest, &options)?;
+    }
     lockfile.write_to_root(root)?;
     Ok(())
 }
 
+fn read_lockfile_for_explicit_repin(root: &Path) -> Result<Lockfile> {
+    match Lockfile::read_from_root(root) {
+        Ok(Some(lockfile)) => Ok(lockfile),
+        Ok(None) => Ok(Lockfile::new()),
+        Err(error) => {
+            let path = root.join("Cell.lock");
+            let source = std::fs::read_to_string(&path).map_err(|_| error.clone())?;
+            let value: toml::Value = toml::from_str(&source).map_err(|_| error.clone())?;
+            if value.get("version").and_then(toml::Value::as_integer).is_some_and(|version| matches!(version, 1 | 2)) {
+                Ok(Lockfile::new())
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
 fn refresh_lockfile_from_build(root: &Path, metadata: &CompileMetadata) -> Result<()> {
-    let mut manager = PackageManager::new(root);
+    let manager = PackageManager::new(root);
     let manifest = manager.read_manifest()?;
-    manager.resolve_dependencies()?;
 
     let mut lockfile = Lockfile::read_from_root(root)?.unwrap_or_default();
+    if (!manifest.dependencies.is_empty() || !manifest.dev_dependencies.is_empty()) && lockfile.root.manifest_digest.is_empty() {
+        return Err(crate::error::CompileError::without_span(
+            "Cell.lock has no pinned dependency graph; run 'cellc lock' or 'cellc update' before building",
+        ));
+    }
+    if manifest.dependencies.is_empty() && manifest.dev_dependencies.is_empty() {
+        lockfile.root.manifest_digest = crate::package::compute_manifest_digest(root)?;
+    }
     let mut package = lockfile_package_info(root, &manifest)?;
     package.compiler_source_hash = metadata.source_hash.clone();
     lockfile.package = package;
-    lockfile.replace_with_resolved(manager.get_resolved());
     lockfile.package_build = Some(locked_build_info_from_metadata(metadata)?);
     refresh_lockfile_deployment_refs(root, &mut lockfile);
     lockfile.write_to_root(root)?;
@@ -12268,6 +12490,12 @@ fn effective_build_check_args(args: &BuildArgs) -> Result<CheckArgs> {
         all_targets: false,
         target_profile: args.target_profile.clone(),
         features: args.features.clone(),
+        all_features: args.all_features,
+        no_default_features: args.no_default_features,
+        locked: args.locked,
+        frozen: args.frozen,
+        offline: args.offline,
+        environment: args.environment.clone(),
         json: false,
         production: args.production,
         deny_fail_closed: args.deny_fail_closed,
@@ -12735,6 +12963,12 @@ impl CompileTestExpectation {
             all_targets: false,
             target_profile: None,
             features: Vec::new(),
+            all_features: false,
+            no_default_features: false,
+            locked: true,
+            frozen: false,
+            offline: false,
+            environment: None,
             json: false,
             production: self.production,
             deny_fail_closed: self.deny_fail_closed,
@@ -13459,6 +13693,13 @@ impl CliParser {
                             .help("Compile only this lock as the artifact entrypoint"),
                     )
                     .arg(Arg::new("jobs").long("jobs").short('j').value_name("N").help("Number of parallel jobs"))
+                    .arg(Arg::new("features").long("features").value_delimiter(',').num_args(1..).value_name("FEATURES").help("Activate package features"))
+                    .arg(Arg::new("all-features").long("all-features").action(ArgAction::SetTrue).help("Activate all package features"))
+                    .arg(Arg::new("no-default-features").long("no-default-features").action(ArgAction::SetTrue).help("Do not activate the default feature"))
+                    .arg(Arg::new("locked").long("locked").action(ArgAction::SetTrue).help("Require the existing Cell.lock dependency graph"))
+                    .arg(Arg::new("frozen").long("frozen").action(ArgAction::SetTrue).help("Require Cell.lock and cached sources without network or lockfile writes"))
+                    .arg(Arg::new("offline").long("offline").action(ArgAction::SetTrue).help("Do not access the network while materializing locked sources"))
+                    .arg(Arg::new("environment").long("environment").value_name("NAME").help("Select an explicitly declared CKB dependency environment"))
 
                     .arg(
                         Arg::new("production")
@@ -13531,6 +13772,13 @@ impl CliParser {
                     .arg(Arg::new("nocapture").long("nocapture").action(ArgAction::SetTrue).help("Don't capture stdout"))
                     .arg(Arg::new("fail-fast").long("fail-fast").action(ArgAction::SetTrue).help("Stop on first failure"))
                     .arg(Arg::new("doc").long("doc").action(ArgAction::SetTrue).help("Generate docs before compiling tests"))
+                    .arg(Arg::new("features").long("features").value_delimiter(',').num_args(1..).value_name("FEATURES").help("Activate package features"))
+                    .arg(Arg::new("all-features").long("all-features").action(ArgAction::SetTrue).help("Activate all package features"))
+                    .arg(Arg::new("no-default-features").long("no-default-features").action(ArgAction::SetTrue).help("Do not activate the default feature"))
+                    .arg(Arg::new("locked").long("locked").action(ArgAction::SetTrue).help("Require the existing Cell.lock dependency graph"))
+                    .arg(Arg::new("frozen").long("frozen").action(ArgAction::SetTrue).help("Require cached locked sources without network or lockfile writes"))
+                    .arg(Arg::new("offline").long("offline").action(ArgAction::SetTrue).help("Do not access the network while materializing locked sources"))
+                    .arg(Arg::new("environment").long("environment").value_name("NAME").help("Select an explicitly declared CKB dependency environment"))
                     ,
             )
             .subcommand(
@@ -13584,6 +13832,7 @@ impl CliParser {
                 ClapCommand::new("add")
                     .about("Add dependencies")
                     .arg(Arg::new("crates").value_name("CRATES").required(true).num_args(1..).help("Crates to add"))
+                    .arg(Arg::new("package-name").long("package").value_name("NAME").help("Declared package name when it differs from the local alias"))
                     .arg(Arg::new("dev").long("dev").action(ArgAction::SetTrue).help("Add as dev dependency"))
                     .arg(Arg::new("build").long("build").action(ArgAction::SetTrue).help("Add as build dependency"))
                     .arg(Arg::new("git").long("git").value_name("URL").help("Add a git dependency source"))
@@ -13616,6 +13865,13 @@ impl CliParser {
                             .help("Also check the current ELF-compatible target path"),
                     )
                     .arg(Arg::new("target-profile").long("target-profile").value_name("PROFILE").help("Target profile: ckb"))
+                    .arg(Arg::new("features").long("features").value_delimiter(',').num_args(1..).value_name("FEATURES").help("Activate package features"))
+                    .arg(Arg::new("all-features").long("all-features").action(ArgAction::SetTrue).help("Activate all package features"))
+                    .arg(Arg::new("no-default-features").long("no-default-features").action(ArgAction::SetTrue).help("Do not activate the default feature"))
+                    .arg(Arg::new("locked").long("locked").action(ArgAction::SetTrue).help("Require the existing Cell.lock dependency graph"))
+                    .arg(Arg::new("frozen").long("frozen").action(ArgAction::SetTrue).help("Require cached locked sources without network or lockfile writes"))
+                    .arg(Arg::new("offline").long("offline").action(ArgAction::SetTrue).help("Do not access the network while materializing locked sources"))
+                    .arg(Arg::new("environment").long("environment").value_name("NAME").help("Select an explicitly declared CKB dependency environment"))
 
                     .arg(
                         Arg::new("production")
@@ -14548,7 +14804,8 @@ impl CliParser {
                             .help("Allow explicit incident-review install of quarantined registry entries"),
                     ),
             )
-            .subcommand(ClapCommand::new("update").about("Experimental: update dependencies"))
+            .subcommand(ClapCommand::new("lock").about("Resolve and write the complete Cell.lock dependency graph"))
+            .subcommand(ClapCommand::new("update").about("Explicitly repin dependencies and rewrite Cell.lock"))
             .subcommand(
                 ClapCommand::new("info")
                     .about("Show package information")
@@ -14892,11 +15149,11 @@ impl CliParser {
                     ,
             )
             .subcommand(
-                ClapCommand::new("package").about("Package integrity commands").subcommand_required(true).subcommand(
-                    ClapCommand::new("verify")
-                        .about("Verify package integrity against Cell.lock and source tree")
-                        ,
-                ),
+                ClapCommand::new("package")
+                    .about("Package integrity commands")
+                    .subcommand_required(true)
+                    .subcommand(ClapCommand::new("lock").about("Resolve and write the complete Cell.lock dependency graph"))
+                    .subcommand(ClapCommand::new("verify").about("Verify package integrity against Cell.lock and source tree")),
             )
             .subcommand(
                 ClapCommand::new("registry")
@@ -14985,6 +15242,13 @@ impl CliParser {
                 entry_action: m.get_one::<String>("entry-action").cloned(),
                 entry_lock: m.get_one::<String>("entry-lock").cloned(),
                 jobs: m.get_one::<String>("jobs").and_then(|s| s.parse().ok()),
+                features: m.get_many::<String>("features").map(|values| values.cloned().collect()).unwrap_or_default(),
+                all_features: m.get_flag("all-features"),
+                no_default_features: m.get_flag("no-default-features"),
+                locked: m.get_flag("locked"),
+                frozen: m.get_flag("frozen"),
+                offline: m.get_flag("offline"),
+                environment: m.get_one::<String>("environment").cloned(),
                 json: json_output(m),
                 production: m.get_flag("production"),
                 deny_fail_closed: m.get_flag("deny-fail-closed"),
@@ -15005,6 +15269,13 @@ impl CliParser {
                 nocapture: m.get_flag("nocapture"),
                 fail_fast: m.get_flag("fail-fast"),
                 doc: m.get_flag("doc"),
+                features: m.get_many::<String>("features").map(|values| values.cloned().collect()).unwrap_or_default(),
+                all_features: m.get_flag("all-features"),
+                no_default_features: m.get_flag("no-default-features"),
+                locked: m.get_flag("locked"),
+                frozen: m.get_flag("frozen"),
+                offline: m.get_flag("offline"),
+                environment: m.get_one::<String>("environment").cloned(),
                 json: json_output(m),
                 ..Default::default()
             }),
@@ -15039,6 +15310,7 @@ impl CliParser {
             }),
             Some(("add", m)) => Command::Add(AddArgs {
                 crates: m.get_many::<String>("crates").map(|v| v.cloned().collect()).unwrap_or_default(),
+                package: m.get_one::<String>("package-name").cloned(),
                 dev: m.get_flag("dev"),
                 build: m.get_flag("build"),
                 git: m.get_one::<String>("git").cloned(),
@@ -15065,7 +15337,13 @@ impl CliParser {
                     m.get_one::<String>("primitive-compat").cloned(),
                     m.get_one::<String>("primitive-strict").cloned(),
                 ),
-                features: Vec::new(),
+                features: m.get_many::<String>("features").map(|values| values.cloned().collect()).unwrap_or_default(),
+                all_features: m.get_flag("all-features"),
+                no_default_features: m.get_flag("no-default-features"),
+                locked: m.get_flag("locked"),
+                frozen: m.get_flag("frozen"),
+                offline: m.get_flag("offline"),
+                environment: m.get_one::<String>("environment").cloned(),
                 package: m.get_one::<String>("package").cloned(),
                 workspace: m.get_flag("workspace"),
             }),
@@ -15528,6 +15806,7 @@ impl CliParser {
                 allow_unverified: m.get_flag("allow-unverified"),
                 allow_quarantined: m.get_flag("allow-quarantined"),
             }),
+            Some(("lock", m)) => Command::Lock(PackageLockArgs { json: json_output(m) }),
             Some(("update", _)) => Command::Update,
             Some(("info", m)) => Command::Info(InfoArgs { json: json_output(m) }),
             Some(("login", m)) => {
@@ -15561,6 +15840,7 @@ impl CliParser {
                 require_production: m.get_flag("require-production"),
             }),
             Some(("package", m)) => match m.subcommand() {
+                Some(("lock", lock)) => Command::Lock(PackageLockArgs { json: json_output(lock) }),
                 Some(("verify", verify)) => Command::PackageVerify(PackageVerifyArgs { json: json_output(verify) }),
                 _ => unreachable!(),
             },

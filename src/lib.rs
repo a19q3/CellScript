@@ -6466,7 +6466,12 @@ fn collect_source_paths_for_compile_file(entry_path: &Utf8Path) -> Result<BTreeS
 
     if let Some(package_root) = &package_root {
         let mut visited_roots = HashSet::new();
-        collect_package_source_paths_recursive(package_root, &mut visited_roots, &mut source_paths)?;
+        let scope = if entry_path.starts_with(package_root.join("tests")) {
+            crate::package::DependencyScope::Test
+        } else {
+            crate::package::DependencyScope::Runtime
+        };
+        collect_package_source_paths_recursive(package_root, scope, &mut visited_roots, &mut source_paths)?;
     } else if let Some(parent) = entry_path.parent() {
         for source_path in collect_cell_files(parent)? {
             source_paths.insert(source_path);
@@ -6506,7 +6511,12 @@ fn collect_cache_units_for_compile_file(
     if let Some(package_root) = find_package_root(&entry_path)? {
         let mut package_roots = BTreeSet::new();
         let mut visited_roots = HashSet::new();
-        collect_package_roots_recursive(&package_root, &mut visited_roots, &mut package_roots)?;
+        let scope = if entry_path.starts_with(package_root.join("tests")) {
+            crate::package::DependencyScope::Test
+        } else {
+            crate::package::DependencyScope::Runtime
+        };
+        collect_package_roots_recursive(&package_root, scope, &mut visited_roots, &mut package_roots)?;
         for package_root in package_roots {
             let manifest_path = package_root.join("Cell.toml");
             if manifest_path.exists() {
@@ -6524,6 +6534,7 @@ fn collect_cache_units_for_compile_file(
 
 fn collect_package_roots_recursive(
     package_root: &Utf8Path,
+    scope: crate::package::DependencyScope,
     visited_roots: &mut HashSet<Utf8PathBuf>,
     package_roots: &mut BTreeSet<Utf8PathBuf>,
 ) -> Result<()> {
@@ -6532,14 +6543,18 @@ fn collect_package_roots_recursive(
         return Ok(());
     }
     package_roots.insert(package_root.clone());
-    for dep_root in local_dependency_roots(&package_root)? {
-        collect_package_roots_recursive(&dep_root, visited_roots, package_roots)?;
+    for dep_root in local_dependency_roots(&package_root, scope)? {
+        let dep_root = canonical_utf8_path(&dep_root)?;
+        if visited_roots.insert(dep_root.clone()) {
+            package_roots.insert(dep_root);
+        }
     }
     Ok(())
 }
 
 fn collect_package_source_paths_recursive(
     package_root: &Utf8Path,
+    scope: crate::package::DependencyScope,
     visited_roots: &mut HashSet<Utf8PathBuf>,
     source_paths: &mut BTreeSet<Utf8PathBuf>,
 ) -> Result<()> {
@@ -6551,8 +6566,13 @@ fn collect_package_source_paths_recursive(
     for source_path in collect_package_cell_files(&package_root)? {
         source_paths.insert(source_path);
     }
-    for dep_root in local_dependency_roots(&package_root)? {
-        collect_package_source_paths_recursive(&dep_root, visited_roots, source_paths)?;
+    for dep_root in local_dependency_roots(&package_root, scope)? {
+        let dep_root = canonical_utf8_path(&dep_root)?;
+        if visited_roots.insert(dep_root.clone()) {
+            for source_path in collect_package_cell_files(&dep_root)? {
+                source_paths.insert(source_path);
+            }
+        }
     }
 
     Ok(())
@@ -6621,9 +6641,9 @@ pub fn resolve_workspace_members(workspace_root: &Utf8Path) -> Result<Vec<Utf8Pa
     Ok(members)
 }
 
-fn local_dependency_roots(package_root: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
+fn local_dependency_roots(package_root: &Utf8Path, scope: crate::package::DependencyScope) -> Result<Vec<Utf8PathBuf>> {
     let mut manager = crate::package::PackageManager::new(package_root.as_std_path());
-    manager.resolve_dependencies()?;
+    manager.resolve_locked_dependencies(&crate::package::active_resolution_options(scope))?;
     let mut roots = Vec::new();
     for package in manager.get_resolved().values() {
         let dep_root = Utf8PathBuf::from_path_buf(package.path.clone()).map_err(|path| {
@@ -18287,6 +18307,25 @@ mod tests {
     use crate::{ir, lexer, parser};
     use camino::{Utf8Path, Utf8PathBuf};
     use tempfile::tempdir;
+
+    fn lock_package_for_test(root: &Utf8Path) -> crate::error::Result<()> {
+        let mut manager = crate::package::PackageManager::new(root.as_std_path());
+        let manifest = manager.read_manifest()?;
+        let options = crate::package::active_resolution_options(crate::package::DependencyScope::Runtime);
+        manager.resolve_dependencies_with_options(&options)?;
+
+        let mut lockfile = crate::package::Lockfile::new();
+        lockfile.package = crate::package::LockfilePackageInfo {
+            edition: manifest.package.edition,
+            name: manifest.package.name.clone(),
+            version: manifest.package.version.clone(),
+            namespace: manifest.package.namespace.clone(),
+            source_hash: None,
+            compiler_source_hash: None,
+        };
+        lockfile.replace_with_resolution(&manager, &manifest, &options)?;
+        lockfile.write_to_root(root.as_std_path())
+    }
 
     fn rebind_artifact_integrity_for_test(result: &mut crate::CompileResult) {
         result.artifact_hash = crate::ckb_blake2b256(&result.artifact_bytes);
@@ -31747,6 +31786,7 @@ action pass_through(token: Token) -> Token {
         )
         .unwrap();
 
+        lock_package_for_test(&app_root).unwrap();
         let result = compile_file(&app_entry, CompileOptions::default()).unwrap();
         assert_eq!(result.artifact_format, ArtifactFormat::RiscvAssembly);
         assert!(!result.artifact_bytes.is_empty());
@@ -32105,7 +32145,7 @@ action ping() -> u64 {
         )
         .unwrap();
 
-        let err = compile_path(root, CompileOptions::default()).unwrap_err();
+        let err = lock_package_for_test(root).unwrap_err();
         assert!(err.message.contains("requires a namespace"));
         assert!(err.message.contains("token_std"));
     }
@@ -32142,7 +32182,7 @@ action ping() -> u64 {
         )
         .unwrap();
 
-        let err = compile_path(root, CompileOptions::default()).unwrap_err();
+        let err = lock_package_for_test(root).unwrap_err();
         assert!(err.message.contains("not found at path"));
         assert!(err.message.contains("token_std"));
     }
@@ -32293,7 +32333,7 @@ action app_ping() -> u64 {
         )
         .unwrap();
 
-        let err = compile_path(app_root, CompileOptions::default()).unwrap_err();
+        let err = lock_package_for_test(&app_root).unwrap_err();
         assert!(err.message.contains("Circular dependency detected"));
     }
 

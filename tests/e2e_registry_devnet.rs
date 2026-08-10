@@ -559,6 +559,8 @@ fn e2e_publish_install_verify_offline_git() {
     lockfile.dependencies.insert(
         "token".to_string(),
         LockedDependency {
+            name: "token".to_string(),
+            namespace: Some("cellscript".to_string()),
             version: "0.3.0".to_string(),
             source: LockedSource::Registry {
                 registry: "https://github.com/cellscript/cellscript-registry".to_string(),
@@ -568,6 +570,8 @@ fn e2e_publish_install_verify_offline_git() {
                 version: "0.3.0".to_string(),
             },
             source_hash: Some(source_hash_v030.clone()),
+            manifest_digest: "sha256:test-token-manifest".to_string(),
+            dependencies: BTreeMap::new(),
             build: None,
         },
     );
@@ -700,6 +704,8 @@ fn e2e_multi_package_dependency_chain() {
     lockfile.dependencies.insert(
         "lib-a".to_string(),
         LockedDependency {
+            name: "lib-a".to_string(),
+            namespace: Some("cellscript".to_string()),
             version: "0.1.0".to_string(),
             source: LockedSource::Registry {
                 registry: "https://github.com/cellscript/cellscript-registry".to_string(),
@@ -709,12 +715,16 @@ fn e2e_multi_package_dependency_chain() {
                 version: "0.1.0".to_string(),
             },
             source_hash: Some(hash_a),
+            manifest_digest: "sha256:test-lib-a-manifest".to_string(),
+            dependencies: BTreeMap::new(),
             build: None,
         },
     );
     lockfile.dependencies.insert(
         "lib-b".to_string(),
         LockedDependency {
+            name: "lib-b".to_string(),
+            namespace: Some("cellscript".to_string()),
             version: "0.1.0".to_string(),
             source: LockedSource::Registry {
                 registry: "https://github.com/cellscript/cellscript-registry".to_string(),
@@ -724,6 +734,8 @@ fn e2e_multi_package_dependency_chain() {
                 version: "0.1.0".to_string(),
             },
             source_hash: Some(hash_b),
+            manifest_digest: "sha256:test-lib-b-manifest".to_string(),
+            dependencies: BTreeMap::new(),
             build: None,
         },
     );
@@ -737,13 +749,12 @@ fn e2e_multi_package_dependency_chain() {
 }
 
 // ===========================================================================
-// SCENARIO 2b: Diamond dependency — unified (single-version) resolution
+// SCENARIO 2b: Diamond dependency — canonical multi-version graph
 // ===========================================================================
 //
-// Two consumers of a shared package must agree on a single version. The
-// resolver picks one version per package; if the diamond's two version
-// requirements cannot both be satisfied by that one version, resolution
-// fails closed instead of silently keeping whichever was resolved first.
+// Compatible consumers reuse one canonical node. Incompatible requirements
+// remain distinct graph nodes so the lockfile records the complete decision;
+// compiler-level module and type identity collisions still fail closed.
 
 /// Rewrite the `version = "..."` line in a package's Cell.toml in place.
 fn bump_manifest_version(repo_dir: &Path, new_version: &str) {
@@ -878,13 +889,15 @@ fn e2e_diamond_dependency_compatible_versions_unify() {
     pm.resolve_dependencies().expect("compatible diamond must resolve to a single token version");
 
     let resolved = pm.get_resolved();
-    let token = resolved.get("token").expect("token must be resolved transitively");
+    let tokens = resolved.values().filter(|package| package.name == "token").collect::<Vec<_>>();
+    assert_eq!(tokens.len(), 1, "compatible diamond should reuse one canonical token node: {resolved:#?}");
+    let token = tokens[0];
     // The resolver picks the latest satisfying version, which is 0.3.2.
     assert_eq!(token.version, "0.3.2", "unified resolution should select the latest satisfying version");
 }
 
 #[test]
-fn e2e_diamond_dependency_conflicting_versions_fails_closed() {
+fn e2e_diamond_dependency_incompatible_versions_use_distinct_nodes() {
     let temp = tempfile::tempdir().unwrap();
 
     // ── 1. Shared package "token" with 0.3.x and 0.4.x lines ──
@@ -898,8 +911,9 @@ fn e2e_diamond_dependency_conflicting_versions_fails_closed() {
     publish_version_with_deps(&token_repo, "token", "cellscript", "0.4.0", &hash_040, &[]);
 
     // ── 2. amm pins token to ^0.3.0, vesting pins token to ^0.4.0 ──
-    // No single token version can satisfy both "^0.3.0" and "^0.4.0", so the
-    // dependency graph is unsatisfiable and resolution must fail closed.
+    // No single token version can satisfy both "^0.3.0" and "^0.4.0". The v3
+    // graph therefore retains two canonical nodes; compilation still fails
+    // closed later if their exported module/type identities collide.
     let amm_repo = temp.path().join("source-repos/cellscript-amm");
     create_package_with_dep(&amm_repo, "amm", "0.1.0", Some("cellscript"), "token", "0.3.0", Some("cellscript"));
     let amm_hash = compute_source_hash(&amm_repo).unwrap();
@@ -945,9 +959,15 @@ fn e2e_diamond_dependency_conflicting_versions_fails_closed() {
     let _env = RegistryEnvGuard::new(&api.origin);
 
     let mut pm = PackageManager::new(&app_dir);
-    let err = pm.resolve_dependencies().expect_err("conflicting diamond must fail closed");
-    let msg = err.to_string();
-    assert!(msg.contains("version conflict") && msg.contains("token"), "expected a token version-conflict error, got: {msg}");
+    pm.resolve_dependencies().expect("incompatible requirements should resolve to distinct graph nodes");
+    let mut token_versions = pm
+        .get_resolved()
+        .values()
+        .filter(|package| package.name == "token")
+        .map(|package| package.version.as_str())
+        .collect::<Vec<_>>();
+    token_versions.sort_unstable();
+    assert_eq!(token_versions, ["0.3.0", "0.4.0"]);
 }
 
 #[test]
@@ -3060,6 +3080,8 @@ fn e2e_package_manager_registry_resolution_with_local_git() {
     lockfile.dependencies.insert(
         "math-lib".to_string(),
         LockedDependency {
+            name: "math-lib".to_string(),
+            namespace: Some("cellscript".to_string()),
             version: "0.1.0".to_string(),
             source: LockedSource::Registry {
                 registry: "https://github.com/cellscript/cellscript-registry".to_string(),
@@ -3069,9 +3091,13 @@ fn e2e_package_manager_registry_resolution_with_local_git() {
                 version: "0.1.0".to_string(),
             },
             source_hash: Some(hash_math),
+            manifest_digest: "sha256:test-math-manifest".to_string(),
+            dependencies: BTreeMap::new(),
             build: None,
         },
     );
+    lockfile.root.manifest_digest = cellscript::package::compute_manifest_digest(&consumer_dir).unwrap();
+    lockfile.root.dependencies.insert("math-lib".to_string(), "math-lib".to_string());
     lockfile.write_to_root(&consumer_dir).unwrap();
 
     // ── 6. Verify Cell.lock consistency ──

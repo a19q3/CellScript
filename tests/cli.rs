@@ -18,6 +18,11 @@ fn hash_json_for_test<T: serde::Serialize>(value: &T) -> String {
     hex_lower(&cellscript::ckb_blake2b256(&bytes))
 }
 
+fn lock_package(root: &std::path::Path) {
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("lock").output().unwrap();
+    assert!(output.status.success(), "lock failed: {}", String::from_utf8_lossy(&output.stderr));
+}
+
 fn ckb_script_hash_for_test(code_hash: &str, hash_type: &str, args: &str) -> String {
     let code_hash_bytes = hex::decode(code_hash.trim_start_matches("0x")).unwrap();
     let hash_type_byte = match hash_type {
@@ -3045,6 +3050,7 @@ action pass_through(token: Token) -> Token {
     )
     .unwrap();
 
+    lock_package(&app_root);
     let output = app_root.join("build").join("main.s");
     let status = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).status().unwrap();
 
@@ -3088,13 +3094,12 @@ action ping() -> u64 {
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(root).output().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("lock").output().unwrap();
 
     assert!(!output.status.success(), "unexpected success: {}", String::from_utf8_lossy(&output.stdout));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("registry dependency 'remote' requires a namespace"), "unexpected stderr: {}", stderr);
-    assert!(!root.join("build").join("main.s").exists());
-    assert!(!root.join("build").join("main.s.meta.json").exists());
+    assert!(!root.join("Cell.lock").exists());
 }
 
 #[test]
@@ -3269,8 +3274,17 @@ action pass_through(token: Token) -> Token {
     )
     .unwrap();
 
+    let lock = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .arg("lock")
+        .env(cellscript::package::registry::REGISTRY_API_URL_ENV, &api_origin)
+        .current_dir(&app_root)
+        .output()
+        .unwrap();
+    assert!(lock.status.success(), "stderr: {}", String::from_utf8_lossy(&lock.stderr));
+
     let output = Command::new(env!("CARGO_BIN_EXE_cellc"))
         .arg("build")
+        .arg("--locked")
         .env(cellscript::package::registry::REGISTRY_API_URL_ENV, &api_origin)
         .current_dir(&app_root)
         .output()
@@ -3288,7 +3302,8 @@ action pass_through(token: Token) -> Token {
     assert!(build.schema_hash.is_some());
     assert!(build.abi_hash.is_some());
     assert!(build.constraints_hash.is_some());
-    let token = lockfile.dependencies.get("token").expect("locked registry dependency");
+    let token_node = lockfile.root.dependencies.get("token").expect("locked registry root edge");
+    let token = lockfile.dependencies.get(token_node).expect("locked registry dependency");
     assert_eq!(token.source_hash.as_deref(), Some(source_hash.as_str()));
 
     let verify = Command::new(env!("CARGO_BIN_EXE_cellc"))
@@ -3901,6 +3916,7 @@ action wrapper(amount: u64) -> Token {
     )
     .unwrap();
 
+    lock_package(&app_root);
     let output = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).output().unwrap();
     assert!(!output.status.success(), "unexpected success: {}", String::from_utf8_lossy(&output.stdout));
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3988,6 +4004,7 @@ action run(x: u64) -> u64 {
     )
     .unwrap();
 
+    lock_package(&app_root);
     let output = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).output().unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 
@@ -4058,6 +4075,7 @@ action run(x: u64) -> u64 {
     )
     .unwrap();
 
+    lock_package(&app_root);
     let output = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).output().unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 
@@ -4138,6 +4156,7 @@ action run(x: u64) -> u64 {
     )
     .unwrap();
 
+    lock_package(&app_root);
     let output = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).output().unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 
@@ -4215,6 +4234,7 @@ action run(x: u64) -> u64 {
     )
     .unwrap();
 
+    lock_package(&app_root);
     let output = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).output().unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 
@@ -7490,6 +7510,17 @@ deny_fail_closed = true
 fn cellc_add_and_remove_subcommands_honor_dev_path_and_json() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("math/src")).unwrap();
+    std::fs::create_dir_all(root.join("contracts")).unwrap();
+    std::fs::create_dir_all(root.join("shared")).unwrap();
+    std::fs::write(root.join("src/main.cell"), "module demo;\n").unwrap();
+    std::fs::write(
+        root.join("math/Cell.toml"),
+        "[package]\nedition = \"2026\"\nname = \"math\"\nversion = \"0.1.0\"\nentry = \"src/lib.cell\"\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("math/src/lib.cell"), "module math;\n").unwrap();
 
     std::fs::write(
         root.join("Cell.toml"),
@@ -7514,25 +7545,30 @@ out_dir = "artifacts"
         .arg("add")
         .arg("--dev")
         .arg("--path")
-        .arg("../math")
+        .arg("math")
         .arg("--json")
         .arg("math")
         .output()
         .unwrap();
-    assert!(add_output.status.success(), "stderr: {}", String::from_utf8_lossy(&add_output.stderr));
+    assert!(
+        add_output.status.success(),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&add_output.stdout),
+        String::from_utf8_lossy(&add_output.stderr)
+    );
 
     let add_summary: serde_json::Value = serde_json::from_slice(&add_output.stdout).unwrap();
     assert_eq!(add_summary["status"], "ok");
     assert_eq!(add_summary["target"], "dev-dependencies");
     assert_eq!(add_summary["added"][0], "math");
-    assert_eq!(add_summary["dependency"]["path"], "../math");
+    assert_eq!(add_summary["dependency"]["path"], "math");
 
     let manifest: toml::Value = std::fs::read_to_string(root.join("Cell.toml")).unwrap().parse().unwrap();
     assert_eq!(manifest["package"]["source_roots"].as_array().unwrap().len(), 2);
     assert_eq!(manifest["build"]["target"].as_str().unwrap(), "riscv64-elf");
     assert_eq!(manifest["build"]["target_profile"].as_str().unwrap(), "ckb");
     assert_eq!(manifest["build"]["out_dir"].as_str().unwrap(), "artifacts");
-    assert_eq!(manifest["dev_dependencies"]["math"]["path"].as_str().unwrap(), "../math");
+    assert_eq!(manifest["dev_dependencies"]["math"]["path"].as_str().unwrap(), "math");
     assert!(manifest.get("dependencies").and_then(|value| value.get("math")).is_none());
 
     let remove_output = Command::new(env!("CARGO_BIN_EXE_cellc"))
@@ -7568,6 +7604,8 @@ fn cellc_install_path_updates_lockfile_and_remove_prunes_it() {
 
     std::fs::create_dir_all(dep_root.join("src")).unwrap();
     std::fs::create_dir_all(util_root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/main.cell"), "module demo;\n").unwrap();
     std::fs::write(
         root.join("Cell.toml"),
         r#"
@@ -7585,6 +7623,7 @@ version = "0.1.0"
 edition = "2026"
 name = "math"
 version = "0.2.0"
+entry = "src/lib.cell"
 
 [dependencies.util]
 version = "0.1.0"
@@ -7592,6 +7631,7 @@ path = "../util"
 "#,
     )
     .unwrap();
+    std::fs::write(dep_root.join("src/lib.cell"), "module math;\n").unwrap();
     std::fs::write(
         util_root.join("Cell.toml"),
         r#"
@@ -7599,9 +7639,11 @@ path = "../util"
 edition = "2026"
 name = "util"
 version = "0.1.0"
+entry = "src/lib.cell"
 "#,
     )
     .unwrap();
+    std::fs::write(util_root.join("src/lib.cell"), "module util;\n").unwrap();
 
     let install = Command::new(env!("CARGO_BIN_EXE_cellc"))
         .current_dir(root)
@@ -7617,24 +7659,99 @@ version = "0.1.0"
     assert_eq!(manifest["dependencies"]["math"]["path"].as_str().unwrap(), "math");
 
     let lockfile: cellscript::package::Lockfile = toml::from_str(&std::fs::read_to_string(root.join("Cell.lock")).unwrap()).unwrap();
-    let locked = lockfile.dependencies.get("math").expect("math should be locked");
+    let math_node = lockfile.root.dependencies.get("math").expect("math root edge should be locked");
+    let locked = lockfile.dependencies.get(math_node).expect("math should be locked");
     assert_eq!(locked.version, "0.2.0");
     assert!(matches!(&locked.source, cellscript::package::LockedSource::Path { path } if path == "math"));
-    let util = lockfile.dependencies.get("util").expect("transitive util should be locked");
+    let util_node = locked.dependencies.get("util").expect("math should have a util edge");
+    let util = lockfile.dependencies.get(util_node).expect("transitive util should be locked");
     assert_eq!(util.version, "0.1.0");
 
     let update = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("update").output().unwrap();
     assert!(update.status.success(), "stderr: {}", String::from_utf8_lossy(&update.stderr));
     let update_stdout = String::from_utf8_lossy(&update.stdout);
-    assert!(update_stdout.contains("Updated 2 dependencies"), "{update_stdout}");
+    assert!(update_stdout.contains("Updated 2 dependency nodes"), "{update_stdout}");
     assert!(!update_stdout.contains("Warning: lockfile is not consistent"), "{update_stdout}");
 
     let remove = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("remove").arg("math").output().unwrap();
     assert!(remove.status.success(), "stderr: {}", String::from_utf8_lossy(&remove.stderr));
 
     let pruned: cellscript::package::Lockfile = toml::from_str(&std::fs::read_to_string(root.join("Cell.lock")).unwrap()).unwrap();
-    assert!(!pruned.dependencies.contains_key("math"));
-    assert!(!pruned.dependencies.contains_key("util"));
+    assert!(pruned.root.dependencies.is_empty());
+    assert!(pruned.dependencies.is_empty());
+}
+
+#[test]
+fn cellc_build_uses_authoritative_lock_and_frozen_is_offline_and_read_only() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("math/src")).unwrap();
+    std::fs::write(
+        root.join("Cell.toml"),
+        r#"
+[package]
+edition = "2026"
+name = "demo"
+version = "0.1.0"
+
+[dependencies.math]
+path = "math"
+version = "^1.2.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/main.cell"),
+        r#"
+module demo::main
+
+action ping(value: u64) -> u64 {
+    verification
+        value
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("math/Cell.toml"),
+        r#"
+[package]
+edition = "2026"
+name = "math"
+version = "1.2.3"
+"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("math/src/lib.cell"), "module math;\n").unwrap();
+
+    let missing = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").output().unwrap();
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("Cell.lock is missing"));
+
+    let lock = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("lock").arg("--json").output().unwrap();
+    assert!(lock.status.success(), "stderr: {}", String::from_utf8_lossy(&lock.stderr));
+    let summary: serde_json::Value = serde_json::from_slice(&lock.stdout).unwrap();
+    assert_eq!(summary["schema"], cellscript::package::Lockfile::CURRENT_SCHEMA);
+    assert_eq!(summary["dependency_nodes"], 1);
+
+    let build = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").arg("--locked").output().unwrap();
+    assert!(build.status.success(), "stderr: {}", String::from_utf8_lossy(&build.stderr));
+    let before_frozen = std::fs::read(root.join("Cell.lock")).unwrap();
+    let frozen =
+        Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").arg("--frozen").arg("--offline").output().unwrap();
+    assert!(frozen.status.success(), "stderr: {}", String::from_utf8_lossy(&frozen.stderr));
+    assert_eq!(std::fs::read(root.join("Cell.lock")).unwrap(), before_frozen);
+
+    std::fs::write(root.join("math/src/lib.cell"), "module math;\n// source drift\n").unwrap();
+    let drift = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").arg("--locked").output().unwrap();
+    assert!(!drift.status.success());
+    assert!(String::from_utf8_lossy(&drift.stderr).contains("source hash mismatch"));
+
+    let update = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("update").output().unwrap();
+    assert!(update.status.success(), "stderr: {}", String::from_utf8_lossy(&update.stderr));
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").arg("--locked").output().unwrap();
+    assert!(rebuilt.status.success(), "stderr: {}", String::from_utf8_lossy(&rebuilt.stderr));
 }
 
 #[test]
@@ -8707,7 +8824,14 @@ fn cellc_cross_module_launch_composition_distributes_correctly() {
     // audit lifecycle and the eight-output distribution shape.
     let launch_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples").join("launch");
 
-    let build = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&launch_path).output().unwrap();
+    let lock_before = std::fs::read(launch_path.join("Cell.lock")).expect("bundled launch package must carry a tracked lockfile");
+    let build = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .current_dir(&launch_path)
+        .arg("build")
+        .arg("--frozen")
+        .arg("--offline")
+        .output()
+        .unwrap();
     assert!(build.status.success(), "build failed: {}", String::from_utf8_lossy(&build.stderr));
 
     let metadata: serde_json::Value =
@@ -8739,6 +8863,11 @@ fn cellc_cross_module_launch_composition_distributes_correctly() {
     let bundle: serde_json::Value =
         serde_json::from_slice(&std::fs::read(audit_dir.path().join("audit-bundle.json")).unwrap()).unwrap();
     assert_eq!(bundle["protocol_graph"]["schema"], "cellscript-protocol-graph-v0.22");
+    assert_eq!(
+        std::fs::read(launch_path.join("Cell.lock")).unwrap(),
+        lock_before,
+        "frozen/offline build and audit must not rewrite the tracked dependency graph"
+    );
 }
 
 #[test]
@@ -9046,6 +9175,7 @@ action mint(amount: u64, owner: Address) -> Token {
     let package_source_hash = "package-registry-source-hash".to_string();
     let mut lockfile = cellscript::package::Lockfile {
         version: cellscript::package::Lockfile::CURRENT_VERSION,
+        schema: cellscript::package::Lockfile::CURRENT_SCHEMA.to_string(),
         package: cellscript::package::LockfilePackageInfo {
             edition: cellscript::CURRENT_EDITION,
             name: "demo".to_string(),
@@ -9054,7 +9184,9 @@ action mint(amount: u64, owner: Address) -> Token {
             source_hash: Some(package_source_hash.clone()),
             compiler_source_hash: metadata.source_hash.clone(),
         },
+        root: Default::default(),
         dependencies: Default::default(),
+        environments: Default::default(),
         package_build: Some(build_info.clone()),
         deployment: Default::default(),
     };
@@ -10247,6 +10379,7 @@ action passthrough(token: Token) -> Token {
     )
     .unwrap();
 
+    lock_package(&app);
     let output =
         Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").arg("-p").arg("app").arg("--json").output().unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
