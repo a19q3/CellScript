@@ -1,8 +1,7 @@
 # CellScript 0.24 Roadmap
 
-**Status**: Core implemented and merge gates passed on `nightly-0.24`; iCKB
-evidence publication, external Myelin lock adoption, and conditional
-Fiber/RGB++ evidence remain pending
+**Status**: Core implemented and merge gates passed on `nightly-0.24`; external
+Myelin lock adoption and conditional Fiber/RGB++ evidence remain pending
 
 **Theme**: independently verified artifacts, executable package evidence, and
 bounded runtime integration

@@ -2,8 +2,8 @@
 
 **Status**: implementation-complete merge candidate; `dev`, `ci`, and
 `backend` passed on 2026-08-10. The refreshed iCKB evidence submodule commit
-must be published before the parent branch is pushed, and the full release gate
-remains required before production claims
+`0e18ccd97bd75cac7de9211dc8d344c0bc08942f` is published and bound by the
+parent gitlink; the full release gate remains required before production claims
 
 **Source edition**: 2026
 
@@ -216,9 +216,10 @@ three merge gates is not a substitute for the release gate or public-chain
 evidence; neither release mode has been run for this merge candidate.
 
 The refreshed iCKB matrix is versioned in the benchmark submodule rather than
-copied into the parent repository. Its commit must exist on the submodule
-remote before the parent gitlink is published; otherwise a clean clone cannot
-reconstruct the exact evidence tree that passed `backend`.
+copied into the parent repository. Commit
+`0e18ccd97bd75cac7de9211dc8d344c0bc08942f` is published on that submodule's
+`main` branch, and the parent repository binds the same gitlink, so a clean
+clone can reconstruct the exact evidence tree that passed `backend`.
 
 ## Detailed References
 
