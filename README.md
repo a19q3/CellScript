@@ -805,9 +805,14 @@ Non-CellScript artifact profiles still fail closed.
 - `[resolvers.<name>]` — optional absolute-path/SHA-256-bound, time/output
   bounded update-time resolver; its versioned response must normalize to an
   exact Registry version or Git commit and is never executed by locked builds
+- `examples/package_graph` — runnable frozen/offline alias, SemVer, feature,
+  test-only dependency, and explicit CKB-environment graph
+- `examples/scenario_basics` — runnable positive and exact-negative scenarios
+  under both simulator and CKB-VM, plus a four-file artifact walkthrough
 - `cellc info --json` — exposes package metadata for CI and tooling
 - `cellc package verify --json` — fails closed when `Cell.toml`, source hash,
-  dependency resolution, or build identity disagree with `Cell.lock`
+  dependency resolution, or build identity disagree with `Cell.lock`; run an
+  ordinary locked build first when a tracked example lock is graph-only
 - `cellc registry verify --json` — checks off-chain deployment facts against
   `Cell.lock` and `Deployed.toml`
 - `cellc registry verify --live --rpc-url ... --json` — adds CKB RPC

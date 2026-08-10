@@ -1,0 +1,35 @@
+{
+  "schema": "cellscript-test-scenario-v1",
+  "name": "bundled-positive-entry",
+  "source": "scenario_basics.cell",
+  "target_profile": "ckb",
+  "entry": {
+    "kind": "action",
+    "name": "main",
+    "args": []
+  },
+  "initial_cells": [],
+  "steps": [
+    {
+      "name": "main-succeeds",
+      "consumes": [],
+      "outputs": [],
+      "cell_deps": [],
+      "header_deps": [],
+      "since": {},
+      "witnesses": [],
+      "expectation": {
+        "status": "pass",
+        "result": "()",
+        "runtime_error": null
+      }
+    }
+  ],
+  "limits": {
+    "max_steps": 1000,
+    "max_cycles": 10000000,
+    "max_transaction_bytes": 65536,
+    "minimum_cell_capacity": 100000000
+  },
+  "oracle": null
+}

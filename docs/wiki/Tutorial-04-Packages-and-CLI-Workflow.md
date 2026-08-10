@@ -310,6 +310,12 @@ cellc auth capability create --principal-id <principal_id> \
 cellc gen-builder . --target typescript --target-profile ckb --json
 ```
 
+`package verify` checks build identity as well as the dependency graph. A
+freshly cloned example intentionally carries a graph-only `Cell.lock`; run
+`cellc build --locked` first to populate `[package.build]`. A frozen build
+cannot add that local evidence because `--frozen` suppresses every lockfile
+write.
+
 Legacy flat aliases such as `solve-tx`, `deploy-plan`, and
 `explain-assumptions` remain executable for compatibility, but they are hidden
 from public discovery. Prefer `--json` where a command offers it, and reserve
@@ -417,6 +423,19 @@ namespace = "cellscript"
 
 When overrides exist, `--environment mainnet` is mandatory. The environment
 root in `Cell.lock` binds both `chain_id` and genesis hash.
+
+The portable checked-in example exercises these inputs together:
+
+```bash
+cd examples/package_graph
+cellc check --frozen --offline --environment mainnet
+cellc check --frozen --offline --environment testnet --features full
+cellc test --no-run --frozen --offline --environment testnet --all-features
+```
+
+Its local dependency alias is distinct from the declared package name, and its
+testnet override resolves a different exact version of the same declared
+package. Omitting `--environment` is an intentional fail-closed example.
 
 Advanced ecosystems may declare a hash-pinned bounded resolver. It runs only
 during explicit lock/update, without a shell or inherited environment, and

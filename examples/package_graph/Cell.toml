@@ -1,0 +1,47 @@
+[package]
+edition = "2026"
+name = "package_graph_demo"
+version = "0.1.0"
+
+[dependencies.core]
+package = "canonical_math"
+version = "^1.2.0"
+path = "deps/canonical-math"
+
+[dependencies.audit]
+package = "audit_helpers"
+version = "~0.4.0"
+path = "deps/audit-helpers"
+optional = true
+
+[dependencies.contracts]
+package = "network_contracts"
+version = ">=1.0.0, <3.0.0"
+path = "deps/contracts-mainnet"
+
+[dev_dependencies.test_support]
+package = "scenario_test_support"
+version = "=0.1.0"
+path = "deps/test-support"
+
+[features]
+default = []
+auditing = ["dep:audit"]
+full = ["auditing"]
+
+[environments.mainnet]
+chain_id = "ckb-mainnet"
+genesis_hash = "0x1111111111111111111111111111111111111111111111111111111111111111"
+
+[environments.testnet]
+chain_id = "ckb-testnet"
+genesis_hash = "0x2222222222222222222222222222222222222222222222222222222222222222"
+
+[dependency_overrides.testnet.contracts]
+package = "network_contracts"
+version = "=2.0.0"
+path = "deps/contracts-testnet"
+
+[build]
+target = "riscv64-elf"
+target_profile = "ckb"

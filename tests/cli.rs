@@ -7755,6 +7755,127 @@ version = "1.2.3"
 }
 
 #[test]
+fn bundled_scenario_basics_executes_positive_and_exact_negative_cases_on_both_backends() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/scenario_basics");
+    let lock_before = std::fs::read(root.join("Cell.lock")).expect("scenario example must carry a tracked lockfile");
+
+    let graph_only_verify =
+        Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(&root).args(["package", "verify", "--json"]).output().unwrap();
+    assert!(!graph_only_verify.status.success());
+    assert!(
+        String::from_utf8_lossy(&graph_only_verify.stdout).contains("Cell.lock has no [package.build]")
+            || String::from_utf8_lossy(&graph_only_verify.stderr).contains("Cell.lock has no [package.build]")
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .current_dir(&root)
+        .args(["test", "--frozen", "--offline", "--backend", "all", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["status"], "ok");
+    assert_eq!(report["scenario_files"], 2);
+    assert_eq!(report["scenario_runs"], 4);
+    let scenarios = report["scenarios"].as_array().expect("scenario reports");
+    assert!(scenarios.iter().any(|row| {
+        row["scenario"] == "bundled-positive-entry"
+            && row["backend"] == "simulator"
+            && row["evidence_tier"] == "development-non-consensus"
+    }));
+    assert!(scenarios.iter().any(|row| {
+        row["scenario"] == "bundled-positive-entry" && row["backend"] == "ckb-vm" && row["evidence_tier"] == "authoritative-runtime"
+    }));
+    let exact_negative = scenarios.iter().filter(|row| row["scenario"] == "bundled-exact-runtime-error").collect::<Vec<_>>();
+    assert_eq!(exact_negative.len(), 2, "exact-negative scenario should run once per backend");
+    assert!(exact_negative.iter().all(|row| {
+        row["steps"][0]["status"] == "expected-runtime-error"
+            && row["steps"][0]["runtime_error"]["code"] == 5
+            && row["steps"][0]["runtime_error"]["name"] == "assertion-failed"
+    }));
+
+    let build = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .current_dir(&root)
+        .args(["build", "--frozen", "--offline", "--json"])
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "stderr: {}", String::from_utf8_lossy(&build.stderr));
+    for file in ["main.elf", "main.elf.meta.json", "main.elf.lowering.json", "main.elf.sourcemap.json"] {
+        assert!(root.join("build").join(file).is_file(), "verified-artifact example should emit {file}");
+    }
+    let verify = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .current_dir(&root)
+        .args(["verify-artifact", "build/main.elf", "--verify-sources", "--json"])
+        .output()
+        .unwrap();
+    assert!(verify.status.success(), "stderr: {}", String::from_utf8_lossy(&verify.stderr));
+    let verify_report: serde_json::Value = serde_json::from_slice(&verify.stdout).unwrap();
+    assert_eq!(verify_report["status"], "ok");
+    assert_eq!(verify_report["structural_verification"], "verified");
+    assert_eq!(verify_report["sources_verified"], true);
+    std::fs::remove_dir_all(root.join("build")).expect("remove generated bundled-example artifacts");
+
+    assert_eq!(
+        std::fs::read(root.join("Cell.lock")).unwrap(),
+        lock_before,
+        "frozen scenario execution must not rewrite the tracked graph"
+    );
+}
+
+#[test]
+fn bundled_package_graph_exercises_alias_features_test_scope_and_ckb_environments() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/package_graph");
+    let manifest = std::fs::read_to_string(root.join("Cell.toml")).expect("package graph manifest");
+    for needle in [
+        "package = \"canonical_math\"",
+        "version = \"^1.2.0\"",
+        "optional = true",
+        "[dev_dependencies.test_support]",
+        "auditing = [\"dep:audit\"]",
+        "full = [\"auditing\"]",
+        "[environments.mainnet]",
+        "[environments.testnet]",
+        "[dependency_overrides.testnet.contracts]",
+    ] {
+        assert!(manifest.contains(needle), "package graph example should contain `{needle}`");
+    }
+
+    let lock_before = std::fs::read(root.join("Cell.lock")).expect("package graph example must carry a tracked lockfile");
+    let lock_text = String::from_utf8(lock_before.clone()).unwrap();
+    for needle in [
+        "schema = \"cellscript-lock-v0.24-graph-v1\"",
+        "[environments.mainnet.dependencies]",
+        "[environments.mainnet.dev_dependencies]",
+        "[environments.testnet.dependencies]",
+        "[environments.testnet.dev_dependencies]",
+        "network_contracts@1.0.0|path:deps/contracts-mainnet|env=mainnet",
+        "network_contracts@2.0.0|path:deps/contracts-testnet|env=testnet",
+    ] {
+        assert!(lock_text.contains(needle), "package graph lock should contain `{needle}`");
+    }
+
+    let missing_environment =
+        Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(&root).args(["check", "--frozen", "--offline"]).output().unwrap();
+    assert!(!missing_environment.status.success());
+    assert!(String::from_utf8_lossy(&missing_environment.stderr).contains("--environment"));
+
+    for args in [
+        vec!["check", "--frozen", "--offline", "--environment", "mainnet"],
+        vec!["check", "--frozen", "--offline", "--environment", "testnet", "--features", "full"],
+        vec!["test", "--no-run", "--frozen", "--offline", "--environment", "testnet", "--all-features"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(&root).args(&args).output().unwrap();
+        assert!(output.status.success(), "cellc {} failed: {}", args.join(" "), String::from_utf8_lossy(&output.stderr));
+    }
+    assert_eq!(
+        std::fs::read(root.join("Cell.lock")).unwrap(),
+        lock_before,
+        "frozen package-graph commands must not rewrite the tracked graph"
+    );
+}
+
+#[test]
 fn cellc_metadata_subcommand_emits_lowering_runtime_json() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

@@ -16,7 +16,9 @@
   scattered Registry artifact-profile conditionals with the versioned,
   fail-closed `cellscript-registry-profile-catalog-v1`; only CellScript source
   profiles are dependency-resolving, while executable, reproducible, and copy
-  profiles remain explicit non-resolving artifacts.
+  profiles remain explicit non-resolving artifacts. Add a portable
+  `examples/package_graph` fixture that executes alias, SemVer, feature,
+  test-only, environment, and override selection from the frozen graph.
 - Implement the 0.24 trust-closure core. CKB ELF builds now emit canonical
   `cellscript-verified-lowering-record-v1` and
   `cellscript-source-artifact-map-v1` sidecars, bound by metadata schema 58 and
@@ -37,6 +39,8 @@
   whose production graph excludes the compiler. Freeze the CellScript side of
   the Myelin handoff without a new profile or raw-witness alias; keep external
   Myelin adoption and the incomplete Fiber/RGB++ matrices explicitly pending.
+  Add `examples/scenario_basics` as the runnable positive/exact-negative
+  scenario and four-file verified-artifact walkthrough.
 - Freeze the 0.23 implementation scope around Edition 2026 and its resolved
   profile/entry identities, the deployed Registry and publisher-session path,
   native gate tooling, the recoverable website workbench, and the bounded Fiber

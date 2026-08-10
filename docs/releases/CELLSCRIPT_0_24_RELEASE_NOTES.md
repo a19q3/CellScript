@@ -72,6 +72,10 @@ authoritative runtime evidence, not chain evidence. The v1 CKB-VM runner
 supports no-argument entries; transaction-syscall cases remain with the
 stateful CKB oracle.
 
+`examples/scenario_basics` is the checked-in runnable form of this contract. It
+executes positive and exact-negative fixtures under both backends and provides
+a concrete four-file bundle/checker walkthrough.
+
 Native `cellc run` now includes the VM runner by default. It executes only a
 no-argument standalone ELF and fails closed for parameter or transaction/
 syscall context. Development interpretation requires explicit `--simulate`;
@@ -162,6 +166,13 @@ that environment, but there is no implicit mainnet/testnet selection: callers
 must pass `--environment <name>` when overrides exist. This adapts Move's named
 environment idea to CKB's genesis-bound Cell Model rather than copying Sui
 addresses or published package IDs.
+
+`examples/package_graph` is the portable runnable form of these package
+features. Its checked-in graph covers a declared-package alias, standard SemVer
+requirements, optional and transitive feature activation, a test-only
+dependency, two genesis-bound environments, and an exact testnet override.
+Frozen/offline commands prove that those selections are consumed from the lock
+without invoking mutable resolution.
 
 ### Bounded resolver extension, normalized before trust
 

@@ -7,10 +7,12 @@ without calling local execution chain evidence.
 
 ## Build the Four-File Bundle
 
-From an Edition 2026 package, build the CKB ELF:
+The checked-in `scenario_basics` package is the smallest complete example. From
+the repository root:
 
 ```bash
-cellc build --target riscv64-elf --target-profile ckb --json
+cd examples/scenario_basics
+cellc build --frozen --offline --json
 ```
 
 The build emits:
@@ -71,6 +73,12 @@ schema names the confined source file, CKB target profile, entry, initial live
 Cells, ordered replacement steps, dependencies, headers, `since`, witnesses,
 limits, and an exact expectation.
 
+See `examples/scenario_basics/tests/pass.scenario.json` and
+`assertion-failure.scenario.json` for runnable positive and exact-negative
+fixtures. Scenario sources intentionally stay in the same `tests/` directory:
+v1 rejects absolute paths and parent traversal instead of letting a fixture
+escape its evidence root.
+
 A minimal positive shape is:
 
 ```json
@@ -109,9 +117,9 @@ and unsupported evidence requests fail before execution.
 ## Run Both Evidence Tiers
 
 ```bash
-cellc test --backend simulator
-cellc test --backend ckb-vm
-cellc test --backend all --json
+cellc test --backend simulator --frozen --offline
+cellc test --backend ckb-vm --frozen --offline
+cellc test --backend all --frozen --offline --json
 ```
 
 The simulator is deterministic development feedback and is labelled

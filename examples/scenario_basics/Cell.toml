@@ -1,0 +1,8 @@
+[package]
+edition = "2026"
+name = "scenario_basics"
+version = "0.1.0"
+
+[build]
+target = "riscv64-elf"
+target_profile = "ckb"

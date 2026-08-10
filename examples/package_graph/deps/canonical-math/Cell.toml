@@ -1,0 +1,5 @@
+[package]
+edition = "2026"
+name = "canonical_math"
+version = "1.2.3"
+entry = "src/lib.cell"
