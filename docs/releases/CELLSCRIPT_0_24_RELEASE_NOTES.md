@@ -1,8 +1,9 @@
 # CellScript 0.24 Development Release Notes
 
-**Status**: implementation-complete merge candidate; `dev` and `ci` passed on
-2026-08-10, while `backend` must be rerun from the clean committed tree; the
-full release gate remains required before production claims
+**Status**: implementation-complete merge candidate; `dev`, `ci`, and
+`backend` passed on 2026-08-10. The refreshed iCKB evidence submodule commit
+must be published before the parent branch is pushed, and the full release gate
+remains required before production claims
 
 **Source edition**: 2026
 
@@ -196,10 +197,12 @@ or conversion of executable/copy artifacts into source dependencies.
 ## Validation
 
 The package/Registry closure passed `dev` and `ci` on 2026-08-10, with the CI
-website phase using the required Node 22 toolchain. The backend compiler,
-tests, Clippy, and static audit also passed, but its stateful acceptance harness
-correctly rejected the uncommitted source tree. The exact committed tree must
-therefore pass the complete `backend` gate before this candidate is promoted:
+website phase using the required Node 22 toolchain. The complete `backend` gate
+then passed from an isolated clean checkout containing the refreshed iCKB
+differential evidence, pinned CKB revision
+`f7fa4436737756f97a24e254f22c13a36316ecea`, and CKB SDK `v5.1.0`. This
+covered the compiler tests, Clippy, full strict backend audit, all 218 iCKB
+differential cases, and the production stateful CKB scenario harness:
 
 ```bash
 ./scripts/cellscript_gate.sh dev
@@ -211,6 +214,11 @@ therefore pass the complete `backend` gate before this candidate is promoted:
 Docker, Node 22, and RISC-V tooling described in the gate policy. Passing the
 three merge gates is not a substitute for the release gate or public-chain
 evidence; neither release mode has been run for this merge candidate.
+
+The refreshed iCKB matrix is versioned in the benchmark submodule rather than
+copied into the parent repository. Its commit must exist on the submodule
+remote before the parent gitlink is published; otherwise a clean clone cannot
+reconstruct the exact evidence tree that passed `backend`.
 
 ## Detailed References
 
