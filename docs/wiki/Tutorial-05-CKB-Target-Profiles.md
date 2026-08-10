@@ -149,7 +149,7 @@ deployment, live asset Script, CellDeps, and operator-controlled Fiber
 configuration.
 
 Use the separate `cellscript-fiber` binary and follow the
-[bounded Fiber interoperability guide](https://github.com/CellScript-Labs/CellScript/blob/nightly-0.23/examples/fiber/README.md). A successful
+[bounded Fiber interoperability guide](https://github.com/CellScript-Labs/CellScript/blob/nightly-0.24/examples/fiber/README.md). A successful
 offline compatibility check proves only that the source matches the closed
 fungible contract. Production readiness still needs live CKB identity, node
 configuration, restart, announcement, and lifecycle/negative evidence.

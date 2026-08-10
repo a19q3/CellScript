@@ -6,43 +6,42 @@ The 0.12-era work is the formal proposal baseline for grant-style acceptance
 discussions. Do not use that historical baseline to describe the current
 `main` branch state.
 
+## nightly-0.24
+
+`nightly-0.24` is the active development line for independently verified
+artifacts and executable package evidence. It builds on the closed 0.23
+Edition 2026 and native-tooling boundary. Treat the line as merge-ready only
+when compiler, checker, Registry worker, executable tests, source maps, docs,
+and the `dev`, `ci`, and `backend` gates agree. A passing merge gate is not a
+stable-release or production CKB claim; those still require the release gate
+and the external evidence named in the 0.24 release notes.
+
 ## nightly-0.23
 
-`nightly-0.23` is the active edition and native-release-tooling line. It has one
-mandatory source-semantics epoch, `edition = "2026"`, plus an independently
-resolved target/assurance/ABI/schema profile, and deliberately rejects
-older package, lock, deployment, receipt, builder, and raw entry-witness
-identities rather than migrating them. Treat the line as merge-ready only when
-the edition/profile identity is consistent across compiler, metadata, WASM,
-builders, initialized submodules, docs, and the `dev`, `ci`, and `backend`
-gates.
+`nightly-0.23` is the implementation-complete predecessor for Edition 2026,
+resolved target/assurance/ABI/schema profiles, the deployed Registry path, and
+the native release-tooling migration. It deliberately rejects older package,
+lock, deployment, receipt, builder, and raw entry-witness identities rather
+than migrating them. Its release notes are a development-scope record, not a
+stable release certificate or production CKB evidence.
 
 ## nightly-0.22
 
-`nightly-0.22` is the active implementation line for the 0.22 type-and-set
-theory roadmap. It begins from the integrated 0.21.1 `main` checkpoint. Treat
-features as shipped only when parser, formatter, type checking, lowering,
-metadata, LSP, tests, docs, and the matching gate agree; the branch name is not
-production evidence by itself.
+`nightly-0.22` is the historical implementation line for the 0.22 type-and-set
+theory roadmap. The stable release boundary is the `v0.22.0` tag, not the
+nightly branch name.
 
-## main / nightly-0.21
+## main
 
-`main` and `nightly-0.21` currently carry the 0.21 release-candidate
-implementation checkpoint. This line includes the 0.21 compiler, metadata,
-CLI, MCP, skill-pack, and builder-resolution work, but it is not a production
-CKB release claim until the matching `ci`, backend, and release gates have
-recorded passing evidence.
+`main` is the integration baseline. Use an exact release tag for stable-release
+comparisons and an exact nightly branch for development-scope comparisons;
+do not infer release evidence from `main` alone.
 
-Use this line for 0.21 maintenance work. Keep P2 Template Merkleisation and
-new observation syntax out of this line unless their parser, metadata,
-backend, docs, and gate evidence are all promoted together.
+## v0.22.0
 
-## v0.20.0
-
-`v0.20.0` is the latest stable release baseline before the 0.21 RC line. Use it
-as the comparison point for 0.21 audits, metadata schema changes, and
-compatibility notes. Be explicit when comparing against the tag ref
-`refs/tags/v0.20.0`, because local branches may also be named `v0.20.0`.
+`v0.22.0` is the current stable release baseline. Use the exact tag ref
+`refs/tags/v0.22.0` for stable comparisons; later nightly branches describe
+development work and do not supersede that stable boundary by themselves.
 
 ## 0.16
 

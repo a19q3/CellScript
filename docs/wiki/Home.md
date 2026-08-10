@@ -69,7 +69,7 @@ If you already know what you need, jump directly:
 - checking structural artifacts and executable scenarios: read
   [Verified Artifacts and Executable Tests](Tutorial-14-Verified-Artifacts-and-Executable-Tests.md).
 - using CellScript fungible assets with Fiber: read the
-  [bounded Fiber interoperability guide](https://github.com/CellScript-Labs/CellScript/blob/nightly-0.23/examples/fiber/README.md).
+  [bounded Fiber interoperability guide](https://github.com/CellScript-Labs/CellScript/blob/nightly-0.24/examples/fiber/README.md).
 - evaluating Spore or RGB++ integration: read
   [Spore and RGB++ Interoperability Boundaries](Spore-and-RGBPP-Interop-Boundaries.md).
 - spawning a pinned BIP340 verifier: read the

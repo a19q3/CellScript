@@ -73,7 +73,7 @@ production matrix:
 The `cellscript-fiber` adapter derives the dedicated artifact and native Fiber
 configuration; it does not change the `.cell` source into a Fiber-specific
 language. Follow the
-[bounded Fiber interoperability guide](https://github.com/CellScript-Labs/CellScript/blob/nightly-0.23/examples/fiber/README.md)
+[bounded Fiber interoperability guide](https://github.com/CellScript-Labs/CellScript/blob/nightly-0.24/examples/fiber/README.md)
 for the check, deployment, enable, materialization, and doctor workflow.
 
 `examples/registry.cell`, `examples/atomic_swap.cell`,
