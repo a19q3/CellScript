@@ -9,7 +9,10 @@
   methods while historical evidence identifiers remain readable. Make the
   tooling-release gate parse website scripts structurally and enforce the
   stable build steps in order, so adding intermediate regression checks no
-  longer breaks CI through an obsolete exact-string comparison.
+  longer breaks CI through an obsolete exact-string comparison. Let the full
+  backend stateful audit use an explicit isolated pinned CKB checkout through
+  `CELLSCRIPT_CKB_REPO`, avoiding any need to modify an unrelated sibling CKB
+  worktree during release validation.
 - Turn the browser Playground into a recoverable Cell-oriented workbench.
   Browser-local workspace snapshots now retain source files, entry selection,
   active panels, and an honest saved/dirty state across refreshes. Failed

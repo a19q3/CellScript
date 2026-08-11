@@ -339,6 +339,13 @@ ABI and generated RISC-V validation:
 ./scripts/cellscript_gate.sh backend
 ```
 
+If the default sibling `../ckb` is already used for other work, point the
+stateful backend audit at an independent clean pinned checkout:
+
+```bash
+CELLSCRIPT_CKB_REPO=/path/to/pinned/ckb ./scripts/cellscript_gate.sh backend
+```
+
 Production release evidence:
 
 ```bash
