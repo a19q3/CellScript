@@ -254,7 +254,9 @@
 - Close the 0.23 syntax-audit consistency gaps: canonical type declarations
   now use comma-terminated fields, syntax-combination gates cover canonical and
   comma-free compatibility input, checked example mirrors use named `U64_MAX`
-  overflow expressions, and `dev` / `ci` reject regressions. CKB-VM crypto
+  overflow expressions, and `dev` / `ci` reject regressions. Rebind the three
+  affected timelock transaction recipes to the deterministic scoped ELF data
+  hashes produced by those equivalent named expressions. CKB-VM crypto
   primitive fixtures now place `CSARGv1` through the current
   `WitnessArgs.input_type` adapter path instead of the retired raw-witness
   alias.

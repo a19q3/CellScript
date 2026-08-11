@@ -295,7 +295,10 @@ It did close two checked-in consistency gaps:
   compatibility field seeds;
 - atomic-swap, NFT, timelock, and multi-phase-DAO examples and their package
   mirrors define `U64_MAX` locally and express overflow guards as named
-  arithmetic; and
+  arithmetic;
+- the three affected timelock transaction recipes are rebound to the
+  deterministic scoped ELF data hashes produced by those equivalent
+  expressions; and
 - `dev` and `ci` reject formatter drift and reintroduction of the cleaned raw
   boundary literals.
 
