@@ -12,7 +12,9 @@
   longer breaks CI through an obsolete exact-string comparison. Let the full
   backend stateful audit use an explicit isolated pinned CKB checkout through
   `CELLSCRIPT_CKB_REPO`, avoiding any need to modify an unrelated sibling CKB
-  worktree during release validation.
+  worktree during release validation. Propagate the release gate's existing
+  `--ckb-repo` selection to its independent `ckb-tx-measure` workspace as
+  well, so every CKB-dependent release check resolves against the same pin.
 - Turn the browser Playground into a recoverable Cell-oriented workbench.
   Browser-local workspace snapshots now retain source files, entry selection,
   active panels, and an honest saved/dirty state across refreshes. Failed

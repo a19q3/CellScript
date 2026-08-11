@@ -352,8 +352,11 @@ CELLSCRIPT_CKB_REPO=/path/to/pinned/ckb ./scripts/cellscript_gate.sh backend
 Production release evidence:
 
 ```bash
-./scripts/cellscript_gate.sh release
+./scripts/cellscript_gate.sh release --ckb-repo /path/to/pinned/ckb
 ```
+
+The explicit checkout is used both by production acceptance and by the staged
+`ckb-tx-measure` workspace. Omitting it retains the sibling `../ckb` default.
 
 The `backend` stateful portion and both release modes require a clean tree and
 their documented external dependencies. A passing lighter gate must not be

@@ -294,8 +294,11 @@ Existing command families to be aware of:
 - `proposals/novaseal` is a submodule (`NovaSeal.git`, branch `main`). Same
   for `proposals/evolving-dob/evolving-dob-profile-v1`.
 - `tools/ckb-tx-measure` depends on `../ckb/util/jsonrpc-types` and
-  `../ckb/util/types`; the gate builds the helper with CellScript's pinned
-  Rust 1.97.1 toolchain so its declared `rust-version` remains enforceable.
+  `../ckb/util/types`; when release validation receives `--ckb-repo`, the gate
+  stages the helper's tracked workspace under `target/` so those same relative
+  paths resolve to the explicit checkout. The gate builds the helper with
+  CellScript's pinned Rust 1.97.1 toolchain so its declared `rust-version`
+  remains enforceable.
 - `--primitive-strict 0.16` is the current production assurance gate; the
   README mentions it and the policy lives in `docs/`.
 

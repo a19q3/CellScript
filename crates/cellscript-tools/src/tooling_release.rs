@@ -454,6 +454,19 @@ pub fn run(root: &Path) -> Result<()> {
         !tx_measure_gate.contains("RUSTUP_TOOLCHAIN"),
         "CKB transaction measure tooling must use CellScript's pinned Rust toolchain",
     )?;
+    for token in [
+        "release_ckb_repo_from_args() {",
+        "staging_dir=\"$(mktemp -d \"$ROOT_DIR/target/cellscript-ckb-tx-measure.XXXXXX\")\"",
+        "cp tools/ckb-tx-measure/Cargo.toml tools/ckb-tx-measure/Cargo.lock",
+        "cp src/bin/ckb_tx_measure.rs",
+        "ln -s \"$ckb_repo\" \"$staging_dir/ckb\"",
+    ] {
+        require(gate_script.contains(token), format!("release CKB checkout propagation is missing '{token}'"))?;
+    }
+    require(
+        gate_script.matches("run_release_auxiliary_checks \"$ckb_repo\"").count() == 2,
+        "release and release-quick must both propagate the selected CKB checkout to auxiliary checks",
+    )?;
     require(
         gate_script.contains("--root \"$ROOT_DIR\" workspace-version"),
         "release source identity must read the root package version from Cargo.toml",

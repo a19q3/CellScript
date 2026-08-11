@@ -130,6 +130,12 @@ the stateful wrapper forwards it as the acceptance harness's `--ckb-repo`.
 This avoids modifying or stashing an unrelated CKB worktree during release
 validation.
 
+For `release` and `release-quick`, pass the same checkout with `--ckb-repo`.
+The release gate stages the independent `ckb-tx-measure` workspace under
+`target/` with its tracked manifest, lockfile, and source so its relative CKB
+dependencies resolve against that explicit checkout too. The default remains
+the sibling `../ckb`; the tracked lockfile remains bound to the release pin.
+
 The transaction matrix is produced by the native Rust acceptance harness and
 is intentionally labelled as recipe-replayer evidence, not generated-builder
 output. Separately, the gate runs the public `cellc action build` and
