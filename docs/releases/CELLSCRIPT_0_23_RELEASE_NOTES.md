@@ -281,6 +281,9 @@ cannot inherit stale `target/` reports from a developer machine.
 This changes the tooling implementation, not the meaning of production
 evidence. iCKB equivalence, NovaSeal pinning, stateful CKB scenarios, and
 website/WASM checks retain their separate evidence boundaries.
+The NovaSeal RWA legal-review evidence template is rebound to the profile
+source-tree hash produced after its manifest declares Edition 2026; the
+external legal/registry evidence requirement remains unchanged.
 
 ## Syntax And Example Audit Closure
 

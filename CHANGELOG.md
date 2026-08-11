@@ -296,9 +296,11 @@
   and emitted `source_provenance` CKB boundaries plus the Rust-backed NovaSeal
   acceptance summary instead of retired temporary-directory, helper, and shell
   field names, and refresh the NovaSeal external TCB review template to the
-  current Rust-migrated verifier source-tree hash. CKB transaction-recipe
-  replay now tops up fresh devnet funding when a fixture has no disposable
-  change output and its replacement input cannot fund every typed output.
+  current Rust-migrated verifier source-tree hash. Refresh the RWA legal-review
+  template's profile source-tree hash after its manifest declares Edition
+  2026. CKB transaction-recipe replay now tops up fresh devnet funding when a
+  fixture has no disposable change output and its replacement input cannot
+  fund every typed output.
   Rebuild the website WASM bundle with the witness-placement-v2 compiler so the
   playground and native release artifacts expose the same ABI.
 - Add the explicit `cellscript-witnessargs-input-type-v2` placement ABI for
