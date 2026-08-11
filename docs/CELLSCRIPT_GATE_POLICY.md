@@ -14,8 +14,8 @@ deciding whether a change is ready.
 
 | Mode | When to run | Evidence boundary |
 |---|---|---|
-| `dev` | Local development before pushing | Rust formatting, canonical CellScript example formatting, all workspace-package Rust checks (including `cellscript-tools`) plus the independent Registry verifier crate; reproducible Registry Type Script build and CKB-VM tests; strict backend quick audit, syntax-combination quick audit, parity-gated skill-pack freshness, README-linked CellScript doc Status freshness, local markdown link check, whitespace diff check |
-| `ci` | Pull requests, pushes, and routine merge readiness | Canonical CellScript example formatting; tests and clippy for the compiler, Fiber adapter, CKB adapter, WASM crate, CKB SDK builder example, `cellscript-tools`, and the Registry verifier; reproducible Registry Type Script identity plus CKB-VM tests and clippy; Registry API typecheck/tests, Node API/verifier bundles, and dry-run Worker build; strict backend CI audit; package verification; parity-gated skill-pack/doc freshness; local-link and script syntax checks |
+| `dev` | Local development before pushing | Rust formatting, canonical CellScript example formatting, all workspace-package Rust checks (including `cellscript-tools`) plus the independent Registry verifier crate; reproducible Registry Type Script build and CKB-VM tests; strict backend quick audit, syntax-combination quick audit, parity-gated skill-pack freshness, README-linked CellScript doc Status freshness, local markdown link check, installer release-origin dry run, whitespace diff check |
+| `ci` | Pull requests, pushes, and routine merge readiness | Canonical CellScript example formatting; tests and clippy for the compiler, Fiber adapter, CKB adapter, WASM crate, CKB SDK builder example, `cellscript-tools`, and the Registry verifier; reproducible Registry Type Script identity plus CKB-VM tests and clippy; Registry API typecheck/tests, Node API/verifier bundles, and dry-run Worker build; strict backend CI audit; package verification; parity-gated skill-pack/doc freshness; local-link, script syntax, and installer release-origin checks |
 | `backend` | Changes touching IR, codegen, assembler, ABI, ELF, or RISC-V behavior | Full Rust tests, clippy, and strict backend full audit, including stateful CKB scenarios |
 | `release` | Nightly/stable release candidates and any production CKB claim | Clean tagged source plus `ci`, a fresh size-gated website WASM rebuild, tooling/docs and VS Code checks, pinned-CKB acceptance harnesses, public builder-contract generation, and mandatory stateful scenario/action coverage |
 | `release-quick` | Wrapper compatibility and local compile-only preflight | `ci` plus compile-only production acceptance; not external live/devnet evidence |
@@ -30,6 +30,11 @@ accept comma-free fields as compatibility input. The same modes reject raw
 `u64` maximum and `MAX - delta` magic literals in the checked NFT, timelock,
 atomic-swap, and multi-phase-DAO example pairs; boundary arithmetic must use
 their local `U64_MAX` constants.
+
+Both modes also execute the one-line installer in dry-run mode and require its
+direct download URL to resolve under `CellScript-Labs/CellScript`. This keeps
+the public release assets and the installer's latest-version lookup on the same
+canonical repository identity without modifying the developer's machine.
 
 Both release modes fail before doing expensive work unless the CellScript tree
 is completely clean, including untracked files. CI additionally requires the

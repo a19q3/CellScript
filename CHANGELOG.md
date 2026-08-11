@@ -2,6 +2,10 @@
 
 ## 0.23.0 - 2026-08-11
 
+- Correct the one-line installer's release origin from the retired personal
+  repository path to `CellScript-Labs/CellScript`. The local dev and CI gates
+  now execute the installer in dry-run mode and reject any future repository
+  identity drift before a release asset is published.
 - Make Registry chain confirmation compatible with the standard CKB v0.207.0
   RPC schema by resolving a live Cell's committed block through
   `get_transaction.tx_status` instead of depending on a proxy-specific

@@ -333,6 +333,25 @@ check_script_syntax() {
 
 }
 
+check_installer_release_contract() {
+    local expected_repo="CellScript-Labs/CellScript"
+    local expected_url="https://github.com/$expected_repo/releases/download/v0.0.0/cellscript-0.0.0-"
+    local installer_output
+
+    if ! rg --quiet --fixed-strings "REPO=\"$expected_repo\"" scripts/install.sh; then
+        printf 'CellScript installer repository identity must be %s\n' "$expected_repo" >&2
+        return 1
+    fi
+
+    installer_output="$(CELLSCRIPT_DRY_RUN=1 CELLSCRIPT_VERSION=0.0.0 \
+        CELLSCRIPT_MIRROR=direct sh scripts/install.sh)"
+    if ! grep -Fq "$expected_url" <<<"$installer_output"; then
+        printf 'CellScript installer dry run did not resolve the canonical release origin: %s\n' \
+            "$expected_url" >&2
+        return 1
+    fi
+}
+
 check_release_source_identity() {
     require_cmd git
 
@@ -515,6 +534,7 @@ run_dev_gate() {
         --root "$ROOT_DIR" check-skill-pack
     check_cellscript_doc_status_freshness
     check_markdown_local_links
+    check_installer_release_contract
     run cargo run --quiet --locked -p cellscript-tools --bin cellscript-tools -- \
         --root "$ROOT_DIR" check-source-policy
     run git diff --check
@@ -557,6 +577,7 @@ run_ci_gate() {
     run_registry_api_check
     run_website_build_check
     check_script_syntax
+    check_installer_release_contract
     run git diff --check
     run cargo run --quiet --locked -p cellscript-tools --bin cellscript-tools -- \
         --root "$ROOT_DIR" check-source-policy
