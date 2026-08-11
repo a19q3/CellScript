@@ -121,15 +121,19 @@ A normal CellScript package uses `Cell.toml` and the native publish path:
 ```bash
 cellc package verify --json
 cellc publish --dry-run
-cellc publish
+cellc publish --authorise
 ```
+
+`--authorise` is the canonical first-publish path. It opens a 15-minute
+exact-coordinate wallet session and resumes the publish after approval. Later
+releases use `cellc publish` while the scoped capability remains active.
 
 Profile libraries use the same compiler-backed snapshot contract and declare
 their distinct kind explicitly:
 
 ```bash
 cellc publish --artifact-kind profile_library --dry-run
-cellc publish --artifact-kind profile_library
+cellc publish --artifact-kind profile_library --authorise
 ```
 
 The verifier compiles the snapshot with the real CellScript compiler and
@@ -223,7 +227,7 @@ swapped or omitted.
 
 ```bash
 cellc publish --artifact-manifest Artifact.toml --dry-run
-cellc publish --artifact-manifest Artifact.toml
+cellc publish --artifact-manifest Artifact.toml --authorise
 ```
 
 The independent verifier checks the profile-specific object set and recomputes
@@ -371,14 +375,20 @@ application's own Lock/Type Scripts, schemas, and replacement transactions.
 
 ## Publisher Authorisation
 
-The website presents a single “Connect CKB wallet” entry. Its modal separates
-CCC-detected browser signers, which can connect immediately, from wallet
-directory entries, which only open an external site and then require a
-compatible manually produced `wallet-signature.json`. A directory entry is a
-reference/import route, not proof that the wallet exposes a compatible message
-signing UI, and is never reported as connected.
-Network selection is not exposed because authorisation and deployment are
-mainnet-only.
+For a first publish, `cellc publish --authorise` generates the delegated P-256
+key locally, stores it as pending in the OS keychain, creates a 15-minute
+exact-coordinate session, and opens the matching Registry website. The website
+presents one wallet-approval action; after approval, the CLI promotes the
+matching key and resumes publishing. `--no-open` supports remote or
+terminal-only environments.
+
+The website separates CCC-detected browser signers, which can connect
+immediately, from wallet directory entries, which only open an external site
+and require a compatible manually produced `wallet-signature.json` through the
+advanced flow. A directory entry is a reference/import route, not proof that
+the wallet exposes a compatible message-signing UI, and is never reported as
+connected. Production does not expose a network selector; the separately built
+Pudge Sandbox accepts only testnet authorisation and deployment evidence.
 
 The wallet signs a narrowly scoped capability authorisation. Daily publishes
 use a P-256 capability key stored by `cellc`, so the wallet seed and mnemonic

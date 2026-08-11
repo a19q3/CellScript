@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.23.0 - 2026-08-11
 
 - Make Registry chain confirmation compatible with the standard CKB v0.207.0
   RPC schema by resolving a live Cell's committed block through

@@ -1,9 +1,9 @@
-# CellScript 0.23 Release Notes
+# CellScript 0.23.0 Release Notes
 
-**Status**: Development release notes for `nightly-0.23`; not a stable release
-certificate.
+**Status**: Release notes for CellScript 0.23.0. The stable-release claim is
+scoped to the exact `v0.23.0` tag after the full `release` gate passes.
 
-**Updated**: 2026-08-02.
+**Updated**: 2026-08-11.
 
 CellScript 0.23 makes its source semantics and compatibility axes explicit.
 Edition 2026 is the first and only CellScript source-semantics epoch. The
@@ -15,10 +15,11 @@ This document records completed 0.23 work. The public Registry infrastructure,
 read/write domains, website, CLI read authority, and automatic compiler-backed
 source-package evidence chain are deployed. General artifact, reproduction,
 deployment, and commitment support is implemented in-tree, while canonical
-Registry Script deployment, the first real non-CellScript mainnet commitment,
-and publisher-owned clean-machine adoption remain checkpoints. Broader
-RGB++/Fiber evidence and the Off-Chain Session Runtime profile remain roadmap
-work.
+Registry Script deployment and publisher-owned clean-machine adoption remain
+checkpoints. Production mainnet commitments are disabled. The isolated Pudge
+Sandbox commitment path is configured and live, but its testnet evidence is
+not mainnet release evidence. Broader RGB++/Fiber evidence and the Off-Chain
+Session Runtime profile remain roadmap work.
 
 ## At A Glance
 
@@ -32,9 +33,11 @@ work.
 | Registry operations | `api.registry.cellscript.dev` and `registry.cellscript.dev` run as an isolated self-hosted Postgres/Node/object-volume/read-only-nginx stack behind trusted TLS. |
 | Registry retry safety | Pre-admission failures release only the failed request's nonce and retry reservation; accepted metadata commits transactionally, and readiness covers the actual managed object prefixes. |
 | Registry verification | Publish transactionally queues a leased, bounded real-compiler verification job; verified evidence/status commit atomically before crash-safe static-index convergence, and default search stays hidden until the baseline passes. |
+| Registry authorisation | `cellc publish --authorise` creates a 15-minute exact-coordinate wallet session, stores the delegated P-256 key in the OS keychain, and resumes publishing after Registry approval. |
 | Registry artifact profiles | CellScript dependencies, CKB executables, runtime verifiers, reproducible binaries, and copy-only templates share discovery but retain different resolver, TCB, deployment, and copy contracts. |
 | Registry reproducibility | Reproducible profiles stay `evidence_required` until independent builder reports bind the signed environment, source, recipe, executable, and build logs. |
 | Registry chain evidence | Mainnet deployment records are RPC-checked; configured Registry Type/Lock Scripts produce wallet transaction intents and a bounded Type-Script indexer reconciles live commitments without erasing history. |
+| Registry environments | Production mainnet commitment readiness currently reports `disabled`; the separate Pudge Sandbox reports `configured_and_live` and retains only ephemeral testnet Registry records. |
 | Production HTTP boundary | API/static JSON responses use HSTS, deny-all content policy, anti-framing, no-sniff, and restrictive browser permissions; the website ships a reproducible read-only nginx deployment with health checks and bounded logs/temp storage. |
 | Registry install policy | Explicit unverified/quarantined install acknowledgements persist per dependency, so lock refresh and subsequent builds retain the same auditable risk choice. |
 | Tooling | CLI, LSP, WASM, website bindings, examples, and package tooling use the same edition contract. |
@@ -237,6 +240,11 @@ checkpoint.
   Rust. Manage exposes isolated reproduction, mainnet deployment, and
   commitment command builders alongside publish, inspect, and availability;
   task-specific fields disappear when the task changes.
+- `cellc publish --authorise` closes the first-publish loop: the CLI creates a
+  short-lived exact-coordinate session, opens the matching Registry site, and
+  resumes the same publish after wallet approval. `--no-open` supports remote
+  or terminal-only environments, and the manual signing flow remains an
+  explicit advanced path.
 - `cellc auth namespace claim` and the submit page's **Claim namespace** action
   expose the namespace-ownership admission step required before a package's
   first public publish. Capability registration no longer appears to imply a
@@ -348,7 +356,16 @@ curl --fail --silent --show-error https://api.registry.cellscript.dev/ready
 curl --fail --silent --show-error 'https://api.registry.cellscript.dev/v1/artifacts?limit=5'
 curl --fail --silent --show-error https://registry.cellscript.dev/health
 curl --fail --silent --show-error https://cellscript.dev/registry/ > /dev/null
+curl --fail --silent --show-error https://api.testnet.registry.cellscript.dev/ready
 ```
+
+On 2026-08-11, the production `/ready` endpoint reported
+`registry_environment = production`, `ckb_network = mainnet`, and
+`registry_commitment = disabled`. The Pudge Sandbox endpoint reported
+`registry_environment = testnet-sandbox`, `ckb_network = testnet`, and
+`registry_commitment = configured_and_live`. This is a live configuration and
+liveness observation, not proof of a mainnet commitment or permission to
+transfer testnet evidence into production.
 
 On 2026-07-31, a disposable cryptographically valid WebAuthn-shaped P-256
 fixture completed capability registration, namespace claim, signed publish,

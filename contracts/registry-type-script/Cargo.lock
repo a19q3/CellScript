@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "cellscript-registry-type-script"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "ckb-hash",
  "ckb-std",

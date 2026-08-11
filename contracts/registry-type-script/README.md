@@ -43,7 +43,9 @@ Reproduce the canonical Linux artifact with the pinned container digest:
 contracts/registry-type-script/build_canonical_container.sh
 ```
 
-The deployable artifact is tracked under `artifacts/v0.22.0` and was produced
+The deployable artifact is tracked under `artifacts/v0.23.0`. The Registry Type
+Script source and canonical bytes did not change from the pinned 0.22 artifact,
+so 0.23 carries forward the same 3,352-byte ELF and both hashes. It was produced
 for the `x86_64-unknown-linux-gnu` host with the builder image digest recorded
 in `release-manifest.json`. Rust/LLVM may order identical RISC-V functions
 differently on another build host, so the script claims a byte-for-byte

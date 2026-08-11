@@ -524,7 +524,7 @@ cargo build -p cellscript-ckb-adapter --bin cellscript-deploy
 # Build the canonical Registry Type Script deployment for external signing
 export LOCK_ARG=0x$(cat ~/.ckb/default-lock-arg)  # your secp256k1 lock arg
 cellscript-deploy --rpc http://127.0.0.1:8114 --json build-deploy \
-  --artifact contracts/registry-type-script/artifacts/v0.22.0/cellscript-registry-type-script \
+  --artifact contracts/registry-type-script/artifacts/v0.23.0/cellscript-registry-type-script \
   --lock-arg $LOCK_ARG \
   --name cellscript-registry-type-script \
   --hash-type data1 \

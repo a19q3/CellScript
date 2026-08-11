@@ -8,22 +8,33 @@ libraries, profile libraries, CKB runtime verifiers, deployable contracts,
 reproducible binaries, and copy-only templates. This tutorial uses the native
 CellScript path first, then the generic artifact path.
 
-## 1. Connect a CKB wallet
+## 1. Start the first publish from cellc
 
-Open `https://cellscript.dev/registry/submit`. The page does not expose a
-network selector. The production Registry is CKB mainnet-only. Pudge testing
-uses `https://testnet.registry.cellscript.dev/registry`, with a different API origin,
-database, object store, wallet connection state, and testnet-only evidence.
-Sandbox records disappear from discovery after 72 hours and their source bytes
-are purged after a 24-hour grace period; this does not erase Pudge chain history.
+After the package or artifact manifest exists and its dry run passes, start a
+first publication from the terminal:
 
-Choose a detected wallet from the modal. Wallets listed without an active
-connector link to their official installation page. The wallet signs only the
-canonical capability authorisation; `cellc` generates and stores the delegated
-P-256 publish key.
+```bash
+# CellScript package
+cellc publish --authorise
 
-Claim a namespace and wait until it is active. The submit form then produces
-the capability and publish commands for the selected artifact kind.
+# Generic artifact
+cellc publish --artifact-manifest Artifact.toml --authorise
+```
+
+The CLI generates a delegated P-256 publish key, stores it as pending in the OS
+keychain, creates a 15-minute session for the exact namespace/package/kind, and
+opens the matching Registry page. A connected CKB wallet signs only the
+capability authorisation. After approval, `cellc` promotes the matching key and
+continues the same publish. Use `--no-open` when the browser must be opened on
+another machine. Manual signature import remains an advanced fallback.
+
+Production uses `https://cellscript.dev/registry/submit` and accepts mainnet
+authorisation and deployment evidence only. Pudge testing uses
+`https://testnet.registry.cellscript.dev/registry`, with a different API
+origin, database, object store, wallet connection state, and testnet-only
+evidence. Sandbox records disappear from discovery after 72 hours and their
+source bytes are purged after a 24-hour grace period; this does not erase Pudge
+chain history.
 
 ## 2. Publish a CellScript source library
 
@@ -41,8 +52,11 @@ Verify and publish:
 ```bash
 cellc package verify --json
 cellc publish --dry-run
-cellc publish
+cellc publish --authorise
 ```
+
+After the publishing key is active, later releases use `cellc publish` without
+repeating wallet approval unless the capability expires or is revoked.
 
 Use `--artifact-kind profile_library` when the package is a named CellScript
 profile library. Both kinds use compiler-backed verification and remain valid
@@ -118,8 +132,11 @@ The CLI checks the coordinate, release, kind/language pair, bundle profile,
 required object roles, size limit, and computed hashes. Publish with:
 
 ```bash
-cellc publish --artifact-manifest Artifact.toml
+cellc publish --artifact-manifest Artifact.toml --authorise
 ```
+
+Later releases may omit `--authorise` while the scoped publishing capability
+remains active.
 
 The release initially reports:
 
@@ -285,7 +302,8 @@ mainnet Registry Type Script, commitment custody Lock, and both code CellDeps.
 For the isolated Pudge flow, use:
 
 ```bash
-cellc publish --api-url https://api.testnet.registry.cellscript.dev
+cellc publish --authorise \
+  --api-url https://api.testnet.registry.cellscript.dev
 cellc artifact record-deployment acme/vault-lock@1.0.0 \
   --network testnet \
   --api-url https://api.testnet.registry.cellscript.dev \

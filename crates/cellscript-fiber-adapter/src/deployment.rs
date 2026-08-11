@@ -491,7 +491,7 @@ mod tests {
             selected_type: "Asset".to_string(),
             selected_invariant: "supply".to_string(),
             selected_field: "quantity".to_string(),
-            compiler_version: "0.22.0".to_string(),
+            compiler_version: cellscript::VERSION.to_string(),
             metadata_schema_version: cellscript::METADATA_SCHEMA_VERSION,
             source_hash: format!("0x{}", "01".repeat(32)),
             artifact_hash: format!("0x{}", hex::encode(cellscript::ckb_blake2b256(data))),

@@ -8,14 +8,15 @@ discussions. Do not use that historical baseline to describe the current
 
 ## nightly-0.23
 
-`nightly-0.23` is the active edition and native-release-tooling line. It has one
+`nightly-0.23` is the CellScript 0.23.0 release-candidate line. It has one
 mandatory source-semantics epoch, `edition = "2026"`, plus an independently
 resolved target/assurance/ABI/schema profile, and deliberately rejects
 older package, lock, deployment, receipt, builder, and raw entry-witness
 identities rather than migrating them. Treat the line as merge-ready only when
 the edition/profile identity is consistent across compiler, metadata, WASM,
 builders, initialized submodules, docs, and the `dev`, `ci`, and `backend`
-gates.
+gates. Treat it as a stable release only at the exact `v0.23.0` tag after the
+full `release` gate passes.
 
 ## nightly-0.22
 

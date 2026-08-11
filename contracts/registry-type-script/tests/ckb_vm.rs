@@ -22,7 +22,7 @@ struct Scripts {
 }
 
 fn contract_binary() -> Bytes {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("artifacts/v0.22.0/cellscript-registry-type-script");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("artifacts/v0.23.0/cellscript-registry-type-script");
     std::fs::read(&path).unwrap_or_else(|error| panic!("read tracked canonical artifact {}: {error}", path.display())).into()
 }
 
