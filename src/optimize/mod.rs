@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ConstValue {
     U64(u64),
+    U128(u128),
     Bool(bool),
     String(String),
     Bytes(Vec<u8>),
@@ -139,6 +140,7 @@ impl Optimizer {
                 Ok(vec![Stmt::If(IfStmt { condition, then_branch, else_branch, span: if_stmt.span })])
             }
             Stmt::For(for_stmt) => Ok(vec![Stmt::For(ForStmt {
+                label: for_stmt.label.clone(),
                 pattern: for_stmt.pattern.clone(),
                 iterable: self.optimize_expr(&for_stmt.iterable)?,
                 body: self.with_child_scope(|this| this.optimize_stmts(&for_stmt.body))?,
@@ -150,6 +152,7 @@ impl Optimizer {
                     return Ok(Vec::new());
                 }
                 Ok(vec![Stmt::While(WhileStmt {
+                    label: while_stmt.label.clone(),
                     condition,
                     body: self.with_child_scope(|this| this.optimize_stmts(&while_stmt.body))?,
                     span: while_stmt.span,
@@ -157,10 +160,12 @@ impl Optimizer {
             }
             Stmt::Borrow(borrow_stmt) => Ok(vec![Stmt::Borrow(BorrowStmt {
                 root: borrow_stmt.root.clone(),
+                path: borrow_stmt.path.clone(),
                 binding: borrow_stmt.binding.clone(),
                 body: self.with_child_scope(|this| this.optimize_stmts(&borrow_stmt.body))?,
                 span: borrow_stmt.span,
             })]),
+            Stmt::Break(_) | Stmt::Continue(_) => Ok(vec![stmt.clone()]),
         }
     }
 
@@ -345,7 +350,7 @@ impl Optimizer {
 
     fn try_eval_const(&self, expr: &Expr) -> Option<ConstValue> {
         match expr {
-            Expr::Integer(value) => Some(ConstValue::U64(*value)),
+            Expr::Integer(value) => Some(u64::try_from(*value).map(ConstValue::U64).unwrap_or(ConstValue::U128(*value))),
             Expr::Bool(value) => Some(ConstValue::Bool(*value)),
             Expr::String(value) => Some(ConstValue::String(value.clone())),
             Expr::ByteString(value) => Some(ConstValue::Bytes(value.clone())),
@@ -437,6 +442,28 @@ fn fold_binary(op: BinaryOp, left: &ConstValue, right: &ConstValue) -> Option<Co
         (BinaryOp::Le, U64(left), U64(right)) => Some(Bool(left <= right)),
         (BinaryOp::Gt, U64(left), U64(right)) => Some(Bool(left > right)),
         (BinaryOp::Ge, U64(left), U64(right)) => Some(Bool(left >= right)),
+        (BinaryOp::BitAnd, U64(left), U64(right)) => Some(U64(left & right)),
+        (BinaryOp::BitOr, U64(left), U64(right)) => Some(U64(left | right)),
+        (BinaryOp::BitXor, U64(left), U64(right)) => Some(U64(left ^ right)),
+        (BinaryOp::Shl, U64(left), U64(right)) if *right < 64 => Some(U64(left << right)),
+        (BinaryOp::Shr, U64(left), U64(right)) if *right < 64 => Some(U64(left >> right)),
+        (BinaryOp::Add, U128(left), U128(right)) => Some(U128(left.wrapping_add(*right))),
+        (BinaryOp::Sub, U128(left), U128(right)) => Some(U128(left.wrapping_sub(*right))),
+        (BinaryOp::Mul, U128(left), U128(right)) => Some(U128(left.wrapping_mul(*right))),
+        (BinaryOp::Div, U128(_), U128(0)) | (BinaryOp::Mod, U128(_), U128(0)) => None,
+        (BinaryOp::Div, U128(left), U128(right)) => Some(U128(left / right)),
+        (BinaryOp::Mod, U128(left), U128(right)) => Some(U128(left % right)),
+        (BinaryOp::Eq, U128(left), U128(right)) => Some(Bool(left == right)),
+        (BinaryOp::Ne, U128(left), U128(right)) => Some(Bool(left != right)),
+        (BinaryOp::Lt, U128(left), U128(right)) => Some(Bool(left < right)),
+        (BinaryOp::Le, U128(left), U128(right)) => Some(Bool(left <= right)),
+        (BinaryOp::Gt, U128(left), U128(right)) => Some(Bool(left > right)),
+        (BinaryOp::Ge, U128(left), U128(right)) => Some(Bool(left >= right)),
+        (BinaryOp::BitAnd, U128(left), U128(right)) => Some(U128(left & right)),
+        (BinaryOp::BitOr, U128(left), U128(right)) => Some(U128(left | right)),
+        (BinaryOp::BitXor, U128(left), U128(right)) => Some(U128(left ^ right)),
+        (BinaryOp::Shl, U128(left), U64(right)) if *right < 128 => Some(U128(left << right)),
+        (BinaryOp::Shr, U128(left), U64(right)) if *right < 128 => Some(U128(left >> right)),
         (BinaryOp::And, Bool(left), Bool(right)) => Some(Bool(*left && *right)),
         (BinaryOp::Or, Bool(left), Bool(right)) => Some(Bool(*left || *right)),
         (BinaryOp::Eq, Bool(left), Bool(right)) => Some(Bool(left == right)),
@@ -453,6 +480,7 @@ fn fold_unary(op: UnaryOp, value: &ConstValue) -> Option<ConstValue> {
     match (op, value) {
         (UnaryOp::Not, ConstValue::Bool(value)) => Some(ConstValue::Bool(!value)),
         (UnaryOp::Neg, ConstValue::U64(value)) => Some(ConstValue::U64(value.wrapping_neg())),
+        (UnaryOp::Neg, ConstValue::U128(value)) => Some(ConstValue::U128(value.wrapping_neg())),
         _ => None,
     }
 }
@@ -470,7 +498,8 @@ fn simplify_binary(op: BinaryOp, left: &Expr, right: &Expr) -> Option<Expr> {
 
 fn const_to_expr(value: ConstValue) -> Expr {
     match value {
-        ConstValue::U64(value) => Expr::Integer(value),
+        ConstValue::U64(value) => Expr::Integer(value.into()),
+        ConstValue::U128(value) => Expr::Integer(value),
         ConstValue::Bool(value) => Expr::Bool(value),
         ConstValue::String(value) => Expr::String(value),
         ConstValue::Bytes(value) => Expr::ByteString(value),
@@ -548,6 +577,7 @@ fn collect_call_names_from_stmt(stmt: &Stmt, names: &mut Vec<String>) {
         Stmt::Let(let_stmt) => collect_call_names_from_expr(&let_stmt.value, names),
         Stmt::Expr(expr) | Stmt::Return(ReturnStmt { value: Some(expr), .. }) => collect_call_names_from_expr(expr, names),
         Stmt::Return(ReturnStmt { value: None, .. }) => {}
+        Stmt::Break(_) | Stmt::Continue(_) => {}
         Stmt::If(if_stmt) => {
             collect_call_names_from_expr(&if_stmt.condition, names);
             collect_call_names_from_stmts(&if_stmt.then_branch, names);
@@ -670,6 +700,7 @@ fn collect_used_names_from_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
         Stmt::Let(let_stmt) => collect_used_names_from_expr(&let_stmt.value, names),
         Stmt::Expr(expr) | Stmt::Return(ReturnStmt { value: Some(expr), .. }) => collect_used_names_from_expr(expr, names),
         Stmt::Return(ReturnStmt { value: None, .. }) => {}
+        Stmt::Break(_) | Stmt::Continue(_) => {}
         Stmt::If(if_stmt) => {
             collect_used_names_from_expr(&if_stmt.condition, names);
             for stmt in &if_stmt.then_branch {
@@ -847,7 +878,7 @@ fn stmt_is_pure_inlineable(stmt: &Stmt) -> bool {
                 && if_stmt.then_branch.iter().all(stmt_is_pure_inlineable)
                 && if_stmt.else_branch.as_ref().is_none_or(|branch| branch.iter().all(stmt_is_pure_inlineable))
         }
-        Stmt::For(_) | Stmt::While(_) | Stmt::Borrow(_) => false,
+        Stmt::For(_) | Stmt::While(_) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Borrow(_) => false,
     }
 }
 
@@ -991,6 +1022,8 @@ mod tests {
     fn folds_literal_if_statements_without_touching_cell_ops() {
         let mut module = Module {
             name: "test".to_string(),
+            interface_templates: Vec::new(),
+            visibilities: Default::default(),
             items: vec![Item::Action(ActionDef {
                 name: "run".to_string(),
                 params: Vec::new(),
@@ -1029,10 +1062,13 @@ mod tests {
     fn propagates_constants_inlines_small_functions_and_removes_dead_code() {
         let mut module = Module {
             name: "test".to_string(),
+            interface_templates: Vec::new(),
+            visibilities: Default::default(),
             items: vec![
                 Item::Const(ConstDef { name: "STEP".to_string(), ty: Type::U64, value: Expr::Integer(2), span: Span::default() }),
                 Item::Function(FnDef {
                     name: "add_step".to_string(),
+                    type_params: Vec::new(),
                     params: vec![Param {
                         name: "x".to_string(),
                         ty: Type::U64,
@@ -1059,6 +1095,7 @@ mod tests {
                 }),
                 Item::Function(FnDef {
                     name: "unused".to_string(),
+                    type_params: Vec::new(),
                     params: Vec::new(),
                     return_type: Some(Type::U64),
                     body: vec![Stmt::Return(ReturnStmt { value: Some(Expr::Integer(99)), span: Span::default() })],

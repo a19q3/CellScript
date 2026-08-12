@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SimValue {
-    Integer(u64),
+    Integer(u128),
     Bool(bool),
     String(String),
     Unit,
@@ -11,6 +11,8 @@ pub enum SimValue {
     Struct { name: String, fields: Vec<(String, SimValue)> },
     Array(Vec<SimValue>),
     Tuple(Vec<SimValue>),
+    LoopBreak(Option<String>),
+    LoopContinue(Option<String>),
 }
 
 impl std::fmt::Display for SimValue {
@@ -38,6 +40,10 @@ impl std::fmt::Display for SimValue {
                 let parts: Vec<String> = items.iter().map(|v| v.to_string()).collect();
                 write!(f, "{}", parts.join(", "))?;
                 write!(f, ")")
+            }
+            SimValue::LoopBreak(label) => write!(f, "<break{}>", label.as_ref().map_or(String::new(), |label| format!(" {label}"))),
+            SimValue::LoopContinue(label) => {
+                write!(f, "<continue{}>", label.as_ref().map_or(String::new(), |label| format!(" {label}")))
             }
         }
     }
@@ -178,7 +184,7 @@ impl SimulateInterpreter {
         }
 
         let result = self.exec_stmts(&body)?;
-        let return_value = result.unwrap_or(SimValue::Unit);
+        let return_value = self.finish_entry_flow(result)?;
 
         Ok(SimulateResult {
             entry_name: name.to_string(),
@@ -201,7 +207,7 @@ impl SimulateInterpreter {
         }
 
         let result = self.exec_stmts(&body)?;
-        let value = result.unwrap_or(SimValue::Unit);
+        let value = self.finish_entry_flow(result)?;
 
         self.env = saved_env;
 
@@ -259,7 +265,19 @@ impl SimulateInterpreter {
                 for item in items.iter().take(10) {
                     self.bind_pattern(&for_stmt.pattern, item.clone());
                     if let Some(value) = self.exec_stmts(&for_stmt.body)? {
-                        return Ok(Some(value));
+                        match value {
+                            SimValue::LoopBreak(label)
+                                if label.as_ref().is_none_or(|label| for_stmt.label.as_ref() == Some(label)) =>
+                            {
+                                break;
+                            }
+                            SimValue::LoopContinue(label)
+                                if label.as_ref().is_none_or(|label| for_stmt.label.as_ref() == Some(label)) =>
+                            {
+                                continue;
+                            }
+                            value => return Ok(Some(value)),
+                        }
                     }
                 }
                 Ok(None)
@@ -272,11 +290,25 @@ impl SimulateInterpreter {
                         break;
                     }
                     if let Some(value) = self.exec_stmts(&while_stmt.body)? {
-                        return Ok(Some(value));
+                        match value {
+                            SimValue::LoopBreak(label)
+                                if label.as_ref().is_none_or(|label| while_stmt.label.as_ref() == Some(label)) =>
+                            {
+                                break;
+                            }
+                            SimValue::LoopContinue(label)
+                                if label.as_ref().is_none_or(|label| while_stmt.label.as_ref() == Some(label)) =>
+                            {
+                                continue;
+                            }
+                            value => return Ok(Some(value)),
+                        }
                     }
                 }
                 Ok(None)
             }
+            Stmt::Break(control) => Ok(Some(SimValue::LoopBreak(control.label.clone()))),
+            Stmt::Continue(control) => Ok(Some(SimValue::LoopContinue(control.label.clone()))),
             Stmt::Borrow(borrow_stmt) => {
                 let root = self
                     .env
@@ -292,6 +324,18 @@ impl SimulateInterpreter {
                 }
                 result
             }
+        }
+    }
+
+    fn finish_entry_flow(&self, flow: Option<SimValue>) -> Result<SimValue, SimulateError> {
+        match flow.unwrap_or(SimValue::Unit) {
+            SimValue::LoopBreak(label) => Err(SimulateError::Unsupported {
+                description: format!("break{} escaped its loop", label.map_or(String::new(), |label| format!(" {label}"))),
+            }),
+            SimValue::LoopContinue(label) => Err(SimulateError::Unsupported {
+                description: format!("continue{} escaped its loop", label.map_or(String::new(), |label| format!(" {label}"))),
+            }),
+            value => Ok(value),
         }
     }
 
@@ -331,9 +375,10 @@ impl SimulateInterpreter {
                 let obj = self.eval_expr(&index.expr)?;
                 let idx = self.eval_expr(&index.index)?;
                 match (&obj, &idx) {
-                    (SimValue::Array(items), SimValue::Integer(i)) => {
-                        items.get(*i as usize).cloned().ok_or_else(|| SimulateError::UndefinedVariable { name: format!("[{}]", i) })
-                    }
+                    (SimValue::Array(items), SimValue::Integer(i)) => usize::try_from(*i)
+                        .ok()
+                        .and_then(|index| items.get(index).cloned())
+                        .ok_or_else(|| SimulateError::UndefinedVariable { name: format!("[{}]", i) }),
                     _ => Ok(SimValue::Simulated { ty: "index".to_string(), description: format!("{}[{}]", obj, idx) }),
                 }
             }
@@ -510,12 +555,23 @@ impl SimulateInterpreter {
                 BinaryOp::Ge => SimValue::Bool(l >= r),
                 BinaryOp::And => SimValue::Bool(*l != 0 && *r != 0),
                 BinaryOp::Or => SimValue::Bool(*l != 0 || *r != 0),
+                BinaryOp::BitAnd => SimValue::Integer(l & r),
+                BinaryOp::BitOr => SimValue::Integer(l | r),
+                BinaryOp::BitXor => SimValue::Integer(l ^ r),
+                BinaryOp::Shl if *r < 128 => SimValue::Integer(l << r),
+                BinaryOp::Shr if *r < 128 => SimValue::Integer(l >> r),
+                BinaryOp::Shl | BinaryOp::Shr => {
+                    SimValue::Simulated { ty: "shift_range".to_string(), description: "shift amount out of range".to_string() }
+                }
             }),
             (SimValue::Bool(l), SimValue::Bool(r)) => Ok(match op {
                 BinaryOp::Eq => SimValue::Bool(l == r),
                 BinaryOp::Ne => SimValue::Bool(l != r),
                 BinaryOp::And => SimValue::Bool(*l && *r),
                 BinaryOp::Or => SimValue::Bool(*l || *r),
+                BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::Shl | BinaryOp::Shr => {
+                    return Err(SimulateError::TypeError { expected: "integer".to_string(), got: "bool".to_string() });
+                }
                 _ => return Err(SimulateError::TypeError { expected: "integer".to_string(), got: "bool".to_string() }),
             }),
             _ => Ok(SimValue::Simulated { ty: "binary".to_string(), description: format!("{:?} {:?} {:?}", left, op, right) }),
@@ -547,7 +603,7 @@ impl SimulateInterpreter {
             }
             "len" | "length" => {
                 if let Some(SimValue::Array(items)) = args.first() {
-                    return Ok(SimValue::Integer(items.len() as u64));
+                    return Ok(SimValue::Integer(items.len() as u128));
                 }
                 return Ok(SimValue::Simulated { ty: "len".to_string(), description: "len()".to_string() });
             }

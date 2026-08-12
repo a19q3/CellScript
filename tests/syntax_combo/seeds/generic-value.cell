@@ -1,0 +1,24 @@
+// audit: phase=accept
+// audit: generic_identity=cellscript::audit::seed_generic_value::Pair<u64>
+module cellscript::audit::seed_generic_value
+
+struct Pair<T: copy + drop + store + fixed + serializable + non_linear>
+    has copy, drop, store, fixed, serializable, non_linear
+{
+    left: T,
+    right: T,
+}
+
+fn first<T: copy + drop + store + fixed + serializable + non_linear>(pair: Pair<T>) -> T {
+    pair.left
+}
+
+action verify() -> u64 {
+    verification
+        let pair: Pair<u64> = Pair<u64> { left: 42, right: 7 }
+        let optional: Option<u64> = Option::Some<u64>(first(pair))
+        match optional {
+            Option::Some(value) => { value }
+            Option::None => { 0 }
+        }
+}

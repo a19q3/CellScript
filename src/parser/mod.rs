@@ -438,7 +438,8 @@ impl<'a> Parser<'a> {
                                 self.expect(TokenKind::Eq)?;
                                 estimated_cycles = match &self.current().kind {
                                     TokenKind::Integer(n) => {
-                                        let value = *n;
+                                        let value = u64::try_from(*n)
+                                            .map_err(|_| CompileError::new("estimated_cycles must fit in u64", self.current().span))?;
                                         self.advance();
                                         value
                                     }
@@ -481,6 +482,7 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
 
         let mut items = Vec::new();
+        let mut visibilities = std::collections::BTreeMap::new();
         while !self.check(&TokenKind::Eof) {
             self.skip_newlines();
             if self.check(&TokenKind::Eof) {
@@ -488,7 +490,12 @@ impl<'a> Parser<'a> {
             }
             let start_position = self.position;
             match self.parse_item() {
-                Ok(item) => items.push(item),
+                Ok((item, visibility)) => {
+                    if let Some(name) = item.name() {
+                        visibilities.insert(name.to_string(), visibility);
+                    }
+                    items.push(item);
+                }
                 Err(error) if self.recover => {
                     self.record_diagnostic(error);
                     self.synchronize_item(start_position);
@@ -499,12 +506,27 @@ impl<'a> Parser<'a> {
         }
 
         let end_span = self.current().span;
-        Ok(Module { name: full_name, items, span: Span::new(start_span.start, end_span.end, start_span.line, start_span.column) })
+        Ok(Module {
+            name: full_name,
+            items,
+            interface_templates: Vec::new(),
+            visibilities,
+            span: Span::new(start_span.start, end_span.end, start_span.line, start_span.column),
+        })
     }
 
-    fn parse_item(&mut self) -> Result<Item> {
+    fn parse_item(&mut self) -> Result<(Item, Visibility)> {
+        let leading_visibility = self.parse_visibility()?;
         let attrs = self.parse_attrs()?;
-        match &self.current().kind {
+        let trailing_visibility = self.parse_visibility()?;
+        let visibility = match (leading_visibility, trailing_visibility) {
+            (Visibility::LegacyPublic, trailing) => trailing,
+            (leading, Visibility::LegacyPublic) => leading,
+            _ => {
+                return Err(CompileError::new("a top-level declaration may have only one visibility modifier", self.current().span));
+            }
+        };
+        let item = match &self.current().kind {
             TokenKind::Use => {
                 self.reject_type_id_attr(&attrs)?;
                 Ok(Item::Use(self.parse_use()?))
@@ -545,7 +567,33 @@ impl<'a> Parser<'a> {
                 Ok(Item::Lock(self.parse_lock()?))
             }
             _ => Err(CompileError::new(format!("unexpected token: {}", self.current().kind), self.current().span)),
+        }?;
+        if item.name().is_none() && visibility != Visibility::LegacyPublic {
+            return Err(CompileError::new("visibility modifiers are only valid on named top-level declarations", self.current().span));
         }
+        Ok((item, visibility))
+    }
+
+    fn parse_visibility(&mut self) -> Result<Visibility> {
+        if self.check(&TokenKind::Private) {
+            self.advance();
+            return Ok(Visibility::Private);
+        }
+        if !self.check(&TokenKind::Public) {
+            return Ok(Visibility::LegacyPublic);
+        }
+        let span = self.current().span;
+        self.advance();
+        if !self.check(&TokenKind::LParen) {
+            return Ok(Visibility::Public);
+        }
+        self.advance();
+        if self.current().text != "package" {
+            return Err(CompileError::new("expected 'package' in public(package)", self.current().span));
+        }
+        self.advance();
+        self.expect(TokenKind::RParen).map_err(|_| CompileError::new("expected ')' after public(package)", span))?;
+        Ok(Visibility::Package)
     }
 
     fn reject_type_id_attr(&self, attrs: &PendingAttrs) -> Result<()> {
@@ -564,11 +612,61 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_type_params(&mut self) -> Result<Vec<TypeParam>> {
+        if !self.check(&TokenKind::Lt) {
+            return Ok(Vec::new());
+        }
+
+        self.advance();
+        let mut params = Vec::new();
+        while !self.check(&TokenKind::Gt) && !self.check(&TokenKind::Eof) {
+            let start = self.current().span;
+            let phantom = self.current().text == "phantom";
+            if phantom {
+                self.advance();
+            }
+            let name = self.parse_name()?;
+            let mut constraints = Vec::new();
+            if self.check(&TokenKind::Colon) {
+                self.advance();
+                loop {
+                    let Some(ability) = ValueAbility::from_source_name(&self.current().text) else {
+                        return Err(CompileError::new(
+                            "expected value constraint: copy, drop, store, fixed, serializable, non_linear, or cell",
+                            self.current().span,
+                        ));
+                    };
+                    if constraints.contains(&ability) {
+                        return Err(CompileError::new(
+                            format!("duplicate '{}' constraint on type parameter '{}'", ability.as_str(), name),
+                            self.current().span,
+                        ));
+                    }
+                    constraints.push(ability);
+                    self.advance();
+                    if self.check(&TokenKind::Plus) {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            params.push(TypeParam { name, constraints, phantom, span: start });
+            if self.check(&TokenKind::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenKind::Gt)?;
+        Ok(params)
+    }
+
     fn reject_generic_type_params(&self, type_name: &str) -> Result<()> {
         if self.check(&TokenKind::Lt) {
             Err(CompileError::new(
                 format!(
-                    "generic type parameters on '{}' are post-v1 template/codegen syntax, not CellScript v1 executable core; define a concrete type or generate a specialized .cell module",
+                    "Cell-backed type '{}' cannot declare generic parameters; use concrete resource/shared/receipt schemas and generic non-Cell value types",
                     type_name
                 ),
                 self.current().span,
@@ -576,6 +674,33 @@ impl<'a> Parser<'a> {
         } else {
             Ok(())
         }
+    }
+
+    fn parse_value_abilities(&mut self) -> Result<Vec<ValueAbility>> {
+        if !self.check(&TokenKind::Has) {
+            return Ok(Vec::new());
+        }
+        self.advance();
+        let mut abilities = Vec::new();
+        loop {
+            let Some(ability) = ValueAbility::from_source_name(&self.current().text) else {
+                return Err(CompileError::new(
+                    "expected value ability: copy, drop, store, fixed, serializable, non_linear, or cell",
+                    self.current().span,
+                ));
+            };
+            if abilities.contains(&ability) {
+                return Err(CompileError::new(format!("duplicate '{}' value ability", ability.as_str()), self.current().span));
+            }
+            abilities.push(ability);
+            self.advance();
+            if self.check(&TokenKind::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        Ok(abilities)
     }
 
     fn parse_use(&mut self) -> Result<UseStmt> {
@@ -737,7 +862,15 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::Struct)?;
 
         let name = self.parse_name()?;
-        self.reject_generic_type_params(&name)?;
+        let type_params = self.parse_type_params()?;
+        self.skip_newlines();
+        let abilities = self.parse_value_abilities()?;
+        if !type_params.is_empty() && type_id.is_some() {
+            return Err(CompileError::new(
+                "generic value structs cannot declare #[type_id]; Cell identity belongs to concrete Cell-backed types",
+                start_span,
+            ));
+        }
 
         self.skip_newlines();
         let type_policy = self.parse_type_policy_decls()?;
@@ -747,6 +880,8 @@ impl<'a> Parser<'a> {
         let end_span = self.current().span;
         Ok(StructDef {
             name,
+            type_params,
+            abilities,
             type_id,
             default_hash_type: type_policy.default_hash_type,
             capacity_floor: type_policy.capacity_floor,
@@ -922,7 +1057,8 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::LParen)?;
         let shannons = match &self.current().kind {
             TokenKind::Integer(value) => {
-                let value = *value;
+                let value = u64::try_from(*value)
+                    .map_err(|_| CompileError::new("capacity floor must fit in u64 shannons", self.current().span))?;
                 self.advance();
                 value
             }
@@ -1002,12 +1138,10 @@ impl<'a> Parser<'a> {
         let start_span = self.current().span;
         self.expect(TokenKind::Enum)?;
         let name = self.parse_name_path()?;
-        if self.check(&TokenKind::Lt) {
-            return Err(CompileError::new(
-                "generic enum declarations are deferred in 0.22; declare a concrete fixed-width payload enum",
-                self.current().span,
-            ));
-        }
+        let type_params = self.parse_type_params()?;
+        self.skip_newlines();
+        let abilities = self.parse_value_abilities()?;
+        self.skip_newlines();
         self.expect(TokenKind::LBrace)?;
         self.skip_newlines();
 
@@ -1040,7 +1174,13 @@ impl<'a> Parser<'a> {
         self.consume_optional_semi();
 
         let end_span = self.current().span;
-        Ok(EnumDef { name, variants, span: Span::new(start_span.start, end_span.end, start_span.line, start_span.column) })
+        Ok(EnumDef {
+            name,
+            type_params,
+            abilities,
+            variants,
+            span: Span::new(start_span.start, end_span.end, start_span.line, start_span.column),
+        })
     }
 
     fn parse_capabilities(&mut self) -> Result<Vec<Capability>> {
@@ -1627,7 +1767,8 @@ impl<'a> Parser<'a> {
                 self.expect(TokenKind::Semi)?;
                 let size = match &self.current().kind {
                     TokenKind::Integer(n) => {
-                        let size = *n as usize;
+                        let size = usize::try_from(*n)
+                            .map_err(|_| CompileError::new("array size exceeds the supported platform range", self.current().span))?;
                         self.advance();
                         size
                     }
@@ -1915,6 +2056,7 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::Fn)?;
 
         let name = self.parse_name()?;
+        let type_params = self.parse_type_params()?;
         let params = self.parse_params()?;
         let return_type = if self.check(&TokenKind::Arrow) {
             self.advance();
@@ -1927,6 +2069,7 @@ impl<'a> Parser<'a> {
 
         Ok(FnDef {
             name,
+            type_params,
             params,
             return_type,
             body,
@@ -2148,6 +2291,9 @@ impl<'a> Parser<'a> {
             TokenKind::If => Stmt::If(self.parse_if()?),
             TokenKind::For => Stmt::For(self.parse_for()?),
             TokenKind::While => Stmt::While(self.parse_while()?),
+            TokenKind::Break => Stmt::Break(self.parse_loop_control(TokenKind::Break)?),
+            TokenKind::Continue => Stmt::Continue(self.parse_loop_control(TokenKind::Continue)?),
+            TokenKind::Label => self.parse_labeled_loop()?,
             TokenKind::Borrow => Stmt::Borrow(self.parse_borrow()?),
             _ => {
                 let expr = self.parse_expr()?;
@@ -2251,7 +2397,13 @@ impl<'a> Parser<'a> {
         let body = self.parse_block()?;
 
         let end_span = self.current().span;
-        Ok(ForStmt { pattern, iterable, body, span: Span::new(start_span.start, end_span.end, start_span.line, start_span.column) })
+        Ok(ForStmt {
+            label: None,
+            pattern,
+            iterable,
+            body,
+            span: Span::new(start_span.start, end_span.end, start_span.line, start_span.column),
+        })
     }
 
     fn parse_while(&mut self) -> Result<WhileStmt> {
@@ -2262,13 +2414,50 @@ impl<'a> Parser<'a> {
         let body = self.parse_block()?;
 
         let end_span = self.current().span;
-        Ok(WhileStmt { condition, body, span: Span::new(start_span.start, end_span.end, start_span.line, start_span.column) })
+        Ok(WhileStmt {
+            label: None,
+            condition,
+            body,
+            span: Span::new(start_span.start, end_span.end, start_span.line, start_span.column),
+        })
+    }
+
+    fn parse_loop_control(&mut self, keyword: TokenKind) -> Result<LoopControlStmt> {
+        let start = self.current().span;
+        self.expect(keyword)?;
+        let label = self.ident_like_name().map(|_| self.parse_name()).transpose()?;
+        let end = self.current().span;
+        Ok(LoopControlStmt { label, span: Span::new(start.start, end.start, start.line, start.column) })
+    }
+
+    fn parse_labeled_loop(&mut self) -> Result<Stmt> {
+        self.expect(TokenKind::Label)?;
+        let label = self.parse_name()?;
+        self.expect(TokenKind::Colon)?;
+        match self.current().kind {
+            TokenKind::For => {
+                let mut statement = self.parse_for()?;
+                statement.label = Some(label);
+                Ok(Stmt::For(statement))
+            }
+            TokenKind::While => {
+                let mut statement = self.parse_while()?;
+                statement.label = Some(label);
+                Ok(Stmt::While(statement))
+            }
+            _ => Err(CompileError::new("label must precede a for or while loop", self.current().span)),
+        }
     }
 
     fn parse_borrow(&mut self) -> Result<BorrowStmt> {
         let start_span = self.current().span;
         self.expect(TokenKind::Borrow)?;
         let root = self.parse_name()?;
+        let mut path = Vec::new();
+        while self.check(&TokenKind::Dot) {
+            self.advance();
+            path.push(self.parse_name()?);
+        }
         let as_span = self.current().span;
         let keyword = self.parse_name()?;
         if keyword != "as" {
@@ -2277,7 +2466,13 @@ impl<'a> Parser<'a> {
         let binding = self.parse_name()?;
         let body = self.parse_block()?;
         let end_span = self.previous_non_newline().span;
-        Ok(BorrowStmt { root, binding, body, span: Span::new(start_span.start, end_span.end, start_span.line, start_span.column) })
+        Ok(BorrowStmt {
+            root,
+            path,
+            binding,
+            body,
+            span: Span::new(start_span.start, end_span.end, start_span.line, start_span.column),
+        })
     }
 
     fn parse_expr(&mut self) -> Result<Expr> {
@@ -2361,7 +2556,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_and(&mut self) -> Result<Expr> {
-        let mut left = self.parse_equality()?;
+        let mut left = self.parse_bitwise_or()?;
 
         loop {
             self.skip_newlines();
@@ -2372,10 +2567,58 @@ impl<'a> Parser<'a> {
             let start_span = self.current().span;
             self.advance();
             self.skip_newlines();
-            let right = self.parse_equality()?;
+            let right = self.parse_bitwise_or()?;
             left = Expr::Binary(BinaryExpr { op, left: Box::new(left), right: Box::new(right), span: start_span });
         }
 
+        Ok(left)
+    }
+
+    fn parse_bitwise_or(&mut self) -> Result<Expr> {
+        let mut left = self.parse_bitwise_xor()?;
+        loop {
+            self.skip_newlines();
+            if !self.check(&TokenKind::Pipe) {
+                break;
+            }
+            let start_span = self.current().span;
+            self.advance();
+            self.skip_newlines();
+            let right = self.parse_bitwise_xor()?;
+            left = Expr::Binary(BinaryExpr { op: BinaryOp::BitOr, left: Box::new(left), right: Box::new(right), span: start_span });
+        }
+        Ok(left)
+    }
+
+    fn parse_bitwise_xor(&mut self) -> Result<Expr> {
+        let mut left = self.parse_bitwise_and()?;
+        loop {
+            self.skip_newlines();
+            if !self.check(&TokenKind::Caret) {
+                break;
+            }
+            let start_span = self.current().span;
+            self.advance();
+            self.skip_newlines();
+            let right = self.parse_bitwise_and()?;
+            left = Expr::Binary(BinaryExpr { op: BinaryOp::BitXor, left: Box::new(left), right: Box::new(right), span: start_span });
+        }
+        Ok(left)
+    }
+
+    fn parse_bitwise_and(&mut self) -> Result<Expr> {
+        let mut left = self.parse_equality()?;
+        loop {
+            self.skip_newlines();
+            if !self.check(&TokenKind::Ampersand) {
+                break;
+            }
+            let start_span = self.current().span;
+            self.advance();
+            self.skip_newlines();
+            let right = self.parse_equality()?;
+            left = Expr::Binary(BinaryExpr { op: BinaryOp::BitAnd, left: Box::new(left), right: Box::new(right), span: start_span });
+        }
         Ok(left)
     }
 
@@ -2408,7 +2651,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_comparison(&mut self) -> Result<Expr> {
-        let mut left = self.parse_term()?;
+        let mut left = self.parse_shift()?;
 
         loop {
             self.skip_newlines();
@@ -2431,13 +2674,40 @@ impl<'a> Parser<'a> {
             if let Some(op) = op {
                 let start_span = self.current().span;
                 self.skip_newlines();
-                let right = self.parse_term()?;
+                let right = self.parse_shift()?;
                 left = Expr::Binary(BinaryExpr { op, left: Box::new(left), right: Box::new(right), span: start_span });
             } else {
                 break;
             }
         }
 
+        Ok(left)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr> {
+        let mut left = self.parse_term()?;
+        loop {
+            self.skip_newlines();
+            let op = if self.check(&TokenKind::Lt) && self.peek(1).kind == TokenKind::Lt {
+                let span = self.current().span;
+                self.advance();
+                self.advance();
+                Some((BinaryOp::Shl, span))
+            } else if self.check(&TokenKind::Gt) && self.peek(1).kind == TokenKind::Gt {
+                let span = self.current().span;
+                self.advance();
+                self.advance();
+                Some((BinaryOp::Shr, span))
+            } else {
+                None
+            };
+            let Some((op, start_span)) = op else {
+                break;
+            };
+            self.skip_newlines();
+            let right = self.parse_term()?;
+            left = Expr::Binary(BinaryExpr { op, left: Box::new(left), right: Box::new(right), span: start_span });
+        }
         Ok(left)
     }
 
@@ -2583,7 +2853,7 @@ impl<'a> Parser<'a> {
                     }
                 };
                 expr = Expr::FieldAccess(FieldAccessExpr { expr: Box::new(expr), field, span: self.current().span });
-            } else if self.check(&TokenKind::Lt) && Self::supports_generic_call(&expr) {
+            } else if self.check(&TokenKind::Lt) && self.supports_generic_call(&expr) {
                 self.advance();
                 let mut type_args = Vec::new();
                 while !self.check(&TokenKind::Gt) && !self.check(&TokenKind::Eof) {
@@ -2616,12 +2886,35 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    fn supports_generic_call(expr: &Expr) -> bool {
-        matches!(
-            expr,
-            Expr::Identifier(name)
-                if matches!(name.as_str(), "ckb::input" | "ckb::output" | "ckb::group_input" | "ckb::group_output")
-        )
+    fn supports_generic_call(&self, expr: &Expr) -> bool {
+        matches!(expr, Expr::Identifier(_)) && self.generic_arguments_followed_by(&TokenKind::LParen)
+    }
+
+    fn generic_arguments_followed_by(&self, follower: &TokenKind) -> bool {
+        if !self.check(&TokenKind::Lt) {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut index = self.position;
+        while let Some(token) = self.tokens.get(index) {
+            match token.kind {
+                TokenKind::Lt => depth = depth.saturating_add(1),
+                TokenKind::Gt => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        index += 1;
+                        while self.tokens.get(index).is_some_and(|token| token.kind == TokenKind::Newline) {
+                            index += 1;
+                        }
+                        return self.tokens.get(index).is_some_and(|token| &token.kind == follower);
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
     }
 
     fn parse_primary(&mut self) -> Result<Expr> {
@@ -2682,6 +2975,24 @@ impl<'a> Parser<'a> {
                     "create_unique" => return self.parse_create_unique_expr(),
                     "replace_unique" => return self.parse_replace_unique_expr(),
                     _ => {}
+                }
+                if self.check(&TokenKind::Lt)
+                    && Self::looks_like_type_name(&name)
+                    && self.generic_arguments_followed_by(&TokenKind::LBrace)
+                {
+                    self.advance();
+                    let mut type_args = Vec::new();
+                    while !self.check(&TokenKind::Gt) && !self.check(&TokenKind::Eof) {
+                        type_args.push(self.parse_type()?);
+                        if self.check(&TokenKind::Comma) {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                    self.expect(TokenKind::Gt)?;
+                    let rendered = type_args.iter().map(Self::render_type).collect::<Vec<_>>().join(", ");
+                    return self.parse_struct_init(format!("{}<{}>", name, rendered));
                 }
                 if self.check(&TokenKind::LBrace) && Self::looks_like_type_name(&name) {
                     self.parse_struct_init(name)
@@ -3390,17 +3701,78 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_match_pattern(&mut self) -> Result<MatchPattern> {
+        let mut patterns = vec![self.parse_match_pattern_primary()?];
+        while self.check(&TokenKind::Pipe) {
+            self.advance();
+            self.skip_newlines();
+            patterns.push(self.parse_match_pattern_primary()?);
+        }
+        if patterns.len() == 1 {
+            Ok(patterns.pop().expect("one match pattern"))
+        } else {
+            Ok(MatchPattern::Or(patterns))
+        }
+    }
+
+    fn parse_match_pattern_primary(&mut self) -> Result<MatchPattern> {
         if self.check(&TokenKind::Underscore) || matches!(&self.current().kind, TokenKind::Identifier(name) if name == "_") {
             self.advance();
             return Ok(MatchPattern::Wildcard);
         }
+        if self.check(&TokenKind::LParen) {
+            self.advance();
+            self.skip_newlines();
+            let mut items = Vec::new();
+            let mut saw_comma = false;
+            while !self.check(&TokenKind::RParen) && !self.check(&TokenKind::Eof) {
+                items.push(self.parse_match_pattern()?);
+                self.skip_newlines();
+                if self.check(&TokenKind::Comma) {
+                    saw_comma = true;
+                    self.advance();
+                    self.skip_newlines();
+                } else {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RParen)?;
+            if items.len() == 1 && !saw_comma {
+                return Ok(items.pop().expect("one grouped match pattern"));
+            }
+            return Ok(MatchPattern::Tuple(items));
+        }
         let path = self.parse_name_path()?;
-        let mut bindings = Vec::new();
+        if self.check(&TokenKind::LBrace) {
+            self.advance();
+            self.skip_newlines();
+            let mut fields = Vec::new();
+            while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
+                let name = self.parse_name()?;
+                let pattern = if self.check(&TokenKind::Colon) {
+                    self.advance();
+                    self.skip_newlines();
+                    self.parse_match_pattern()?
+                } else {
+                    MatchPattern::Binding(name.clone())
+                };
+                fields.push((name, pattern));
+                self.skip_newlines();
+                if self.check(&TokenKind::Comma) {
+                    self.advance();
+                    self.skip_newlines();
+                } else {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RBrace)?;
+            return Ok(MatchPattern::Struct { path, fields });
+        }
+        let mut fields = Vec::new();
         if self.check(&TokenKind::LParen) {
             self.advance();
             self.skip_newlines();
             while !self.check(&TokenKind::RParen) && !self.check(&TokenKind::Eof) {
-                bindings.push(self.parse_binding_pattern()?);
+                fields.push(self.parse_match_pattern()?);
                 self.skip_newlines();
                 if self.check(&TokenKind::Comma) {
                     self.advance();
@@ -3410,8 +3782,13 @@ impl<'a> Parser<'a> {
                 }
             }
             self.expect(TokenKind::RParen)?;
+            return Ok(MatchPattern::Variant { path, fields });
         }
-        Ok(MatchPattern::Variant { path, bindings })
+        if path.rsplit_once("::").is_some() || path.chars().next().is_some_and(char::is_uppercase) {
+            Ok(MatchPattern::Variant { path, fields })
+        } else {
+            Ok(MatchPattern::Binding(path))
+        }
     }
 
     fn parse_match_arm_require(&mut self) -> Result<Expr> {
@@ -3504,6 +3881,33 @@ fn aggregate_scope_from_target(target: &AggregateTarget) -> Option<&'static str>
 mod tests {
     use super::*;
     use crate::lexer::lex;
+
+    #[test]
+    fn parses_labeled_loop_control() {
+        let source = r#"
+module loop_control
+
+fn count() -> u64 {
+    label outer: for i in 0..4 {
+        while i < 3 {
+            continue
+        }
+        break outer
+    }
+    return 0
+}
+"#;
+        let module = parse(&lex(source).unwrap()).unwrap();
+        let Item::Function(function) = &module.items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::For(outer) = &function.body[0] else {
+            panic!("expected for loop");
+        };
+        assert_eq!(outer.label.as_deref(), Some("outer"));
+        assert!(matches!(outer.body[0], Stmt::While(_)));
+        assert!(matches!(&outer.body[1], Stmt::Break(control) if control.label.as_deref() == Some("outer")));
+    }
 
     #[test]
     fn test_parse_resource() {
@@ -3741,7 +4145,11 @@ resource Vault<T> has store {
         let tokens = lex(input).unwrap();
         let err = parse(&tokens).unwrap_err();
 
-        assert!(err.message.contains("post-v1 template/codegen syntax"), "unexpected error: {}", err.message);
+        assert!(
+            err.message.contains("Cell-backed type 'Vault' cannot declare generic parameters"),
+            "unexpected error: {}",
+            err.message
+        );
     }
 
     #[test]

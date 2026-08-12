@@ -25,6 +25,7 @@ import {
   joyidPrincipalIdFromBinding,
   scopeAllows,
   validatePublishPayload,
+  validateInterfaceUpgrade,
   validateArtifactDescriptor,
   type CapabilityAuthorisationPayload,
   type CapabilityRevocationPayload,
@@ -380,6 +381,22 @@ async function publishPayload(keyId: string): Promise<PublishPayload> {
         cellscript_version: "0.23.0",
         edition: "2026",
         compatibility_profile_hash: "ef".repeat(32),
+        interface_hash: ckbBlake2bHex(canonicalJson({
+          schema: "cellscript-package-interface-v1",
+          version: 1,
+          module: "cellscript::demo",
+          types: [],
+          constants: [],
+          callables: [],
+        })),
+        interface: {
+          schema: "cellscript-package-interface-v1",
+          version: 1,
+          module: "cellscript::demo",
+          types: [],
+          constants: [],
+          callables: [],
+        },
         dependencies: {},
         verification_status: "pending",
         deployment_status: "not_applicable",
@@ -402,6 +419,8 @@ async function ckbExecutablePublishPayload(keyId: string): Promise<PublishPayloa
   delete release.cellscript_version;
   delete release.edition;
   delete release.compatibility_profile_hash;
+  delete release.interface_hash;
+  delete release.interface;
   delete release.dependencies;
   release.artifact_hash = `0x${"31".repeat(32)}`;
   release.abi_hash = `0x${"32".repeat(32)}`;
@@ -429,6 +448,48 @@ async function ckbExecutablePublishPayload(keyId: string): Promise<PublishPayloa
   release.deployment_status = "undeployed";
   return payload;
 }
+
+describe("CellScript public interface admission", () => {
+  const baseInterface = {
+    schema: "cellscript-package-interface-v1",
+    version: 1,
+    module: "cellscript::demo",
+    types: [{
+      identity: "cellscript::demo::Value",
+      kind: "struct",
+      type_parameters: [],
+      value_abilities: ["copy"],
+      cell_capabilities: [],
+      layout_identity: "11".repeat(32),
+      type_identity: null,
+    }],
+    constants: [],
+    callables: [],
+    runtime_contract: { target_profile: "ckb", witness_abi: "v2" },
+    deployment_contract_hash: "22".repeat(32),
+  };
+
+  it("accepts additive exports and rejects layout changes before admission", () => {
+    expect(() => validateInterfaceUpgrade(baseInterface, {
+      ...baseInterface,
+      callables: [{
+        identity: "cellscript::demo::read",
+        kind: "function",
+        type_parameters: [],
+        params: [],
+        return_type: "u64",
+        outputs: [],
+        effect: "Pure",
+        entry_witness_abi: null,
+        builder_contract_hash: "33".repeat(32),
+      }],
+    })).not.toThrow();
+    expect(() => validateInterfaceUpgrade(baseInterface, {
+      ...baseInterface,
+      types: [{ ...baseInterface.types[0], layout_identity: "44".repeat(32) }],
+    })).toThrow(/changed incompatibly/);
+  });
+});
 
 function declareReproducibleBuild(payload: PublishPayload): void {
   const release = payload.registry_entry.versions[0];

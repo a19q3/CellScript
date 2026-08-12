@@ -30,6 +30,7 @@ import {
   validateAvailabilityPayload,
   validatePackageIdent,
   validatePublishPayload,
+  validateInterfaceUpgrade,
   validateSnapshot,
   validateVersion,
   verifyPrincipalAuthorisationPayload,
@@ -3301,6 +3302,23 @@ async function handlePublishVersion(
   }
   if (await store.getPackageVersion(payload.namespace, payload.name, payload.version)) {
     throw new ApiError(409, "artifact_release_exists", "artifact release already exists and cannot be overwritten");
+  }
+  if (payload.artifact.profile === "cellscript_source") {
+    const candidateInterface = payload.registry_entry.versions[0].interface;
+    const previousVersions = await store.listPackageVersions({
+      namespace: payload.namespace,
+      name: payload.name,
+      limit: 200,
+      offset: 0,
+    });
+    const previousBound = previousVersions.find((version) => {
+      const release = version.registry_entry.versions.find((entry) => entry.version === version.version);
+      return release?.interface !== undefined;
+    });
+    if (previousBound) {
+      const previousRelease = previousBound.registry_entry.versions.find((entry) => entry.version === previousBound.version);
+      validateInterfaceUpgrade(previousRelease?.interface, candidateInterface);
+    }
   }
   let idempotencyReserved = false;
   if (idempotencyKey) {

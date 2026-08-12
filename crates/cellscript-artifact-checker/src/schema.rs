@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-pub const LOWERING_RECORD_SCHEMA: &str = "cellscript-verified-lowering-record-v1";
+pub const LOWERING_RECORD_SCHEMA: &str = "cellscript-verified-lowering-record-v2";
+pub const TYPED_SEMANTICS_SCHEMA: &str = "cellscript-typed-semantics-v1";
 pub const SOURCE_MAP_SCHEMA: &str = "cellscript-source-artifact-map-v1";
 pub const CHECKER_POLICY_SCHEMA: &str = "cellscript-artifact-checker-policy-v1";
 pub const CHECKER_REPORT_SCHEMA: &str = "cellscript-artifact-checker-report-v1";
-pub const LOWERING_RECORD_VERSION: u32 = 1;
+pub const LOWERING_RECORD_VERSION: u32 = 2;
 pub const SOURCE_MAP_VERSION: u32 = 1;
 pub const CHECKER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -44,6 +45,8 @@ pub struct VerifiedLoweringRecord {
     pub artifact_format: String,
     pub artifact_hash: String,
     pub artifact_size_bytes: u64,
+    pub typed_semantics: TypedSemanticRecord,
+    pub typed_semantics_hash: String,
     pub text_range: MachineRange,
     pub entries: Vec<LoweringEntry>,
     pub blocks: Vec<LoweringBlock>,
@@ -58,6 +61,7 @@ pub struct VerifiedLoweringRecord {
 impl VerifiedLoweringRecord {
     pub fn canonicalize(&mut self) {
         self.entries.sort_by(|a, b| a.id.cmp(&b.id));
+        self.typed_semantics.canonicalize();
         for entry in &mut self.entries {
             entry.params.sort_by_key(|param| param.index);
             entry.proof_ids.sort();
@@ -81,6 +85,167 @@ impl VerifiedLoweringRecord {
         self.syscall_sites.sort_by(|a, b| (a.address, &a.block_id).cmp(&(b.address, &b.block_id)));
         self.runtime_error_exits.sort_by(|a, b| (&a.block_id, a.code, a.address).cmp(&(&b.block_id, b.code, b.address)));
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticRecord {
+    pub schema: String,
+    pub version: u32,
+    pub module: String,
+    pub interface_hash: String,
+    pub types: Vec<TypedSemanticType>,
+    pub entries: Vec<TypedSemanticEntry>,
+    pub instantiations: Vec<TypedSemanticInstantiation>,
+}
+
+impl TypedSemanticRecord {
+    pub fn canonicalize(&mut self) {
+        self.types.sort_by(|left, right| left.name.cmp(&right.name));
+        for ty in &mut self.types {
+            ty.fields.sort_by(|left, right| left.offset.cmp(&right.offset).then(left.name.cmp(&right.name)));
+            ty.capabilities.sort();
+            ty.capabilities.dedup();
+        }
+        self.entries.sort_by(|left, right| left.id.cmp(&right.id));
+        for entry in &mut self.entries {
+            entry.locals.sort_by_key(|local| local.id);
+            entry.blocks.sort_by_key(|block| block.id);
+            for block in &mut entry.blocks {
+                block.successors.sort();
+                block.successors.dedup();
+            }
+            entry
+                .borrows
+                .sort_by(|left, right| (&left.root, &left.path, &left.binding).cmp(&(&right.root, &right.path, &right.binding)));
+            entry.ownership.sort_by(|left, right| (&left.binding, &left.operation).cmp(&(&right.binding, &right.operation)));
+            entry.obligations.sort();
+            entry.obligations.dedup();
+        }
+        self.instantiations.sort_by(|left, right| left.identity.cmp(&right.identity));
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticType {
+    pub name: String,
+    pub kind: String,
+    pub encoded_size: Option<u32>,
+    pub fields: Vec<TypedSemanticField>,
+    pub capabilities: Vec<String>,
+    pub layout_hash: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticField {
+    pub name: String,
+    pub ty: String,
+    pub offset: u32,
+    pub width_bytes: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticEntry {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub params: Vec<TypedSemanticParam>,
+    pub return_type: String,
+    pub effect: String,
+    pub locals: Vec<TypedSemanticLocal>,
+    pub blocks: Vec<TypedSemanticBlock>,
+    pub borrows: Vec<TypedSemanticBorrow>,
+    pub ownership: Vec<TypedSemanticOwnership>,
+    pub obligations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticParam {
+    pub index: u32,
+    pub binding_id: u32,
+    pub name: String,
+    pub ty: String,
+    pub source: String,
+    pub mutable: bool,
+    pub reference: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticLocal {
+    pub id: u32,
+    pub name: String,
+    pub ty: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticBlock {
+    pub id: u32,
+    pub operations: Vec<TypedSemanticOperation>,
+    pub successors: Vec<u32>,
+    pub terminator: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticOperation {
+    pub opcode: String,
+    pub destinations: Vec<u32>,
+    pub operands: Vec<TypedSemanticOperand>,
+    pub call: Option<TypedSemanticCall>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticOperand {
+    pub local: Option<u32>,
+    pub ty: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticCall {
+    pub target: String,
+    pub params: Vec<String>,
+    pub return_type: String,
+    pub effect: String,
+    pub contract: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticBorrow {
+    pub root: String,
+    pub path: Vec<String>,
+    pub binding: String,
+    pub root_type: String,
+    pub view_type: String,
+    pub escapes: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticOwnership {
+    pub binding: String,
+    pub ty: String,
+    pub operation: String,
+    pub initial_state: String,
+    pub final_state: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticInstantiation {
+    pub kind: String,
+    pub template: String,
+    pub identity: String,
+    pub type_arguments: Vec<String>,
+    pub constraints_verified: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

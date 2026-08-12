@@ -1,11 +1,48 @@
 use crate::error::Span;
+use std::collections::BTreeMap;
 use std::fmt;
 
 #[derive(Debug, Clone)]
 pub struct Module {
     pub name: String,
     pub items: Vec<Item>,
+    /// Generic source declarations retained by monomorphization for public
+    /// interface emission. Semantic phases continue to consume `items`, which
+    /// contains only concrete executable declarations.
+    pub interface_templates: Vec<Item>,
+    /// Source visibility for named top-level items. Edition 2026 keeps the
+    /// historical public default so old sources do not silently change.
+    pub visibilities: BTreeMap<String, Visibility>,
     pub span: Span,
+}
+
+impl Module {
+    pub fn visibility_of(&self, name: &str) -> Visibility {
+        self.visibilities.get(name).copied().unwrap_or(Visibility::LegacyPublic)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Visibility {
+    LegacyPublic,
+    Public,
+    Package,
+    Private,
+}
+
+impl Visibility {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LegacyPublic => "legacy-public",
+            Self::Public => "public",
+            Self::Package => "public(package)",
+            Self::Private => "private",
+        }
+    }
+
+    pub const fn is_exported(self) -> bool {
+        matches!(self, Self::LegacyPublic | Self::Public)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -22,6 +59,24 @@ pub enum Item {
     Function(FnDef),
     Lock(LockDef),
     Use(UseStmt),
+}
+
+impl Item {
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Self::Resource(def) => Some(&def.name),
+            Self::Shared(def) => Some(&def.name),
+            Self::Receipt(def) => Some(&def.name),
+            Self::Struct(def) => Some(&def.name),
+            Self::Invariant(def) => Some(&def.name),
+            Self::Const(def) => Some(&def.name),
+            Self::Enum(def) => Some(&def.name),
+            Self::Action(def) => Some(&def.name),
+            Self::Function(def) => Some(&def.name),
+            Self::Lock(def) => Some(&def.name),
+            Self::Flow(_) | Self::Use(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +122,8 @@ pub struct ReceiptDef {
 #[derive(Debug, Clone)]
 pub struct StructDef {
     pub name: String,
+    pub type_params: Vec<TypeParam>,
+    pub abilities: Vec<ValueAbility>,
     pub type_id: Option<TypeIdentity>,
     pub default_hash_type: Option<HashTypeDecl>,
     pub capacity_floor: Option<CapacityFloorDecl>,
@@ -110,8 +167,57 @@ pub struct ConstDef {
 #[derive(Debug, Clone)]
 pub struct EnumDef {
     pub name: String,
+    pub type_params: Vec<TypeParam>,
+    pub abilities: Vec<ValueAbility>,
     pub variants: Vec<EnumVariant>,
     pub span: Span,
+}
+
+/// A source-level generic value parameter. Value constraints are deliberately
+/// separate from Cell lifecycle capabilities: satisfying `copy` does not grant
+/// authority to create, consume, replace, or destroy a Cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeParam {
+    pub name: String,
+    pub constraints: Vec<ValueAbility>,
+    pub phantom: bool,
+    pub span: Span,
+}
+
+/// Closed value-property vocabulary used by generic declarations and
+/// instantiation checks. These properties describe local values and layouts;
+/// they never stand in for [`Capability`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ValueAbility {
+    Copy,
+    Drop,
+    Store,
+    Fixed,
+    Serializable,
+    NonLinear,
+    Cell,
+}
+
+impl ValueAbility {
+    pub const REGISTRY_VERSION: u32 = 1;
+
+    pub const ALL: [Self; 7] = [Self::Copy, Self::Drop, Self::Store, Self::Fixed, Self::Serializable, Self::NonLinear, Self::Cell];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Copy => "copy",
+            Self::Drop => "drop",
+            Self::Store => "store",
+            Self::Fixed => "fixed",
+            Self::Serializable => "serializable",
+            Self::NonLinear => "non_linear",
+            Self::Cell => "cell",
+        }
+    }
+
+    pub fn from_source_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|ability| ability.as_str() == name)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -502,6 +608,7 @@ pub struct ActionStateEdge {
 #[derive(Debug, Clone)]
 pub struct FnDef {
     pub name: String,
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
     pub body: Vec<Stmt>,
@@ -624,6 +731,8 @@ pub enum Stmt {
     If(IfStmt),
     For(ForStmt),
     While(WhileStmt),
+    Break(LoopControlStmt),
+    Continue(LoopControlStmt),
     Borrow(BorrowStmt),
 }
 
@@ -659,6 +768,7 @@ pub struct IfStmt {
 
 #[derive(Debug, Clone)]
 pub struct ForStmt {
+    pub label: Option<String>,
     pub pattern: BindingPattern,
     pub iterable: Expr,
     pub body: Vec<Stmt>,
@@ -667,8 +777,15 @@ pub struct ForStmt {
 
 #[derive(Debug, Clone)]
 pub struct WhileStmt {
+    pub label: Option<String>,
     pub condition: Expr,
     pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoopControlStmt {
+    pub label: Option<String>,
     pub span: Span,
 }
 
@@ -679,6 +796,7 @@ pub struct WhileStmt {
 #[derive(Debug, Clone)]
 pub struct BorrowStmt {
     pub root: String,
+    pub path: Vec<String>,
     pub binding: String,
     pub body: Vec<Stmt>,
     pub span: Span,
@@ -686,7 +804,7 @@ pub struct BorrowStmt {
 
 #[derive(Debug, Clone)]
 pub enum Expr {
-    Integer(u64),
+    Integer(u128),
     Bool(bool),
     String(String),
     ByteString(Vec<u8>),
@@ -797,6 +915,11 @@ pub enum BinaryOp {
     Ge,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 #[derive(Debug, Clone)]
@@ -991,26 +1114,39 @@ pub struct MatchArm {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MatchPattern {
     Wildcard,
-    Variant { path: String, bindings: Vec<BindingPattern> },
+    Binding(String),
+    Tuple(Vec<MatchPattern>),
+    Struct { path: String, fields: Vec<(String, MatchPattern)> },
+    Variant { path: String, fields: Vec<MatchPattern> },
+    Or(Vec<MatchPattern>),
 }
 
 impl fmt::Display for MatchPattern {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Wildcard => formatter.write_str("_"),
-            Self::Variant { path, bindings } if bindings.is_empty() => formatter.write_str(path),
-            Self::Variant { path, bindings } => {
-                write!(formatter, "{}({})", path, bindings.iter().map(binding_pattern_source).collect::<Vec<_>>().join(", "))
+            Self::Binding(name) => formatter.write_str(name),
+            Self::Tuple(items) => write!(formatter, "({})", items.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")),
+            Self::Struct { path, fields } => {
+                let fields = fields
+                    .iter()
+                    .map(|(name, pattern)| {
+                        if matches!(pattern, MatchPattern::Binding(binding) if binding == name) {
+                            name.clone()
+                        } else {
+                            format!("{}: {}", name, pattern)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(formatter, "{} {{ {} }}", path, fields)
             }
+            Self::Variant { path, fields } if fields.is_empty() => formatter.write_str(path),
+            Self::Variant { path, fields } => {
+                write!(formatter, "{}({})", path, fields.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))
+            }
+            Self::Or(patterns) => write!(formatter, "{}", patterns.iter().map(ToString::to_string).collect::<Vec<_>>().join(" | ")),
         }
-    }
-}
-
-fn binding_pattern_source(pattern: &BindingPattern) -> String {
-    match pattern {
-        BindingPattern::Name(name) => name.clone(),
-        BindingPattern::Tuple(items) => format!("({})", items.iter().map(binding_pattern_source).collect::<Vec<_>>().join(", ")),
-        BindingPattern::Wildcard => "_".to_string(),
     }
 }
 

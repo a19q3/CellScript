@@ -193,6 +193,37 @@ fn stable_rejection_codes_cover_json_budget_graph_abi_proof_and_binding_mutation
     assert_code(&changed, CheckerRejectionCode::V2410MetadataBindingMismatch);
 
     let mut changed = valid.clone();
+    changed.record.typed_semantics.entries[0].effect = "tampered".to_string();
+    changed.rebind_sidecars();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid.clone();
+    let typed_param = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .find_map(|entry| entry.params.first_mut())
+        .expect("fixture must contain a typed parameter");
+    typed_param.ty = "u128".to_string();
+    let binding_id = typed_param.binding_id;
+    let typed_local = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .flat_map(|entry| entry.locals.iter_mut())
+        .find(|local| local.id == binding_id)
+        .expect("typed parameter must bind a local");
+    typed_local.ty = "u128".to_string();
+    changed.record.typed_semantics_hash =
+        canonical_hash(cellscript_artifact_checker::TYPED_SEMANTICS_SCHEMA, &changed.record.typed_semantics).unwrap();
+    changed.metadata["typed_semantics"] = serde_json::to_value(&changed.record.typed_semantics).unwrap();
+    changed.metadata["typed_semantics_hash"] = Value::String(changed.record.typed_semantics_hash.clone());
+    changed.rebind_sidecars();
+    assert_code(&changed, CheckerRejectionCode::V2420TypedMachineBindingInvalid);
+
+    let mut changed = valid.clone();
     if let Some(interval) = changed.source_map.intervals.first_mut() {
         interval.source_path = "../escape.cell".to_string();
     } else {

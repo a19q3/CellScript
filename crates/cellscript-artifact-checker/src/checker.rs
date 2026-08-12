@@ -26,6 +26,8 @@ pub enum CheckerRejectionCode {
     V2416SourceMapInvalid,
     V2417SyscallContractInvalid,
     V2418RecursionPolicyInvalid,
+    V2419TypedSemanticsInvalid,
+    V2420TypedMachineBindingInvalid,
 }
 
 impl CheckerRejectionCode {
@@ -50,6 +52,8 @@ impl CheckerRejectionCode {
             Self::V2416SourceMapInvalid => "V2416",
             Self::V2417SyscallContractInvalid => "V2417",
             Self::V2418RecursionPolicyInvalid => "V2418",
+            Self::V2419TypedSemanticsInvalid => "V2419",
+            Self::V2420TypedMachineBindingInvalid => "V2420",
         }
     }
 }
@@ -109,6 +113,7 @@ pub struct CheckerReport {
     pub binding_verification: EvidenceState,
     pub structural_verification: EvidenceState,
     pub lowering_record_verification: EvidenceState,
+    pub typed_semantics_verification: EvidenceState,
     pub ckb_vm_evidence: EvidenceState,
     pub chain_evidence: EvidenceState,
     pub semantic_equivalence_claimed: bool,
@@ -185,6 +190,7 @@ pub fn check_bundle_values(
     validate_counts(record, source_map, budgets)?;
     validate_metadata_binding(artifact, metadata, record, source_map)?;
     validate_record_graph(record, budgets)?;
+    validate_typed_semantics(record)?;
 
     let elf = parse_elf(artifact, budgets.instructions).map_err(map_elf_error)?;
     validate_elf_binding(artifact, record, &elf)?;
@@ -206,6 +212,7 @@ pub fn check_bundle_values(
         binding_verification: EvidenceState::Verified,
         structural_verification: EvidenceState::Verified,
         lowering_record_verification: EvidenceState::Verified,
+        typed_semantics_verification: EvidenceState::Verified,
         ckb_vm_evidence: EvidenceState::NotExecuted,
         chain_evidence: EvidenceState::NotProvided,
         semantic_equivalence_claimed: false,
@@ -249,6 +256,13 @@ fn validate_record_schema(record: &VerifiedLoweringRecord) -> Result<(), Checker
         return Err(CheckerError::new(
             CheckerRejectionCode::V2410MetadataBindingMismatch,
             "record compatibility profile hash does not match its canonical identity",
+        ));
+    }
+    let typed_hash = canonical_hash(TYPED_SEMANTICS_SCHEMA, &record.typed_semantics)?;
+    if typed_hash != record.typed_semantics_hash {
+        return Err(CheckerError::new(
+            CheckerRejectionCode::V2419TypedSemanticsInvalid,
+            "typed semantic record hash does not match its canonical contents",
         ));
     }
     Ok(())
@@ -362,6 +376,24 @@ fn validate_metadata_binding(
             "compile metadata compatibility profile differs from lowering record",
         ));
     }
+    let typed_value = metadata.get("typed_semantics").cloned().ok_or_else(|| {
+        CheckerError::new(CheckerRejectionCode::V2420TypedMachineBindingInvalid, "compile metadata has no typed_semantics record")
+    })?;
+    let typed: TypedSemanticRecord = serde_json::from_value(typed_value).map_err(|error| {
+        CheckerError::new(
+            CheckerRejectionCode::V2420TypedMachineBindingInvalid,
+            format!("compile metadata typed_semantics shape is invalid: {error}"),
+        )
+    })?;
+    if typed != record.typed_semantics
+        || json_string(metadata, &["typed_semantics_hash"]) != Some(record.typed_semantics_hash.as_str())
+        || json_string(metadata, &["interface_hash"]) != Some(record.typed_semantics.interface_hash.as_str())
+    {
+        return Err(CheckerError::new(
+            CheckerRejectionCode::V2420TypedMachineBindingInvalid,
+            "compile metadata typed semantics or interface identity differs from the lowering record",
+        ));
+    }
     if source_map.lowering_record_hash != record_hash
         || source_map.artifact_hash != record.artifact_hash
         || source_map.source_set_hash != record.source_set_hash
@@ -372,6 +404,215 @@ fn validate_metadata_binding(
         ));
     }
     Ok(())
+}
+
+fn validate_typed_semantics(record: &VerifiedLoweringRecord) -> Result<(), CheckerError> {
+    let typed = &record.typed_semantics;
+    if typed.schema != TYPED_SEMANTICS_SCHEMA || typed.version != 1 || typed.module != record.module || typed.interface_hash.is_empty()
+    {
+        return Err(CheckerError::new(
+            CheckerRejectionCode::V2419TypedSemanticsInvalid,
+            "typed semantic record has an invalid schema, module, or interface identity",
+        ));
+    }
+    ensure_sorted_unique(&typed.types, |item| item.name.as_str(), "typed type")?;
+    ensure_sorted_unique(&typed.entries, |item| item.id.as_str(), "typed entry")?;
+    ensure_sorted_unique(&typed.instantiations, |item| item.identity.as_str(), "typed instantiation")?;
+    let lowering_entries = record.entries.iter().map(|entry| (entry.id.as_str(), entry)).collect::<BTreeMap<_, _>>();
+    let called_targets = typed
+        .entries
+        .iter()
+        .flat_map(|entry| entry.blocks.iter())
+        .flat_map(|block| block.operations.iter())
+        .filter_map(|operation| operation.call.as_ref())
+        .map(|call| call.target.as_str())
+        .collect::<BTreeSet<_>>();
+    let proof_ids = record.proof_records.iter().map(|proof| proof.id.as_str()).collect::<BTreeSet<_>>();
+    for ty in &typed.types {
+        if ty.name.is_empty() || ty.kind.is_empty() || ty.layout_hash.is_empty() {
+            return typed_error(format!("typed type '{}' has an empty kind or layout identity", ty.name));
+        }
+        let fixed_layout = ty.encoded_size.is_some() && ty.fields.iter().all(|field| field.width_bytes.is_some());
+        let mut previous_end = 0u32;
+        for field in &ty.fields {
+            if field.name.is_empty() || field.ty.is_empty() || (fixed_layout && ty.kind != "enum" && field.offset < previous_end) {
+                return typed_error(format!("typed type '{}' has overlapping or incomplete field layout", ty.name));
+            }
+            previous_end = field.offset.saturating_add(field.width_bytes.unwrap_or(0));
+        }
+        if fixed_layout && ty.kind != "enum" && ty.encoded_size.is_some_and(|size| previous_end > size) {
+            return typed_error(format!("typed type '{}' fields exceed its encoded size", ty.name));
+        }
+        if !strictly_sorted(&ty.capabilities) && !ty.capabilities.is_empty() {
+            return typed_error(format!("typed type '{}' capabilities are not canonical", ty.name));
+        }
+    }
+    for instantiation in &typed.instantiations {
+        if instantiation.identity.is_empty()
+            || instantiation.template.is_empty()
+            || instantiation.type_arguments.is_empty()
+            || !instantiation.constraints_verified
+        {
+            return typed_error(format!("generic instantiation '{}' is incomplete or unchecked", instantiation.identity));
+        }
+    }
+    for entry in &typed.entries {
+        let Some(lowering) = lowering_entries.get(entry.id.as_str()) else {
+            if entry.kind == "helper" && !called_targets.contains(entry.name.as_str()) {
+                continue;
+            }
+            return Err(CheckerError::new(
+                CheckerRejectionCode::V2420TypedMachineBindingInvalid,
+                format!("typed entry '{}' has no machine lowering entry", entry.id),
+            ));
+        };
+        if entry.name != lowering.name
+            || canonical_abi_type(&entry.return_type) != canonical_abi_type(&lowering.return_type)
+            || normalize_effect(&entry.effect) != normalize_effect(&lowering.effect)
+            || entry.params.len() != lowering.params.len()
+        {
+            return Err(CheckerError::new(
+                CheckerRejectionCode::V2420TypedMachineBindingInvalid,
+                format!("typed entry '{}' signature/effect differs from its machine entry", entry.id),
+            ));
+        }
+        for (typed_param, lowered_param) in entry.params.iter().zip(&lowering.params) {
+            if typed_param.index != lowered_param.index
+                || typed_param.name != lowered_param.name
+                || canonical_abi_type(&typed_param.ty) != canonical_abi_type(&lowered_param.ty)
+            {
+                return Err(CheckerError::new(
+                    CheckerRejectionCode::V2420TypedMachineBindingInvalid,
+                    format!("typed entry '{}' parameter {} differs from its machine ABI", entry.id, typed_param.index),
+                ));
+            }
+        }
+        let locals = entry.locals.iter().map(|local| (local.id, local)).collect::<BTreeMap<_, _>>();
+        if locals.len() != entry.locals.len() || entry.locals.windows(2).any(|pair| pair[0].id >= pair[1].id) {
+            return typed_error(format!("typed entry '{}' locals are not strictly ordered and unique", entry.id));
+        }
+        for param in &entry.params {
+            if locals.get(&param.binding_id).is_none_or(|local| local.name != param.name || local.ty != param.ty) {
+                return typed_error(format!("typed entry '{}' parameter '{}' has no matching local", entry.id, param.name));
+            }
+        }
+        let block_ids = entry.blocks.iter().map(|block| block.id).collect::<BTreeSet<_>>();
+        if block_ids.len() != entry.blocks.len() || entry.blocks.windows(2).any(|pair| pair[0].id >= pair[1].id) {
+            return typed_error(format!("typed entry '{}' blocks are not strictly ordered and unique", entry.id));
+        }
+        for block in &entry.blocks {
+            if block.successors.iter().any(|successor| !block_ids.contains(successor)) {
+                return typed_error(format!("typed entry '{}' block {} references a missing successor", entry.id, block.id));
+            }
+            for operation in &block.operations {
+                for destination in &operation.destinations {
+                    if !locals.contains_key(destination) {
+                        return typed_error(format!("typed operation '{}' defines unknown local {}", operation.opcode, destination));
+                    }
+                }
+                for operand in &operation.operands {
+                    if operand.ty.is_empty()
+                        || operand.local.is_some_and(|local_id| locals.get(&local_id).is_none_or(|local| local.ty != operand.ty))
+                    {
+                        return typed_error(format!("typed operation '{}' uses an unknown local or wrong type", operation.opcode));
+                    }
+                }
+                if let Some(call) = &operation.call
+                    && (call.target.is_empty()
+                        || call.contract.is_empty()
+                        || call.params.len() != operation.operands.len()
+                        || call
+                            .params
+                            .iter()
+                            .zip(&operation.operands)
+                            .any(|(param, operand)| canonical_abi_type(param) != canonical_abi_type(&operand.ty)))
+                {
+                    return typed_error(format!("typed call '{}' has an invalid signature contract", call.target));
+                }
+                if let Some(call) = &operation.call {
+                    match operation.destinations.as_slice() {
+                        [] if call.return_type != "unit" => {
+                            return typed_error(format!("typed call '{}' discards a non-unit return value", call.target));
+                        }
+                        [destination] if locals.get(destination).is_none_or(|local| local.ty != call.return_type) => {
+                            return typed_error(format!("typed call '{}' return type differs from its destination", call.target));
+                        }
+                        destinations if destinations.len() > 1 => {
+                            return typed_error(format!("typed call '{}' has multiple destinations", call.target));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        for borrow in &entry.borrows {
+            if borrow.root.is_empty()
+                || borrow.binding.is_empty()
+                || borrow.root_type.is_empty()
+                || !borrow.view_type.starts_with('&')
+                || borrow.escapes
+            {
+                return typed_error(format!("typed borrow '{} -> {}' is invalid or escaping", borrow.root, borrow.binding));
+            }
+        }
+        for ownership in &entry.ownership {
+            let valid = match ownership.operation.as_str() {
+                "read_ref" | "mutate" => ownership.initial_state == "available" && ownership.final_state == "available",
+                "consume" => ownership.initial_state == "available" && ownership.final_state == "consumed",
+                "destroy" => ownership.initial_state == "available" && ownership.final_state == "destroyed",
+                "transfer" => ownership.initial_state == "available" && ownership.final_state == "transferred",
+                "create" => ownership.initial_state == "unbound" && ownership.final_state == "available",
+                _ => false,
+            };
+            if !valid || ownership.binding.is_empty() || ownership.ty.is_empty() {
+                return typed_error(format!("typed ownership transition for '{}' is invalid", ownership.binding));
+            }
+        }
+        if entry.obligations.iter().any(|obligation| !proof_ids.contains(obligation.as_str())) {
+            return typed_error(format!("typed entry '{}' references an undischarged obligation", entry.id));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_effect(effect: &str) -> String {
+    effect.chars().filter(|character| character.is_ascii_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+fn canonical_abi_type(ty: &str) -> String {
+    let ty = ty.strip_prefix("&mut ").or_else(|| ty.strip_prefix('&')).unwrap_or(ty);
+    let base = ty.split_once('<').map_or(ty, |(base, _)| base);
+    let mut canonical = String::with_capacity(base.len());
+    let mut identifier = String::new();
+    let flush_identifier = |canonical: &mut String, identifier: &mut String| {
+        if identifier.is_empty() {
+            return;
+        }
+        canonical.push_str(match identifier.as_str() {
+            "Address" | "address" => "address",
+            "Hash" | "hash" => "hash",
+            "Bool" | "bool" => "bool",
+            "String" | "string" => "string",
+            value => value,
+        });
+        identifier.clear();
+    };
+    for character in base.chars() {
+        if character.is_ascii_alphanumeric() || character == '_' {
+            identifier.push(character);
+        } else {
+            flush_identifier(&mut canonical, &mut identifier);
+            if !character.is_ascii_whitespace() {
+                canonical.push(character);
+            }
+        }
+    }
+    flush_identifier(&mut canonical, &mut identifier);
+    canonical
+}
+
+fn typed_error(message: impl Into<String>) -> Result<(), CheckerError> {
+    Err(CheckerError::new(CheckerRejectionCode::V2419TypedSemanticsInvalid, message))
 }
 
 fn validate_record_graph(record: &VerifiedLoweringRecord, budgets: &CheckerBudgets) -> Result<(), CheckerError> {
@@ -1095,5 +1336,12 @@ mod tests {
         assert!(!safe_source_path("../main.cell"));
         assert!(!safe_source_path("/tmp/main.cell"));
         assert!(!safe_source_path("C:/main.cell"));
+    }
+
+    #[test]
+    fn canonical_abi_types_normalize_nested_builtin_names() {
+        assert_eq!(canonical_abi_type("[(Address, u64); 2]"), canonical_abi_type("[(address, u64); 2]"));
+        assert_eq!(canonical_abi_type("&[Hash; 4]"), canonical_abi_type("[hash; 4]"));
+        assert_ne!(canonical_abi_type("AddressBook"), canonical_abi_type("addressBook"));
     }
 }

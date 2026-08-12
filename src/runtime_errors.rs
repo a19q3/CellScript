@@ -63,6 +63,7 @@ pub enum CellScriptRuntimeError {
     PackedHashPreimageMaterializationUnresolved = 62,
     BoundedCellDepNotFound = 63,
     MerkleRootMismatch = 64,
+    ShiftAmountInvalid = 65,
 }
 
 impl CellScriptRuntimeError {
@@ -129,6 +130,7 @@ impl CellScriptRuntimeError {
             Self::PackedHashPreimageMaterializationUnresolved => "packed-hash-preimage-materialization-unresolved",
             Self::BoundedCellDepNotFound => "bounded-cell-dep-not-found",
             Self::MerkleRootMismatch => "merkle-root-mismatch",
+            Self::ShiftAmountInvalid => "shift-amount-invalid",
         }
     }
 
@@ -209,6 +211,7 @@ impl CellScriptRuntimeError {
                 "A bounded CellDep scan did not find the required data hash before reaching the declared scan limit."
             }
             Self::MerkleRootMismatch => "A bounded Merkle proof did not reconstruct the expected root.",
+            Self::ShiftAmountInvalid => "A runtime integer shift amount was greater than or equal to the left operand width.",
         }
     }
 
@@ -303,6 +306,7 @@ impl CellScriptRuntimeError {
                 "Check the expected data hash, resolved CellDep order, scan limit, and manifest-pinned DepGroup origin."
             }
             Self::MerkleRootMismatch => "Check leaf byte order, sibling order, depth, leaf index, hash algorithm, and expected root.",
+            Self::ShiftAmountInvalid => "Keep runtime shift amounts below the bit width of the shifted integer value.",
         }
     }
 
@@ -365,6 +369,7 @@ impl CellScriptRuntimeError {
             62 => Some(Self::PackedHashPreimageMaterializationUnresolved),
             63 => Some(Self::BoundedCellDepNotFound),
             64 => Some(Self::MerkleRootMismatch),
+            65 => Some(Self::ShiftAmountInvalid),
             _ => None,
         }
     }
@@ -436,6 +441,7 @@ pub const ALL_RUNTIME_ERRORS: &[CellScriptRuntimeError] = &[
     CellScriptRuntimeError::PackedHashPreimageMaterializationUnresolved,
     CellScriptRuntimeError::BoundedCellDepNotFound,
     CellScriptRuntimeError::MerkleRootMismatch,
+    CellScriptRuntimeError::ShiftAmountInvalid,
 ];
 
 pub const RESERVED_RUNTIME_ERROR_CODES: &[u64] = &[6, 19, 27, 28, 29, 30, 31];

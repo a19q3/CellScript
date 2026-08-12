@@ -43,6 +43,13 @@ drafts. Released versions should use non-draft filenames.
   candidate record for metadata schema 58, independently checked ELF/lowering
   evidence, executable package scenarios, and the least-privilege Registry
   artifact worker.
+- `docs/releases/CELLSCRIPT_0_25_RELEASE_NOTES.md` is the active implementation
+  record for bounded generics, public interfaces, typed-semantics verification,
+  executable-surface closure, and the upgraded Playground inspector.
+- `roadmap/CELLSCRIPT_0_25_ROADMAP.md` tracks the active language-completeness
+  implementation. Current metadata schema 60 adds deterministic public
+  interfaces and independently checked typed-semantics evidence on top of the
+  schema 59 value-generic instantiation records.
 
 Release candidates and planning notes should not live here unless they are the
 final release record.
@@ -81,6 +88,7 @@ High-value active references include:
 - `CELLSCRIPT_OUTPUT_BINDINGS.md`
 - `CELLSCRIPT_RUNTIME_ERROR_CODES.md`
 - `CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md`
+- `CELLSCRIPT_PUBLIC_INTERFACES.md`
 - `CELLSCRIPT_EXECUTABLE_TEST_SCENARIOS.md`
 - `CELLSCRIPT_MYELIN_0_24_HANDOFF.md`
 - `CELLSCRIPT_COMPILER_ERROR_CODES.md`

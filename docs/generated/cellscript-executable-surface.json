@@ -1,0 +1,553 @@
+{
+  "entries": [
+    {
+      "conditions": "One-byte unsigned scalar with checked source representability.",
+      "fail_closed_features": [],
+      "id": "type:u8",
+      "layer": "type",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Two-byte little-endian unsigned scalar.",
+      "fail_closed_features": [],
+      "id": "type:u16",
+      "layer": "type",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Four-byte little-endian unsigned scalar.",
+      "fail_closed_features": [],
+      "id": "type:u32",
+      "layer": "type",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Four-byte signed scalar with signed comparison, division, and remainder.",
+      "fail_closed_features": [],
+      "id": "type:i32",
+      "layer": "type",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Eight-byte little-endian unsigned scalar.",
+      "fail_closed_features": [],
+      "id": "type:u64",
+      "layer": "type",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Sixteen-byte value with full-range decimal literals plus checked add, subtract, multiply, divide, remainder, comparison, casts, calls, parameters, and returns.",
+      "fail_closed_features": [],
+      "id": "type:u128",
+      "layer": "type",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Canonical boolean scalar.",
+      "fail_closed_features": [],
+      "id": "type:bool",
+      "layer": "type",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Control-flow and no-value result marker.",
+      "fail_closed_features": [],
+      "id": "type:unit",
+      "layer": "type",
+      "production_policy": "not materialized as a runtime value",
+      "status": "compile-time-only"
+    },
+    {
+      "conditions": "Fixed 32-byte address value.",
+      "fail_closed_features": [],
+      "id": "type:Address",
+      "layer": "type",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Fixed 32-byte hash value.",
+      "fail_closed_features": [],
+      "id": "type:Hash",
+      "layer": "type",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Compile-time length and recursively fixed element layout.",
+      "fail_closed_features": [],
+      "id": "type:Array",
+      "layer": "type",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Struct, enum, and function templates monomorphize before IR under explicit value abilities, deterministic budgets, and hidden-Cell rejection.",
+      "fail_closed_features": [],
+      "id": "type:GenericValue",
+      "layer": "type",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Built-in Option<T> uses the ordinary fixed-width generic enum and tagged-union lowering path.",
+      "fail_closed_features": [],
+      "id": "type:Option",
+      "layer": "type",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Non-recursive aggregate with deterministic field offsets.",
+      "fail_closed_features": [],
+      "id": "type:Tuple",
+      "layer": "type",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Concrete struct, enum, or Cell schema with a deterministic metadata layout.",
+      "fail_closed_features": [],
+      "id": "type:Named",
+      "layer": "type",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Read-only view with field-path, canonical-root reborrow, lifecycle-crossing, and non-escape checks before lowering.",
+      "fail_closed_features": [],
+      "id": "type:Ref",
+      "layer": "type",
+      "production_policy": "not materialized as a runtime value",
+      "status": "compile-time-only"
+    },
+    {
+      "conditions": "No executable general mutable-reference ABI.",
+      "fail_closed_features": [],
+      "id": "type:MutRef",
+      "layer": "type",
+      "production_policy": "rejected by current semantic checks",
+      "status": "reserved"
+    },
+    {
+      "conditions": "Recursive fixed enum, tuple, and struct patterns plus binding-free or-patterns with exhaustiveness and linear wildcard checks.",
+      "fail_closed_features": [],
+      "id": "semantic:value-pattern",
+      "layer": "semantic",
+      "production_policy": "accepted",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Field-path and reborrow regions retain one canonical Cell root and cannot materialize, escape, or cross a lifecycle operation.",
+      "fail_closed_features": [],
+      "id": "semantic:borrow-region",
+      "layer": "semantic",
+      "production_policy": "not materialized as a runtime value",
+      "status": "compile-time-only"
+    },
+    {
+      "conditions": "Nearest and labeled break/continue targets lower to explicit CFG jumps after compile-time target validation.",
+      "fail_closed_features": [],
+      "id": "semantic:loop-control",
+      "layer": "semantic",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Materializes supported scalar and fixed-byte constants.",
+      "fail_closed_features": [],
+      "id": "ir:load-const",
+      "layer": "instruction",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Loads a checked local binding.",
+      "fail_closed_features": [],
+      "id": "ir:load-var",
+      "layer": "instruction",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Stores a checked local binding without changing Cell authority.",
+      "fail_closed_features": [],
+      "id": "ir:store-var",
+      "layer": "instruction",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Scalar arithmetic, bitwise, shifts, and complete u128 operators execute directly; dynamic shifts have width guards and fixed-byte equality requires addressable operands.",
+      "fail_closed_features": [
+        "fixed-byte-comparison"
+      ],
+      "id": "ir:binary",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Boolean not, scalar negation, and compile-time reference conversions.",
+      "fail_closed_features": [],
+      "id": "ir:unary",
+      "layer": "instruction",
+      "production_policy": "accepted",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Requires a fixed schema, aggregate pointer, or tuple-call-return layout.",
+      "fail_closed_features": [
+        "field-access"
+      ],
+      "id": "ir:field-access",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Fixed aggregates and bounded stack collections with known element layout.",
+      "fail_closed_features": [
+        "index-access"
+      ],
+      "id": "ir:index",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Static lengths or validated bounded collection length words.",
+      "fail_closed_features": [
+        "dynamic-length"
+      ],
+      "id": "ir:length",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Schema parameter or verified output Type Script hash.",
+      "fail_closed_features": [
+        "type-hash"
+      ],
+      "id": "ir:type-hash",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Bounded stack buffer or verifier-covered create-output vector.",
+      "fail_closed_features": [
+        "collection-new"
+      ],
+      "id": "ir:collection-new",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Bounded stack collection; hidden Cell ownership is rejected.",
+      "fail_closed_features": [
+        "collection-capacity",
+        "cell-backed-collection-capacity"
+      ],
+      "id": "ir:collection-capacity",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Fixed-width bounded value or verified output-vector construction.",
+      "fail_closed_features": [
+        "collection-push",
+        "cell-backed-collection-push"
+      ],
+      "id": "ir:collection-push",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Bounded fixed-width stack collection or verified output vector.",
+      "fail_closed_features": [
+        "collection-extend",
+        "cell-backed-collection-extend"
+      ],
+      "id": "ir:collection-extend",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Bounded stack collection only.",
+      "fail_closed_features": [
+        "collection-clear",
+        "cell-backed-collection-clear"
+      ],
+      "id": "ir:collection-clear",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Bounded stack collection with comparable fixed-width elements.",
+      "fail_closed_features": [
+        "collection-contains",
+        "cell-backed-collection-contains"
+      ],
+      "id": "ir:collection-contains",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Bounded stack collection with fixed-width elements.",
+      "fail_closed_features": [
+        "collection-remove",
+        "cell-backed-collection-remove"
+      ],
+      "id": "ir:collection-remove",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Bounded stack collection with checked capacity and index.",
+      "fail_closed_features": [
+        "collection-insert",
+        "cell-backed-collection-insert"
+      ],
+      "id": "ir:collection-insert",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Bounded stack collection with checked index.",
+      "fail_closed_features": [
+        "collection-set",
+        "cell-backed-collection-set"
+      ],
+      "id": "ir:collection-set",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Bounded stack collection with fixed-width result.",
+      "fail_closed_features": [
+        "collection-pop",
+        "cell-backed-collection-pop"
+      ],
+      "id": "ir:collection-pop",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Bounded stack collection with fixed-width elements.",
+      "fail_closed_features": [
+        "collection-reverse",
+        "cell-backed-collection-reverse"
+      ],
+      "id": "ir:collection-reverse",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Bounded stack collection with checked target length.",
+      "fail_closed_features": [
+        "collection-truncate",
+        "cell-backed-collection-truncate"
+      ],
+      "id": "ir:collection-truncate",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Bounded stack collection with checked indexes.",
+      "fail_closed_features": [
+        "collection-swap",
+        "cell-backed-collection-swap"
+      ],
+      "id": "ir:collection-swap",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Resolved typed callable with a closed ABI and effect summary.",
+      "fail_closed_features": [],
+      "id": "ir:call",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Explicit Input or CellDep read-only Cell view.",
+      "fail_closed_features": [],
+      "id": "ir:read-ref",
+      "layer": "instruction",
+      "production_policy": "accepted",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Typed local move; ownership validity is checked before lowering.",
+      "fail_closed_features": [],
+      "id": "ir:move",
+      "layer": "instruction",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Deterministic fixed aggregate construction.",
+      "fail_closed_features": [],
+      "id": "ir:tuple",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Concrete fixed-width payload enum construction, including pre-IR generic enum monomorphizations.",
+      "fail_closed_features": [],
+      "id": "ir:enum-construct",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Validated concrete payload enum tag.",
+      "fail_closed_features": [],
+      "id": "ir:enum-tag",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Fixed-width concrete enum payload field.",
+      "fail_closed_features": [],
+      "id": "ir:enum-payload",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Explicit Cell-backed input consumption.",
+      "fail_closed_features": [
+        "consume-expression",
+        "non-cell-consume"
+      ],
+      "id": "ir:consume",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Output construction covered by create-set verification.",
+      "fail_closed_features": [],
+      "id": "ir:create",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Verifier-covered output construction and lock replacement.",
+      "fail_closed_features": [
+        "transfer-expression"
+      ],
+      "id": "ir:transfer",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Explicit destructible Cell-backed operand.",
+      "fail_closed_features": [
+        "destroy-expression"
+      ],
+      "id": "ir:destroy",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Verifier-covered receipt claim output.",
+      "fail_closed_features": [
+        "claim-expression"
+      ],
+      "id": "ir:claim",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Verifier-covered settlement output.",
+      "fail_closed_features": [
+        "settle-expression"
+      ],
+      "id": "ir:settle",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Verifier-covered output plus executable identity policy.",
+      "fail_closed_features": [
+        "create-unique-expression"
+      ],
+      "id": "ir:create-unique",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Verifier-covered replacement plus executable identity policy.",
+      "fail_closed_features": [
+        "replace-unique-expression"
+      ],
+      "id": "ir:replace-unique",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Lock-hash or capacity equality over validated Cell views.",
+      "fail_closed_features": [],
+      "id": "ir:cell-metadata-equality",
+      "layer": "instruction",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "All constructed output fields and output lock must be materializable by the verifier.",
+      "fail_closed_features": [
+        "output-verification-incomplete",
+        "output-lock-verification-incomplete"
+      ],
+      "id": "artifact:create-output-verification",
+      "layer": "artifact-policy",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "shape-gated"
+    },
+    {
+      "conditions": "Returning a hidden Cell-backed collection has no linear ownership ABI.",
+      "fail_closed_features": [
+        "cell-backed-collection-return"
+      ],
+      "id": "artifact:cell-backed-collection-return",
+      "layer": "artifact-policy",
+      "production_policy": "rejected by production policy",
+      "status": "reserved"
+    }
+  ],
+  "schema": "cellscript-executable-surface-v1"
+}

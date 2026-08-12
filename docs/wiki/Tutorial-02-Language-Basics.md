@@ -54,6 +54,9 @@ syntax forms you will see in the examples:
 | `create out = T { ... }` | Constraint on a named proposed output Cell. |
 | `require condition, "message"` | Action or lock verifier guard with an optional message. |
 | `let mut xs: Vec<Hash> = []` | Typed empty local `Vec<T>` literal. |
+| `struct Pair<T: fixed + serializable + non_linear>` | Fixed-width non-Cell value template. |
+| `fn identity<T: copy + drop>(value: T) -> T` | Value-generic helper with explicit constraints. |
+| `Option::Some<u64>(value)` | Built-in generic optional value through the ordinary enum kernel. |
 
 Names such as `old`, `new`, `input`, and `output` are ordinary bindings. The
 semantics come from the action side, source qualifier, `transition`, `create`, and
@@ -103,6 +106,7 @@ Common field and parameter types include:
 u8
 u16
 u32
+i32
 u64
 u128
 bool
@@ -117,7 +121,7 @@ schema or CKB data layout.
 ### Expression-local Unsigned Widening
 
 CellScript supports expression-local primitive unsigned integer widening for
-arithmetic and numeric comparison:
+arithmetic, bitwise operations, and numeric comparison:
 
 ```text
 let total: u64 = amount_u64 + fee_u16
@@ -135,6 +139,10 @@ Integer literals may be context-typed by an expected primitive integer type:
 let byte: u8 = 1
 ```
 
+Decimal literals preserve every value through `u128::MAX`. A literal larger
+than the target type is rejected at compile time instead of being truncated;
+values above `u128::MAX` are rejected by the lexer.
+
 Non-literal numeric values must keep their actual width at boundaries:
 
 ```text
@@ -143,9 +151,29 @@ let explicit: u64 = amount16 as u64 // accepted
 ```
 
 Compound assignment is a write boundary. `target += rhs` is valid only when
-`rhs` is the same width as, or narrower than, `target`. Generic `u128`
-arithmetic and ordering remain unsupported except for explicitly implemented
-`u128` delta or equality paths.
+`rhs` is the same width as, or narrower than, `target`. `u128` supports checked
+add, subtract, multiply, divide, remainder, comparison, calls, parameters, and
+returns.
+
+### Bitwise and shift operators
+
+The integer operators `&`, `|`, `^`, `<<`, and `>>` preserve the type and
+width of the left value. Shift counts use `u8`, `u16`, `u32`, or `u64` (or
+`usize`). A literal count must be smaller than the value width; a dynamic count
+is checked in the generated Script and exits with stable runtime code 65
+(`shift-amount-invalid`) when it is out of range.
+
+```cellscript
+let masked: u64 = flags & 255
+let selected: u64 = (flags & mask) | fallback
+let high: u128 = value << 64
+let signed_quarter: i32 = signed_value >> 2
+```
+
+Right shift is logical for unsigned integers and arithmetic for `i32`.
+Narrow-width left shifts truncate back to their declared width. Parenthesize a
+bitwise expression before comparing it, for example
+`(flags & required) == required`.
 
 ### Named Integer Boundaries
 
@@ -213,7 +241,59 @@ create token = Token {
 
 The shorthand is exactly `field: field`; it does not infer or rename fields.
 
-## Concrete Payload Enums
+## Value Generics And Abilities
+
+The 0.25 value kernel supports type parameters on ordinary structs, enums, and
+pure functions. It specializes every used template before type checking and IR
+lowering, so the backend sees only deterministic concrete types.
+
+```cellscript
+struct Pair<T: copy + drop + store + fixed + serializable + non_linear>
+    has copy, drop, store, fixed, serializable, non_linear
+{
+    left: T
+    right: T
+}
+
+fn first<T: copy + drop + fixed + serializable + non_linear>(pair: Pair<T>) -> T {
+    return pair.left
+}
+```
+
+Function type arguments may be explicit (`first<u64>(pair)`) or inferred from
+typed arguments when there is one unambiguous substitution. Struct and enum
+construction stays explicit so source review always shows the layout identity.
+
+Value abilities are a separate vocabulary from Cell lifecycle capabilities:
+
+- `copy` permits local duplication;
+- `drop` permits a local value to be discarded;
+- `store` permits inclusion in another ordinary value layout;
+- `fixed` requires a deterministic fixed byte width;
+- `serializable` requires a supported canonical encoding;
+- `non_linear` states that the argument is not a Cell-backed linear value;
+- `cell` is an explicit generic-function constraint for Cell-backed values; it
+  does not grant `create`, `consume`, `replace`, or other lifecycle authority.
+
+Ordinary generic structs and enums require non-phantom arguments to be fixed,
+serializable, and non-linear. `Pair<Token>` is therefore rejected when `Token`
+is a `resource`, `shared`, or `receipt`; use an explicit bounded Cell primitive
+and its ownership rules instead.
+
+A phantom parameter affects type identity without occupying serialized bytes:
+
+```cellscript
+struct Tagged<phantom Asset> has copy, drop, store, fixed, serializable, non_linear {
+    value: u64
+}
+```
+
+`Tagged<AssetA>` and `Tagged<AssetB>` are different monomorphizations with the
+same one-field layout. A phantom parameter appearing in a field type is a
+compile error. `cellc explain generics <INPUT>` lists canonical identities,
+arguments, constraint status, and the separate bounded collection instances.
+
+## Fixed-Width Payload Enums
 
 Concrete, fixed-width payload variants were introduced on the 0.22 line and
 remain supported by the current compiler:
@@ -244,11 +324,47 @@ the selected variant, padded to the enum's maximum fixed width. Metadata under
 boundary, and ABI. A pure helper may return an encoded enum of at most 16 bytes
 through the `a0`/`a1` register pair.
 
-Payloads using `Vec`, maps, another variable-width shape, recursion, or generic
-parameters are rejected. `enum Option<T>` and `enum Result<T, E>` remain
-deferred. A payload containing a Cell is local-only and linear: bind it in the
-matching arm and explicitly consume, borrow, preserve, or otherwise discharge
-it; `_` cannot discard it.
+Payloads using `Vec`, maps, another variable-width shape, or recursion are
+rejected. Generic enum templates are supported when every materialized argument
+uses the fixed-width non-Cell value kernel. `Option<T>` is built in through this
+same enum path rather than a special runtime representation:
+
+```cellscript
+let optional: Option<u64> = Option::Some<u64>(42)
+```
+
+A concrete non-generic enum may still contain a Cell payload for tracked local
+linear flows; bind it in the matching arm and explicitly consume, borrow,
+preserve, or otherwise discharge it. Ordinary generic enum layouts never hide
+Cell ownership, and `_` cannot discard a linear value.
+
+### Complete fixed-value patterns
+
+The 0.25 pattern kernel recursively checks and lowers tuple, struct, and enum
+payload patterns. Binding-free or-patterns share one arm; exhaustiveness is
+checked over the outer enum, and an irrefutable binding, struct/tuple pattern,
+or `_` must be last:
+
+```cellscript
+match outer {
+    Outer::Wrapped(Inner::Some((left, right))) => left + right,
+    _ => 0,
+}
+
+match point {
+    Point { x, y } => x + y,
+}
+
+match switch {
+    Switch::On | Switch::Unknown => 1,
+    Switch::Off => 0,
+}
+```
+
+Struct patterns name every serialized field so that layout changes cannot be
+silently ignored. Or-pattern alternatives are intentionally binding-free in
+the 0.25 kernel; use separate arms when an alternative must expose payload
+bindings. A wildcard at any level cannot discard a linear Cell-backed value.
 
 ## Typed Vec Literals
 
@@ -347,6 +463,23 @@ untyped/generic slot, or used across `consume`, `destroy`, transfer, claim, or
 settle of `token`. Calls that receive it must be `Pure` or `ReadOnly` functions
 with an explicit `&Token` parameter. The block does not replace the
 transaction's explicit consume/create lifecycle.
+
+Borrow paths and read-only reborrows keep the same linear root:
+
+```cellscript
+borrow token.amount as amount_view {
+    borrow amount_view as again {
+        require *again > 0
+    }
+}
+```
+
+The metadata records the canonical root (`token`), the field path
+(`amount`), and `View<u64>` for both regions. Dereferencing is allowed only
+for non-Cell values; a Cell-backed value cannot be copied out through a view.
+Destroying, consuming, or replacing `token` anywhere inside either region is
+rejected. Generic Pure/ReadOnly helpers may receive a view only through an
+explicit matching `&T` parameter and do not inherit Cell lifecycle authority.
 
 Persistent declarations can also declare the default CKB script hash type used
 for their type identity metadata:

@@ -23,12 +23,14 @@ stream, not consensus truth. ProofPlan rows, TemplateLayout records, receipts,
 constraints, ABI, and builder assumptions explain what the compiler emitted and
 what remains to be checked by builders or CKB nodes.
 
-For the current 0.24 development line, inspect current metadata schema 58 under
+For the current 0.25 development line, inspect current metadata schema 60 under
 Edition 2026 and the resolved compatibility profile, together with the canonical
 lowering record and source map for CKB ELF builds. Typed transaction views, bounded
 quantifiers/collections, capability proofs, enum layouts, validity predicates,
 borrow regions, and `fungible-type-group-v1` evidence introduced on the 0.22
-line remain part of that evidence stream.
+line remain part of that evidence stream. The 0.25 value-generic kernel adds
+`generic_instantiations` with canonical source identities, concrete internal
+names, type arguments, and the closed value-ability registry.
 
 Distinguish evidence states precisely: compile-only, metadata-only,
 runtime-required, helper-backed, builder-backed, node dry-run, tx-pool accepted,

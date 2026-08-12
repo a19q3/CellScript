@@ -171,6 +171,9 @@ impl ModuleResolver {
 
     pub fn resolve_type(&self, module: &str, name: &str) -> Option<TypeDef> {
         if let Some((target_module, symbol)) = name.rsplit_once("::") {
+            if !self.symbol_accessible(module, target_module, symbol) {
+                return None;
+            }
             return self.symbol_tables.get(target_module).and_then(|table| table.types.get(symbol).cloned());
         }
 
@@ -181,6 +184,9 @@ impl ModuleResolver {
 
             if let Some(full_path) = table.imported.get(name) {
                 if let Some((target_module, symbol)) = full_path.rsplit_once("::") {
+                    if !self.symbol_accessible(module, target_module, symbol) {
+                        return None;
+                    }
                     return self.symbol_tables.get(target_module).and_then(|target_table| target_table.types.get(symbol).cloned());
                 }
             }
@@ -195,6 +201,9 @@ impl ModuleResolver {
 
     pub fn resolve_function_with_module(&self, module: &str, name: &str) -> Option<(String, FunctionDef)> {
         if let Some((target_module, symbol)) = name.rsplit_once("::") {
+            if !self.symbol_accessible(module, target_module, symbol) {
+                return None;
+            }
             return self
                 .symbol_tables
                 .get(target_module)
@@ -208,6 +217,9 @@ impl ModuleResolver {
 
             if let Some(full_path) = table.imported.get(name) {
                 if let Some((target_module, symbol)) = full_path.rsplit_once("::") {
+                    if !self.symbol_accessible(module, target_module, symbol) {
+                        return None;
+                    }
                     if let Some(target_table) = self.symbol_tables.get(target_module) {
                         return target_table.functions.get(symbol).cloned().map(|function| (target_module.to_string(), function));
                     }
@@ -224,6 +236,9 @@ impl ModuleResolver {
 
     pub fn resolve_constant_with_module(&self, module: &str, name: &str) -> Option<(String, ConstantDef)> {
         if let Some((target_module, symbol)) = name.rsplit_once("::") {
+            if !self.symbol_accessible(module, target_module, symbol) {
+                return None;
+            }
             return self
                 .symbol_tables
                 .get(target_module)
@@ -237,6 +252,9 @@ impl ModuleResolver {
 
             if let Some(full_path) = table.imported.get(name) {
                 if let Some((target_module, symbol)) = full_path.rsplit_once("::") {
+                    if !self.symbol_accessible(module, target_module, symbol) {
+                        return None;
+                    }
                     if let Some(target_table) = self.symbol_tables.get(target_module) {
                         return target_table.constants.get(symbol).cloned().map(|constant| (target_module.to_string(), constant));
                     }
@@ -279,10 +297,10 @@ impl ModuleResolver {
         let mut symbols = Vec::new();
 
         if let Some(table) = self.symbol_tables.get(module) {
-            for name in table.types.keys() {
+            for name in table.types.keys().filter(|name| self.symbol_is_exported(module, name)) {
                 symbols.push(name.clone());
             }
-            for name in table.functions.keys() {
+            for name in table.functions.keys().filter(|name| self.symbol_is_exported(module, name)) {
                 symbols.push(name.clone());
             }
         }
@@ -310,10 +328,25 @@ impl ModuleResolver {
                         import.span,
                     ));
                 }
+                if !self.symbol_accessible(module, &target_module, &import.name) {
+                    return Err(CompileError::new(
+                        format!("symbol '{}' imported by '{}' is private in module '{}'", import.name, module, target_module),
+                        import.span,
+                    ));
+                }
             }
         }
 
         Ok(())
+    }
+
+    fn symbol_accessible(&self, requester: &str, owner: &str, symbol: &str) -> bool {
+        requester == owner
+            || self.modules.get(owner).is_some_and(|module| !matches!(module.visibility_of(symbol), Visibility::Private))
+    }
+
+    fn symbol_is_exported(&self, owner: &str, symbol: &str) -> bool {
+        self.modules.get(owner).is_some_and(|module| module.visibility_of(symbol).is_exported())
     }
 
     pub fn resolve_qualified_name(&self, path: &[String]) -> Option<ResolvedName> {
@@ -373,6 +406,24 @@ impl PathResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{lexer, parser};
+
+    fn source_module(source: &str) -> Module {
+        parser::parse(&lexer::lex(source).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn private_symbols_are_not_importable_but_package_symbols_are() {
+        let mut resolver = ModuleResolver::new();
+        resolver
+            .register_module(source_module(
+                "module library\nprivate struct Secret { value: u64, }\npublic(package) struct Shared { value: u64, }\n",
+            ))
+            .unwrap();
+        resolver.register_module(source_module("module consumer\nuse library::Secret\nuse library::Shared\n")).unwrap();
+        let error = resolver.validate_imports().unwrap_err();
+        assert!(error.message.contains("Secret") && error.message.contains("private"));
+    }
 
     #[test]
     fn test_module_resolver() {
@@ -380,6 +431,8 @@ mod tests {
 
         let module = Module {
             name: "test".to_string(),
+            interface_templates: Vec::new(),
+            visibilities: Default::default(),
             items: vec![Item::Resource(ResourceDef {
                 name: "Token".to_string(),
                 type_id: None,
@@ -407,6 +460,8 @@ mod tests {
         resolver
             .register_module(Module {
                 name: "cellscript::fungible_token".to_string(),
+                interface_templates: Vec::new(),
+                visibilities: Default::default(),
                 items: vec![
                     Item::Resource(ResourceDef {
                         name: "Token".to_string(),
@@ -438,6 +493,8 @@ mod tests {
         resolver
             .register_module(Module {
                 name: "cellscript::launch".to_string(),
+                interface_templates: Vec::new(),
+                visibilities: Default::default(),
                 items: vec![Item::Use(UseStmt {
                     module_path: vec!["cellscript".to_string(), "fungible_token".to_string()],
                     imports: vec![
@@ -460,6 +517,8 @@ mod tests {
         let err = resolver
             .register_module(Module {
                 name: "test".to_string(),
+                interface_templates: Vec::new(),
+                visibilities: Default::default(),
                 items: vec![
                     Item::Resource(ResourceDef {
                         name: "Token".to_string(),
@@ -499,6 +558,8 @@ mod tests {
         resolver
             .register_module(Module {
                 name: "cellscript::token".to_string(),
+                interface_templates: Vec::new(),
+                visibilities: Default::default(),
                 items: vec![Item::Resource(ResourceDef {
                     name: "Token".to_string(),
                     type_id: None,
@@ -517,6 +578,8 @@ mod tests {
         let err = resolver
             .register_module(Module {
                 name: "app".to_string(),
+                interface_templates: Vec::new(),
+                visibilities: Default::default(),
                 items: vec![
                     Item::Use(UseStmt {
                         module_path: vec!["cellscript".to_string(), "token".to_string()],
@@ -525,6 +588,8 @@ mod tests {
                     }),
                     Item::Struct(StructDef {
                         name: "Token".to_string(),
+                        type_params: Vec::new(),
+                        abilities: Vec::new(),
                         type_id: None,
                         default_hash_type: None,
                         capacity_floor: None,

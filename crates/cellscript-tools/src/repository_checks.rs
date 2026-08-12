@@ -191,6 +191,7 @@ pub fn check_doc_status(root: &Path) -> Result<()> {
             "CELLSCRIPT_0_23_RELEASE_NOTES.md",
             "CELLSCRIPT_0_24_RELEASE_NOTES.md",
             "CELLSCRIPT_0_24_ROADMAP.md",
+            "CELLSCRIPT_0_25_ROADMAP.md",
             "CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md",
         ],
         &[],
@@ -199,9 +200,20 @@ pub fn check_doc_status(root: &Path) -> Result<()> {
     for relative in ["docs/CELLSCRIPT_RUNTIME_ERROR_CODES.md", "docs/wiki/Tutorial-06-Metadata-Verification-and-Production-Gates.md"] {
         check_document_contract(root, relative, &[current_schema.as_str()], &["current schema 55"], &mut failures)?;
     }
-    for relative in ["docs/skills/cellscript-metadata-audit/SKILL.md", "docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md"] {
-        check_document_contract(root, relative, &[schema_number.as_str()], &["metadata schema 57"], &mut failures)?;
-    }
+    check_document_contract(
+        root,
+        "docs/skills/cellscript-metadata-audit/SKILL.md",
+        &[schema_number.as_str(), "0.25 development line", "generic_instantiations"],
+        &["current 0.24 development line", "metadata schema 57"],
+        &mut failures,
+    )?;
+    check_document_contract(
+        root,
+        "docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md",
+        &["metadata schema 58"],
+        &["metadata schema 57", "metadata schema 60"],
+        &mut failures,
+    )?;
     check_document_contract(
         root,
         "docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md",

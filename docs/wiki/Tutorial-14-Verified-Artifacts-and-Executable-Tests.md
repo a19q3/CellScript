@@ -1,9 +1,15 @@
 # Tutorial 14: Verified Artifacts and Executable Tests
 
-CellScript 0.24 adds two related boundaries: a standalone checker for generated
+CellScript 0.24 added two related boundaries: a standalone checker for generated
 CKB ELF bundles, and package scenarios that must name and run an execution
 backend. Together they make more compiler claims independently inspectable
 without calling local execution chain evidence.
+
+The 0.25 line extends the same four-file bundle with
+`cellscript-typed-semantics-v1` inside lowering record v2. The checker now
+recomputes the typed record and its connection to entry ABI and final machine
+blocks; failures use stable `V2419` and `V2420` codes. It still keeps
+`semantic_equivalence_claimed = false`.
 
 ## Build the Four-File Bundle
 
@@ -24,8 +30,9 @@ build/main.elf.lowering.json
 build/main.elf.sourcemap.json
 ```
 
-The lowering record is a canonical, versioned boundary over entries, basic
-blocks, CFG and call edges, ABI and stack declarations, ProofPlan links,
+The lowering record is a canonical, versioned boundary over typed types,
+locals, operations, calls, effects, ownership and borrows; entries, basic
+blocks, CFG and call edges; ABI and stack declarations; ProofPlan links,
 syscalls, runtime-error exits, and final machine ranges. The source map connects
 source spans and lowering blocks to those final instruction ranges. All four
 files bind the same source, resolved compatibility profile, and artifact.

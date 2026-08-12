@@ -4923,13 +4923,14 @@ action issue(digest: Hash) -> Fingerprint {
     assert!(!output.status.success(), "unexpected success: {}", String::from_utf8_lossy(&output.stdout));
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("check policy failed"), "unexpected stderr: {}", stderr);
+    assert!(stderr.contains("error[E2105]"), "unexpected stderr: {}", stderr);
+    assert!(stderr.contains("stopped before codegen"), "unexpected stderr: {}", stderr);
     assert!(stderr.contains("output-verification-incomplete"), "unexpected stderr: {}", stderr);
     assert!(stderr.contains("fail-closed"), "unexpected stderr: {}", stderr);
 }
 
 #[test]
-fn cellc_errors_include_runtime_ecode_when_policy_failure_maps_to_runtime_registry() {
+fn cellc_errors_include_compiler_ecode_when_surface_is_rejected_before_codegen() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
 
@@ -4963,9 +4964,10 @@ action append_schema_vec(items: Vec<Address>, owner: Address) -> u64 {
     assert!(!output.status.success(), "unexpected success: {}", String::from_utf8_lossy(&output.stdout));
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("error[E0024]"), "unexpected stderr: {}", stderr);
-    assert!(stderr.contains("cellc explain E0024"), "unexpected stderr: {}", stderr);
-    assert!(stderr.contains("collection-runtime-unsupported"), "unexpected stderr: {}", stderr);
+    assert!(stderr.contains("error[E2105]"), "unexpected stderr: {}", stderr);
+    assert!(stderr.contains("cellc explain E2105"), "unexpected stderr: {}", stderr);
+    assert!(stderr.contains("collection-push"), "unexpected stderr: {}", stderr);
+    assert!(stderr.contains("stopped before codegen"), "unexpected stderr: {}", stderr);
 }
 
 #[test]
@@ -5013,7 +5015,8 @@ action issue(digest: Hash) -> Fingerprint {
     assert!(!output.status.success(), "unexpected success: {}", String::from_utf8_lossy(&output.stdout));
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("check policy failed"), "unexpected stderr: {}", stderr);
+    assert!(stderr.contains("error[E2105]"), "unexpected stderr: {}", stderr);
+    assert!(stderr.contains("stopped before codegen"), "unexpected stderr: {}", stderr);
     assert!(stderr.contains("output-verification-incomplete"), "unexpected stderr: {}", stderr);
     assert!(stderr.contains("fail-closed"), "unexpected stderr: {}", stderr);
 }
@@ -6282,7 +6285,8 @@ action issue(digest: Hash) -> Fingerprint {
     assert!(!output.status.success(), "unexpected success: {}", String::from_utf8_lossy(&output.stdout));
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("check policy failed"), "unexpected stderr: {}", stderr);
+    assert!(stderr.contains("error[E2105]"), "unexpected stderr: {}", stderr);
+    assert!(stderr.contains("stopped before codegen"), "unexpected stderr: {}", stderr);
     assert!(stderr.contains("output-verification-incomplete"), "unexpected stderr: {}", stderr);
 }
 
@@ -6339,6 +6343,49 @@ action issue(digest: Hash) -> Fingerprint {
     assert!(stderr.contains("CKB runtime features"), "unexpected stderr: {}", stderr);
     assert!(!root.join("build").join("main.s").exists());
     assert!(!root.join("build").join("main.s.meta.json").exists());
+}
+
+#[test]
+fn cellc_build_production_accepts_closed_u128_modulo_lowering() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cell.toml"),
+        r#"
+[package]
+edition = "2026"
+name = "demo"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src").join("main.cell"),
+        r#"
+module demo::main
+
+fn mod128(left: u128, right: u128) -> u128 {
+    return left % right
+}
+
+action remainder(left: u128, right: u128) -> u128 {
+    verification
+        return mod128(left, right)
+}
+"#,
+    )
+    .unwrap();
+
+    let metadata = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("metadata").output().unwrap();
+    assert!(metadata.status.success(), "metadata-only analysis failed: {}", String::from_utf8_lossy(&metadata.stderr));
+    assert!(!String::from_utf8_lossy(&metadata.stdout).contains("u128-modulo"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").arg("--production").output().unwrap();
+    assert!(output.status.success(), "unexpected failure: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(root.join("build").join("main.s").exists());
+    assert!(root.join("build").join("main.s.meta.json").exists());
 }
 
 #[test]

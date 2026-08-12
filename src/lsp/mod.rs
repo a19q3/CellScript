@@ -368,6 +368,9 @@ impl LspServer {
             ("const", "const ${1:NAME}: ${2:u64} = $0;"),
             ("enum", "enum ${1:Name} {\n    $0\n}"),
             ("use", "use ${1:path};"),
+            ("public", "public ${1:fn}"),
+            ("private", "private ${1:fn}"),
+            ("public(package)", "public(package) ${1:fn}"),
         ]
         .into_iter()
         .map(|(label, insert)| CompletionItem {
@@ -428,7 +431,8 @@ impl LspServer {
                                 format!("enum variant {}::{}({})", enum_def.name, variant.name, payload.join(", "))
                             }),
                             documentation: (!payload.is_empty()).then(|| {
-                                "Concrete fixed-width payload constructor; generic and variable-width payload ADTs remain deferred.".to_string()
+                                "Fixed-width payload constructor; generic enum templates specialize to the same checked layout before IR."
+                                    .to_string()
                             }),
                             insert_text: Some(insert_text),
                         }
@@ -998,6 +1002,9 @@ impl LspServer {
             ("if", "if ${1:condition} {\n    $0\n}"),
             ("for", "for ${1:item} in ${2:iterable} {\n    $0\n}"),
             ("while", "while ${1:condition} {\n    $0\n}"),
+            ("label", "label ${1:name}: ${2:while} ${3:condition} {\n    $0\n}"),
+            ("break", "break${1: label}"),
+            ("continue", "continue${1: label}"),
             ("borrow", "borrow ${1:root} as ${2:view} {\n    $0\n}"),
             ("return", "return $0"),
             ("create", "create ${1:output} = ${2:Type} { $0 }"),
@@ -1061,6 +1068,7 @@ impl LspServer {
             "Address",
             "Hash",
             "Bytes",
+            "Option",
             "Vec",
             "BoundedCellSet",
             "BoundedList",
@@ -1480,7 +1488,13 @@ impl LspServer {
                 range: Some(range),
             }),
             Item::Struct(s) => Some(Hover {
-                contents: format!("```cellscript\nstruct {}\n```{}", s.name, type_validity_hover(&s.name, metadata)),
+                contents: format!(
+                    "```cellscript\nstruct {}{}{}\n```{}",
+                    s.name,
+                    generic_params_hover(&s.type_params),
+                    value_abilities_hover(&s.abilities),
+                    type_validity_hover(&s.name, metadata)
+                ),
                 range: Some(range),
             }),
             Item::Enum(e) => Some(Hover { contents: payload_enum_hover(e, metadata), range: Some(range) }),
@@ -1495,8 +1509,9 @@ impl LspServer {
             }),
             Item::Function(f) => Some(Hover {
                 contents: format!(
-                    "```cellscript\nfn {}\n```\n\n{}{}",
+                    "```cellscript\nfn {}{}\n```\n\n{}{}",
                     f.name,
+                    generic_params_hover(&f.type_params),
                     f.doc_comment.as_deref().unwrap_or("No documentation"),
                     function_metadata_hover(&f.name, f, metadata)
                 ),
@@ -2288,6 +2303,7 @@ fn stmt_span(stmt: &Stmt) -> Span {
         Stmt::If(s) => s.span,
         Stmt::For(s) => s.span,
         Stmt::While(s) => s.span,
+        Stmt::Break(s) | Stmt::Continue(s) => s.span,
         Stmt::Borrow(s) => s.span,
         Stmt::Expr(_) => Span::default(),
     }
@@ -2428,7 +2444,13 @@ fn payload_enum_hover(enum_def: &EnumDef, metadata: Option<&crate::CompileMetada
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let mut hover = format!("```cellscript\nenum {} {{ {} }}\n```", enum_def.name, variants);
+    let mut hover = format!(
+        "```cellscript\nenum {}{}{} {{ {} }}\n```",
+        enum_def.name,
+        generic_params_hover(&enum_def.type_params),
+        value_abilities_hover(&enum_def.abilities),
+        variants
+    );
     if let Some(layout) = metadata.and_then(|metadata| metadata.enum_layouts.iter().find(|layout| layout.name == enum_def.name)) {
         hover.push_str(&format!(
             "\n\n**Layout metadata**\n\nLayout: `{}`\n\nABI: `{}`\n\nStorage: `{}`\n\nTag: `{}` byte\n\nEncoded size: `{}` bytes\n\nLinear payload: `{}`",
@@ -2440,9 +2462,38 @@ fn payload_enum_hover(enum_def: &EnumDef, metadata: Option<&crate::CompileMetada
             layout.contains_linear_payload
         ));
     } else if enum_def.variants.iter().any(|variant| !variant.fields.is_empty()) {
-        hover.push_str("\n\nConcrete fixed-width payload enum; generic and variable-width payload ADTs are deferred.");
+        hover.push_str("\n\nFixed-width payload enum; generic templates use deterministic pre-IR monomorphization.");
     }
     hover
+}
+
+fn generic_params_hover(params: &[TypeParam]) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    format!(
+        "<{}>",
+        params
+            .iter()
+            .map(|param| {
+                let mut value = if param.phantom { format!("phantom {}", param.name) } else { param.name.clone() };
+                if !param.constraints.is_empty() {
+                    value.push_str(": ");
+                    value.push_str(&param.constraints.iter().map(|ability| ability.as_str()).collect::<Vec<_>>().join(" + "));
+                }
+                value
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn value_abilities_hover(abilities: &[ValueAbility]) -> String {
+    if abilities.is_empty() {
+        String::new()
+    } else {
+        format!(" has {}", abilities.iter().map(|ability| ability.as_str()).collect::<Vec<_>>().join(", "))
+    }
 }
 
 fn type_validity_hover(name: &str, metadata: Option<&crate::CompileMetadata>) -> String {
@@ -2856,6 +2907,9 @@ mod tests {
         assert!(keywords.iter().any(|k| k.label == "count"));
         assert!(keywords.iter().any(|k| k.label == "consume_each"));
         assert!(keywords.iter().any(|k| k.label == "create_each"));
+        assert!(keywords.iter().any(|k| k.label == "break"));
+        assert!(keywords.iter().any(|k| k.label == "continue"));
+        assert!(keywords.iter().any(|k| k.label == "label"));
         assert!(!keywords.iter().any(|k| k.label == "transfer"));
         assert!(keywords.iter().any(|k| k.label == "std::cell::same_lock"));
         assert!(keywords.iter().any(|k| k.label == "std::cell::preserve_capacity"));

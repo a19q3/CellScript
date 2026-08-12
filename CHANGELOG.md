@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Begin the 0.25 language-completeness implementation with a compiler-owned
+  executable-surface registry, pre-codegen production rejection, full-range
+  `u128` decimal literals, integer bitwise/shift lowering, and exact scalar and
+  wide division-by-zero guards. Add the parameterized non-Cell value kernel:
+  explicit struct/enum/function parameters, value abilities separate from Cell
+  lifecycle capabilities, phantom identity rules, deterministic bounded
+  monomorphization before IR, built-in `Option<T>`, generic fixed arrays,
+  metadata and `cellc explain generics`, editor/Playground highlighting, and
+  CKB-VM execution evidence. Ordinary generic layouts continue to reject
+  Cell-backed values. Add recursive enum/tuple/struct patterns and binding-free
+  or-patterns, and close the fixed tuple/array materialization and projection
+  paths required for nested payload patterns to execute in CKB-VM. Extend
+  explicit Cell borrows with field paths and canonical-root read-only
+  reborrowing while preserving non-escape and lifecycle-crossing rejection.
+  Add explicit public/package/private visibility, canonical package interfaces,
+  six-dimensional interface compatibility with stable E2501 rejection,
+  Registry interface/hash admission, metadata schema 60 typed-semantics records,
+  lowering-record v2 and independent V2419/V2420 typed-to-machine checks. Add
+  labeled break/continue CFG lowering and CKB-VM evidence. Upgrade the VS Code
+  grammar and Playground highlighting, and show interface and typed-semantics
+  identities in the Playground Inspector.
+
 - Ship the 0.24 package and Registry trust closure, informed by Sui Move's
   package-alt separation of resolution from compilation. Replace permissive
   custom version checks with standard SemVer; make `Cell.lock` v3 a

@@ -1,12 +1,13 @@
 # CellScript Verified Artifact Boundary
 
-**Status**: implemented on the 0.24 development line
+**Status**: typed boundary implemented on the 0.25 development line
 
-**Schemas**: `cellscript-verified-lowering-record-v1`,
+**Schemas**: `cellscript-verified-lowering-record-v2`,
+`cellscript-typed-semantics-v1`,
 `cellscript-source-artifact-map-v1`, and
 `cellscript-artifact-checker-policy-v1`
 
-**Metadata schema**: 58
+**Metadata schema**: 60
 
 ## Purpose
 
@@ -20,14 +21,17 @@ build/main.elf.lowering.json
 build/main.elf.sourcemap.json
 ```
 
-The lowering record is a stable audit boundary between typed compilation and
-final machine layout. The source map binds source spans and lowering block IDs
-to final instruction ranges. Both are hash-bound into compile metadata and are
-validated immediately after compilation.
+The typed semantic record retains checked types, locals, calls, effects,
+ownership, borrow regions, concrete generic instantiations, layouts, and CFG
+operations in a parser-free schema. Lowering record v2 embeds that record and
+binds it to the final machine layout. The source map binds source spans and
+lowering block IDs to final instruction ranges. All records are hash-bound into
+compile metadata and validated immediately after compilation.
 
 The sidecars do not claim complete source-to-machine semantic equivalence.
-Their explicit claims are `binding-verified` for the lowering record and
-`structurally-verified` for machine code.
+Their explicit claims are typed-record validation, `binding-verified` for the
+lowering record, and `structurally-verified` for machine code. The report keeps
+`semantic_equivalence_claimed = false`.
 
 ## Independent Checker
 
@@ -47,6 +51,11 @@ The checker independently recomputes and validates:
   uniqueness, and domain-separated hashes;
 - entry, block, CFG, reachability, call-depth, recursion, frame, stack-slot,
   typed ABI, capability, and ProofPlan relationships;
+- typed semantic schemas, canonical type and local tables, operation operands,
+  call signatures and effects, control-flow joins, ownership and borrow
+  records, layouts, and concrete instantiations;
+- typed entry/block/operation identities against lowering blocks, final
+  machine ABI, and the metadata `typed_semantics_hash`;
 - ELF64 little-endian RISC-V identity, exact static sections, read/execute
   segment policy, entry and text/rodata bounds, and absence of dynamic or
   relocation state;
@@ -97,6 +106,8 @@ instead of panicking.
 | `V2416` | source-map identity, range, path, or coverage failure |
 | `V2417` | syscall declaration or bounded-call contract failure |
 | `V2418` | recursion or call-depth policy failure |
+| `V2419` | typed semantic schema, type/local/operation, ownership, borrow, layout, instantiation, or effect failure |
+| `V2420` | typed semantic hash, lowering-block, entry ABI, call, or final machine binding failure |
 
 The deterministic mutation corpus in `tests/artifact_checker.rs` exercises all
 stable rejection codes. It is a regression corpus, not a proof of complete

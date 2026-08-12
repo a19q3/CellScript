@@ -6,10 +6,10 @@ use crate::package::{Dependency, DetailedDependency, Lockfile, PackageManager, P
 use crate::runtime_errors::{runtime_error_info, runtime_error_info_by_code, CellScriptRuntimeErrorInfo, ALL_RUNTIME_ERRORS};
 use crate::{
     compile_path, compile_path_metadata_with_diagnostics, compile_path_with_entry_action, compile_path_with_entry_lock,
-    default_metadata_path_for_artifact, default_output_path_for_input, load_modules_for_input, resolve_input_path,
-    validate_artifact_metadata, validate_source_units_on_disk, ArtifactFormat, CompileMetadata, CompileOptions, EntryWitnessArg,
-    ParamMetadata, ProofPlanMetadata, TargetProfile, ENTRY_WITNESS_ABI, ENTRY_WITNESS_PLACEMENT_ABI, ENTRY_WITNESS_PLACEMENT_FIELD,
-    ENTRY_WITNESS_PLACEMENT_SOURCE,
+    compile_path_with_executable_surface_policy, default_metadata_path_for_artifact, default_output_path_for_input,
+    load_modules_for_input, resolve_input_path, validate_artifact_metadata, validate_source_units_on_disk, ArtifactFormat,
+    CompileEntryScope, CompileMetadata, CompileOptions, EntryWitnessArg, ExecutableSurfacePolicy, ParamMetadata, ProofPlanMetadata,
+    TargetProfile, ENTRY_WITNESS_ABI, ENTRY_WITNESS_PLACEMENT_ABI, ENTRY_WITNESS_PLACEMENT_FIELD, ENTRY_WITNESS_PLACEMENT_SOURCE,
 };
 use base64::Engine;
 use camino::Utf8Path;
@@ -90,6 +90,8 @@ pub enum Command {
     Repl,
     Check(CheckArgs),
     Metadata(MetadataArgs),
+    Interface(InterfaceArgs),
+    InterfaceDiff(InterfaceDiffArgs),
     Constraints(ConstraintsArgs),
     Abi(AbiArgs),
     SchedulerPlan(SchedulerPlanArgs),
@@ -289,6 +291,22 @@ pub struct MetadataArgs {
     pub output: Option<PathBuf>,
     pub target: Option<String>,
     pub target_profile: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct InterfaceArgs {
+    pub input: Option<PathBuf>,
+    pub output: Option<PathBuf>,
+    pub target: Option<String>,
+    pub target_profile: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct InterfaceDiffArgs {
+    pub old: PathBuf,
+    pub new: PathBuf,
+    pub output: Option<PathBuf>,
+    pub json: bool,
 }
 
 #[derive(Debug, Default)]
@@ -814,6 +832,8 @@ impl CommandExecutor {
             Command::Repl => Self::repl(),
             Command::Check(args) => Self::check(args),
             Command::Metadata(args) => Self::metadata(args),
+            Command::Interface(args) => Self::interface(args),
+            Command::InterfaceDiff(args) => Self::interface_diff(args),
             Command::Constraints(args) => Self::constraints(args),
             Command::Abi(args) => Self::abi(args),
             Command::SchedulerPlan(args) => Self::scheduler_plan(args),
@@ -896,17 +916,19 @@ impl CommandExecutor {
         if args.entry_action.is_some() && args.entry_lock.is_some() {
             return Err(crate::error::CompileError::without_span("--entry-action and --entry-lock are mutually exclusive"));
         }
+        let policy_args = effective_build_check_args(&args)?;
+        let executable_surface_policy = executable_surface_policy(&policy_args);
+        let entry_scope = match (args.entry_action.as_deref(), args.entry_lock.as_deref()) {
+            (Some(action), None) => Some(CompileEntryScope::Action(action.to_string())),
+            (None, Some(lock)) => Some(CompileEntryScope::Lock(lock.to_string())),
+            (None, None) => None,
+            (Some(_), Some(_)) => unreachable!("validated above"),
+        };
         let cache_options = options.clone();
         let resolution_options = build_resolution_options(&args, crate::package::DependencyScope::Runtime);
         let result = crate::package::with_resolution_options(resolution_options, || {
-            match (args.entry_action.as_deref(), args.entry_lock.as_deref()) {
-                (Some(action), None) => compile_path_with_entry_action(input, options, action),
-                (None, Some(lock)) => compile_path_with_entry_lock(input, options, lock),
-                (None, None) => compile_path(input, options),
-                (Some(_), Some(_)) => unreachable!("validated above"),
-            }
+            compile_path_with_executable_surface_policy(input, options, entry_scope, executable_surface_policy)
         })?;
-        let policy_args = effective_build_check_args(&args)?;
         validate_check_policy(&result.metadata, &policy_args)?;
         let resolved = resolve_input_path(input)?;
         let output_path = default_output_path_for_input(input, &resolved, result.artifact_format)?;
@@ -1035,6 +1057,8 @@ impl CommandExecutor {
         let mut human_lines = Vec::new();
         let mut failure_diagnostics = Vec::new();
         let mut failed = 0;
+        let policy_args = effective_build_check_args(&args)?;
+        let executable_surface_policy = executable_surface_policy(&policy_args);
 
         for member_dir in &members {
             let options = CompileOptions {
@@ -1048,17 +1072,20 @@ impl CommandExecutor {
             };
 
             let resolution_options = build_resolution_options(&args, crate::package::DependencyScope::Runtime);
-            let compile_result = crate::package::with_resolution_options(resolution_options, || {
-                match (args.entry_action.as_deref(), args.entry_lock.as_deref()) {
-                    (Some(action), None) => compile_path_with_entry_action(member_dir, options, action),
-                    (None, Some(lock)) => compile_path_with_entry_lock(member_dir, options, lock),
-                    _ => compile_path(member_dir, options),
+            let entry_scope = match (args.entry_action.as_deref(), args.entry_lock.as_deref()) {
+                (Some(action), None) => Some(CompileEntryScope::Action(action.to_string())),
+                (None, Some(lock)) => Some(CompileEntryScope::Lock(lock.to_string())),
+                (None, None) => None,
+                (Some(_), Some(_)) => {
+                    return Err(crate::error::CompileError::without_span("--entry-action and --entry-lock are mutually exclusive"));
                 }
+            };
+            let compile_result = crate::package::with_resolution_options(resolution_options, || {
+                compile_path_with_executable_surface_policy(member_dir, options, entry_scope, executable_surface_policy)
             });
 
             match compile_result {
                 Ok(result) => {
-                    let policy_args = effective_build_check_args(&args)?;
                     if let Err(e) = validate_check_policy(&result.metadata, &policy_args) {
                         failure_diagnostics.push(e.clone().with_file(member_dir.clone()));
                         member_results.push(serde_json::json!({
@@ -1248,7 +1275,7 @@ impl CommandExecutor {
             }
 
             let expectation = read_test_expectation(input)?;
-            let result = compile_path(
+            let result = compile_path_with_executable_surface_policy(
                 utf8,
                 CompileOptions {
                     edition: crate::CURRENT_EDITION,
@@ -1258,6 +1285,12 @@ impl CommandExecutor {
                     target: expectation.target.clone(),
                     target_profile: None,
                     primitive_compat: None,
+                },
+                None,
+                if expectation.production || expectation.deny_fail_closed {
+                    ExecutableSurfacePolicy::DenyFailClosed
+                } else {
+                    ExecutableSurfacePolicy::AllowFailClosed
                 },
             )
             .and_then(|result| {
@@ -1729,14 +1762,15 @@ impl CommandExecutor {
                 primitive_compat: args.primitive_compat.clone(),
             };
             let resolution_options = check_resolution_options(&args, crate::package::DependencyScope::Runtime);
-            let result =
-                match crate::package::with_resolution_options(resolution_options, || compile_path(".", compile_options.clone())) {
-                    Ok(result) => result,
-                    Err(error) => {
-                        let diagnostics = compile_failure_diagnostics(Utf8Path::new("."), compile_options, error);
-                        return Err(diagnostics_to_error(&diagnostics));
-                    }
-                };
+            let result = match crate::package::with_resolution_options(resolution_options, || {
+                compile_path_with_executable_surface_policy(".", compile_options.clone(), None, executable_surface_policy(&args))
+            }) {
+                Ok(result) => result,
+                Err(error) => {
+                    let diagnostics = compile_failure_diagnostics(Utf8Path::new("."), compile_options, error);
+                    return Err(diagnostics_to_error(&diagnostics));
+                }
+            };
             validate_check_policy(&result.metadata, &args)?;
             let target_profile_policy_violations =
                 target_profile_policy_violations(&result.metadata, result.artifact_format, requested_profile);
@@ -1811,6 +1845,7 @@ impl CommandExecutor {
     }
 
     fn check_workspace(args: CheckArgs) -> Result<()> {
+        let args = effective_check_args(args)?;
         let ws_root = crate::find_workspace_root(Utf8Path::new("."))?.ok_or_else(|| {
             crate::error::CompileError::without_span(
                 "no workspace root found; run from a directory containing a [workspace] Cell.toml",
@@ -1850,11 +1885,22 @@ impl CommandExecutor {
                 primitive_compat: args.primitive_compat.clone(),
             };
             let resolution_options = check_resolution_options(&args, crate::package::DependencyScope::Runtime);
-            let compile_result =
-                crate::package::with_resolution_options(resolution_options, || compile_path(member_dir, compile_options));
+            let compile_result = crate::package::with_resolution_options(resolution_options, || {
+                compile_path_with_executable_surface_policy(member_dir, compile_options, None, executable_surface_policy(&args))
+            });
 
             match compile_result {
                 Ok(result) => {
+                    if let Err(error) = validate_check_policy(&result.metadata, &args) {
+                        failure_diagnostics.push(error.clone().with_file(member_dir.clone()));
+                        member_results.push(serde_json::json!({
+                            "member": member_dir.as_str(),
+                            "status": "failed",
+                            "error": error.message,
+                        }));
+                        failed += 1;
+                        continue;
+                    }
                     member_results.push(serde_json::json!({
                         "member": member_dir.as_str(),
                         "status": "ok",
@@ -1921,7 +1967,7 @@ impl CommandExecutor {
         let json = serde_json::to_string_pretty(&result.metadata)
             .map_err(|error| crate::error::CompileError::without_span(format!("failed to serialize metadata: {}", error)))?;
 
-        if let Some(output_path) = args.output {
+        if let Some(output_path) = args.output.as_ref() {
             if let Some(parent) = output_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -1930,6 +1976,71 @@ impl CommandExecutor {
             println!("  Output: {}", output_path.display());
         } else {
             println!("{}", json);
+        }
+        Ok(())
+    }
+
+    fn interface(args: InterfaceArgs) -> Result<()> {
+        let input_path = args.input.unwrap_or_else(|| PathBuf::from("."));
+        let input = Utf8Path::from_path(&input_path)
+            .ok_or_else(|| crate::error::CompileError::without_span(format!("path '{}' is not valid UTF-8", input_path.display())))?;
+        let result = compile_path(
+            input,
+            CompileOptions {
+                edition: crate::CURRENT_EDITION,
+                opt_level: 0,
+                output: None,
+                debug: false,
+                target: args.target,
+                target_profile: args.target_profile,
+                primitive_compat: None,
+            },
+        )?;
+        let value = serde_json::json!({
+            "interface_hash": result.metadata.interface_hash,
+            "interface": result.metadata.public_interface,
+        });
+        let json = serde_json::to_string_pretty(&value)
+            .map_err(|error| crate::error::CompileError::without_span(format!("failed to serialize public interface: {error}")))?;
+        if let Some(output_path) = args.output.as_ref() {
+            if let Some(parent) = output_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&output_path, format!("{json}\n"))?;
+            println!("{}", "Public interface generated".green());
+            println!("  Hash: {}", result.metadata.interface_hash);
+            println!("  Output: {}", output_path.display());
+        } else {
+            println!("{json}");
+        }
+        Ok(())
+    }
+
+    fn interface_diff(args: InterfaceDiffArgs) -> Result<()> {
+        let old = read_or_compile_interface(&args.old)?;
+        let new = read_or_compile_interface(&args.new)?;
+        let report = crate::interface::compare(&old, &new);
+        let json = serde_json::to_string_pretty(&report)
+            .map_err(|error| crate::error::CompileError::without_span(format!("failed to serialize interface report: {error}")))?;
+        if let Some(output_path) = args.output.as_ref() {
+            if let Some(parent) = output_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&output_path, format!("{json}\n"))?;
+        }
+        if args.json || args.output.is_none() {
+            println!("{json}");
+        } else {
+            println!("Interface compatibility: {}", if report.compatible { "compatible" } else { "breaking" });
+            for dimension in &report.dimensions {
+                println!("  {}: {}", dimension.dimension, dimension.classification);
+            }
+            if let Some(output_path) = args.output.as_ref() {
+                println!("  Output: {}", output_path.display());
+            }
+        }
+        if !report.compatible {
+            return Err(crate::error::CompileError::without_span("public interface contains breaking changes").with_code("E2501"));
         }
         Ok(())
     }
@@ -2678,14 +2789,30 @@ impl CommandExecutor {
                 primitive_compat: None,
             },
         )?;
-        let instantiations = result.metadata.runtime.collection_instantiations;
+        let value_instantiations = result.metadata.generic_instantiations;
+        let collection_instantiations = result.metadata.runtime.collection_instantiations;
 
         let mut human_lines = Vec::new();
-        if instantiations.is_empty() {
+        if value_instantiations.is_empty() {
+            human_lines.push("No value-generic monomorphizations found.".to_string());
+        } else {
+            human_lines.push("Checked value-generic monomorphizations:".to_string());
+            for instantiation in &value_instantiations {
+                human_lines.push(format!("  {} {} -> {}", instantiation.kind, instantiation.identity, instantiation.concrete_name));
+                human_lines.push(format!("    type arguments: {}", instantiation.type_arguments.join(", ")));
+                human_lines.push(format!(
+                    "    constraints: verified (value-ability registry v{}, fixed-layout={}, Cell-backed-layout-rejected={})",
+                    instantiation.value_ability_registry_version,
+                    instantiation.fixed_layout_required,
+                    instantiation.cell_backed_layout_rejected
+                ));
+            }
+        }
+        if collection_instantiations.is_empty() {
             human_lines.push("No checked bounded generic collection instantiations found.".to_string());
         } else {
             human_lines.push("Checked bounded generic collection instantiations:".to_string());
-            for instantiation in &instantiations {
+            for instantiation in &collection_instantiations {
                 human_lines.push(format!(
                     "  {} {}: {} -> {} ({} byte element, max {}, {})",
                     instantiation.scope_kind,
@@ -2703,8 +2830,9 @@ impl CommandExecutor {
         CommandOutcome {
             machine: serde_json::json!({
                 "status": "ok",
-                "count": instantiations.len(),
-                "collection_instantiations": instantiations,
+                "count": value_instantiations.len() + collection_instantiations.len(),
+                "value_instantiations": value_instantiations,
+                "collection_instantiations": collection_instantiations,
             }),
             human_lines,
         }
@@ -3947,7 +4075,14 @@ impl CommandExecutor {
             let api_base = resolve_registry_api_base(args.api_url)?;
             let registry_origin = registry_origin_from_api_base(&api_base)?;
             let endpoint = registry_publish_endpoint(&api_base, &namespace, &manifest.package.name);
-            let registry_entry = build_publish_registry_entry(&manifest, &namespace, version_entry, &artifact)?;
+            let registry_entry = build_publish_registry_entry(
+                &manifest,
+                &namespace,
+                version_entry,
+                &artifact,
+                &result.metadata.public_interface,
+                &result.metadata.interface_hash,
+            )?;
             let payload = if let Some(payload_path) = args.payload.as_deref() {
                 read_registry_publish_payload(payload_path)?
             } else {
@@ -3993,7 +4128,15 @@ impl CommandExecutor {
                     registry_entry,
                 }
             };
-            validate_publish_payload_matches_local_package(&payload, &registry_origin, &namespace, &manifest, &source_hash)?;
+            validate_publish_payload_matches_local_package(
+                &payload,
+                &registry_origin,
+                &namespace,
+                &manifest,
+                &source_hash,
+                &result.metadata.public_interface,
+                &result.metadata.interface_hash,
+            )?;
             let canonical_payload = registry_publish_canonical_payload(&payload)?;
 
             if args.print_payload {
@@ -5940,6 +6083,8 @@ fn build_publish_registry_entry(
     namespace: &str,
     version_entry: crate::package::registry::RegistryVersion,
     artifact: &crate::package::registry::RegistryArtifactDescriptor,
+    public_interface: &crate::interface::PackageInterface,
+    interface_hash: &str,
 ) -> Result<serde_json::Value> {
     let index = crate::package::registry::RegistryIndex {
         schema_version: crate::package::registry::RegistryIndex::CURRENT_SCHEMA_VERSION,
@@ -5968,6 +6113,13 @@ fn build_publish_registry_entry(
     published.remove("status");
     published.remove("yanked");
     published.insert("verification_status".to_string(), serde_json::Value::String("pending".to_string()));
+    published.insert("interface_hash".to_string(), serde_json::Value::String(interface_hash.to_string()));
+    published.insert(
+        "interface".to_string(),
+        serde_json::to_value(public_interface).map_err(|error| {
+            crate::error::CompileError::without_span(format!("failed to serialize canonical public interface: {error}"))
+        })?,
+    );
     published.insert("deployment_status".to_string(), serde_json::Value::String("not_applicable".to_string()));
     published.insert("availability_status".to_string(), serde_json::Value::String("active".to_string()));
     if !manifest.package.repository.is_empty() {
@@ -6133,6 +6285,8 @@ fn validate_publish_payload_matches_local_package(
     namespace: &str,
     manifest: &PackageManifest,
     source_hash: &str,
+    public_interface: &crate::interface::PackageInterface,
+    interface_hash: &str,
 ) -> Result<()> {
     if payload.protocol != crate::package::registry::REGISTRY_PUBLISH_PROTOCOL
         || payload.action != crate::package::registry::PUBLISH_ACTION
@@ -6156,6 +6310,35 @@ fn validate_publish_payload_matches_local_package(
             "publish payload source_hash '{}' does not match local source_hash '{}'",
             payload.source_hash, source_hash
         )));
+    }
+    let payload_interface_hash = payload
+        .registry_entry
+        .get("versions")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|versions| versions.first())
+        .and_then(|version| version.get("interface_hash"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if payload_interface_hash != interface_hash {
+        return Err(crate::error::CompileError::without_span(format!(
+            "publish payload interface_hash '{}' does not match local canonical interface '{}'",
+            payload_interface_hash, interface_hash
+        )));
+    }
+    let payload_interface = payload
+        .registry_entry
+        .get("versions")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|versions| versions.first())
+        .and_then(|version| version.get("interface"))
+        .cloned()
+        .ok_or_else(|| crate::error::CompileError::without_span("publish payload is missing the canonical public interface"))?;
+    let payload_interface: crate::interface::PackageInterface = serde_json::from_value(payload_interface)
+        .map_err(|error| crate::error::CompileError::without_span(format!("publish payload public interface is invalid: {error}")))?;
+    if &payload_interface != public_interface || crate::interface::hash(&payload_interface) != interface_hash {
+        return Err(crate::error::CompileError::without_span(
+            "publish payload public interface does not match the locally compiled canonical interface",
+        ));
     }
     if !matches!(payload.artifact.kind.as_str(), "source_library" | "profile_library")
         || payload.artifact.profile != "cellscript_source"
@@ -6799,6 +6982,24 @@ fn read_metadata_json(path: &Path) -> Result<CompileMetadata> {
     })?;
     serde_json::from_slice(&bytes)
         .map_err(|error| crate::error::CompileError::without_span(format!("failed to parse metadata '{}': {}", path.display(), error)))
+}
+
+fn read_or_compile_interface(path: &Path) -> Result<crate::interface::PackageInterface> {
+    if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+        let bytes = std::fs::read(path).map_err(|error| {
+            crate::error::CompileError::without_span(format!("failed to read interface '{}': {error}", path.display()))
+        })?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+            crate::error::CompileError::without_span(format!("failed to parse interface '{}': {error}", path.display()))
+        })?;
+        let interface_value = value.get("interface").cloned().unwrap_or(value);
+        return serde_json::from_value(interface_value).map_err(|error| {
+            crate::error::CompileError::without_span(format!("invalid public interface '{}': {error}", path.display()))
+        });
+    }
+    let input = Utf8Path::from_path(path)
+        .ok_or_else(|| crate::error::CompileError::without_span(format!("path '{}' is not valid UTF-8", path.display())))?;
+    Ok(compile_path(input, CompileOptions::default())?.metadata.public_interface)
 }
 
 fn read_json_value(path: &Path) -> Result<serde_json::Value> {
@@ -12689,6 +12890,14 @@ fn validate_check_policy(metadata: &crate::CompileMetadata, args: &CheckArgs) ->
     Err(crate::error::CompileError::without_span(format!("check policy failed:\n  - {}", violations.join("\n  - "))))
 }
 
+fn executable_surface_policy(args: &CheckArgs) -> ExecutableSurfacePolicy {
+    if args.production || args.deny_fail_closed {
+        ExecutableSurfacePolicy::DenyFailClosed
+    } else {
+        ExecutableSurfacePolicy::AllowFailClosed
+    }
+}
+
 fn proof_plan_claims_executable_enforcement(plan: &ProofPlanMetadata) -> bool {
     let name = plan.name.to_ascii_lowercase();
     let feature = plan.feature.to_ascii_lowercase();
@@ -13935,6 +14144,23 @@ impl CliParser {
                     .arg(Arg::new("target-profile").long("target-profile").value_name("PROFILE").help("Target profile: ckb")),
             )
             .subcommand(
+                ClapCommand::new("interface")
+                    .display_order(31)
+                    .about("Emit the canonical public package interface and its CKB hash")
+                    .arg(Arg::new("input").value_name("INPUT").help("Input .cell file, package directory, or Cell.toml"))
+                    .arg(Arg::new("output").long("output").short('o').value_name("FILE").help("Write the interface JSON to a file"))
+                    .arg(Arg::new("target").long("target").short('t').value_name("TARGET").help("Target architecture"))
+                    .arg(Arg::new("target-profile").long("target-profile").value_name("PROFILE").help("Target profile: ckb")),
+            )
+            .subcommand(
+                ClapCommand::new("interface-diff")
+                    .display_order(32)
+                    .about("Compare source API, layout, ABI, effects, builders, and deployment contracts")
+                    .arg(Arg::new("old").long("old").value_name("INPUT_OR_JSON").required(true).help("Previous source/package or interface JSON"))
+                    .arg(Arg::new("new").long("new").value_name("INPUT_OR_JSON").required(true).help("Candidate source/package or interface JSON"))
+                    .arg(Arg::new("output").long("output").short('o').value_name("FILE").help("Write the compatibility report to a file")),
+            )
+            .subcommand(
                 ClapCommand::new("constraints")
                     .about("Emit profile-aware production constraints for compiler, builder, CI, and acceptance gates")
                     .arg(Arg::new("input").value_name("INPUT").help("Input .cell file, package directory, or Cell.toml"))
@@ -14010,7 +14236,7 @@ impl CliParser {
                     )
                     .subcommand(
                         ClapCommand::new("generics")
-                            .about("Explain checked bounded generic collection instantiations")
+                            .about("Explain value-generic monomorphizations and bounded collection instantiations")
                             .arg(Arg::new("input").value_name("INPUT").help("Input .cell file, package directory, or Cell.toml"))
                             .arg(Arg::new("target").long("target").short('t').value_name("TARGET").help("Target architecture"))
                             .arg(Arg::new("target-profile").long("target-profile").value_name("PROFILE").help("Target profile: ckb"))
@@ -14060,7 +14286,7 @@ impl CliParser {
             .subcommand(
                 ClapCommand::new("explain-generics")
                     .hide(true)
-                    .about("Explain checked bounded generic collection instantiations")
+                    .about("Explain value-generic monomorphizations and bounded collection instantiations")
                     .arg(Arg::new("input").value_name("INPUT").help("Input .cell file, package directory, or Cell.toml"))
                     .arg(Arg::new("target").long("target").short('t').value_name("TARGET").help("Target architecture"))
                     .arg(Arg::new("target-profile").long("target-profile").value_name("PROFILE").help("Target profile: ckb"))
@@ -15352,6 +15578,18 @@ impl CliParser {
                 output: m.get_one::<String>("output").map(PathBuf::from),
                 target: m.get_one::<String>("target").cloned(),
                 target_profile: m.get_one::<String>("target-profile").cloned(),
+            }),
+            Some(("interface", m)) => Command::Interface(InterfaceArgs {
+                input: m.get_one::<String>("input").map(PathBuf::from),
+                output: m.get_one::<String>("output").map(PathBuf::from),
+                target: m.get_one::<String>("target").cloned(),
+                target_profile: m.get_one::<String>("target-profile").cloned(),
+            }),
+            Some(("interface-diff", m)) => Command::InterfaceDiff(InterfaceDiffArgs {
+                old: m.get_one::<String>("old").map(PathBuf::from).expect("required old interface"),
+                new: m.get_one::<String>("new").map(PathBuf::from).expect("required new interface"),
+                output: m.get_one::<String>("output").map(PathBuf::from),
+                json: json_output(m),
             }),
             Some(("constraints", m)) => Command::Constraints(ConstraintsArgs {
                 input: m.get_one::<String>("input").map(PathBuf::from),

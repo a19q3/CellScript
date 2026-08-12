@@ -970,7 +970,12 @@ fn item_doc(item: &Item) -> Option<ItemDoc> {
         Item::Struct(struct_def) => Some(ItemDoc {
             kind: "struct".to_string(),
             name: struct_def.name.clone(),
-            signature: format!("struct {}", struct_def.name),
+            signature: format!(
+                "struct {}{}{}",
+                struct_def.name,
+                format_type_params(&struct_def.type_params),
+                format_value_ability_clause(&struct_def.abilities)
+            ),
             summary: format!("Fields: {}", format_fields(&struct_def.fields)),
         }),
         Item::Flow(machine) => Some(ItemDoc {
@@ -1022,8 +1027,10 @@ fn item_doc(item: &Item) -> Option<ItemDoc> {
             kind: "enum".to_string(),
             name: enum_def.name.clone(),
             signature: format!(
-                "enum {} {{ {} }}",
+                "enum {}{}{} {{ {} }}",
                 enum_def.name,
+                format_type_params(&enum_def.type_params),
+                format_value_ability_clause(&enum_def.abilities),
                 enum_def
                     .variants
                     .iter()
@@ -1085,9 +1092,15 @@ fn action_signature(keyword: &str, action: &ActionDef) -> String {
 fn function_signature(function: &FnDef) -> String {
     let params = function.params.iter().map(format_param).collect::<Vec<_>>().join(", ");
     let mut signature = if function.effect_declared {
-        format!("#[effect({})] fn {}({})", function.effect.as_str(), function.name, params)
+        format!(
+            "#[effect({})] fn {}{}({})",
+            function.effect.as_str(),
+            function.name,
+            format_type_params(&function.type_params),
+            params
+        )
     } else {
-        format!("fn {}({})", function.name, params)
+        format!("fn {}{}({})", function.name, format_type_params(&function.type_params), params)
     };
     if let Some(return_type) = &function.return_type {
         signature.push_str(&format!(" -> {}", format_type(return_type)));
@@ -1112,6 +1125,35 @@ fn format_capability_clause(capabilities: &[Capability]) -> String {
 
 fn format_capability(capability: &Capability) -> &'static str {
     capability.as_str()
+}
+
+fn format_type_params(params: &[TypeParam]) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    format!(
+        "<{}>",
+        params
+            .iter()
+            .map(|param| {
+                let mut value = if param.phantom { format!("phantom {}", param.name) } else { param.name.clone() };
+                if !param.constraints.is_empty() {
+                    value.push_str(": ");
+                    value.push_str(&param.constraints.iter().map(|ability| ability.as_str()).collect::<Vec<_>>().join(" + "));
+                }
+                value
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn format_value_ability_clause(abilities: &[ValueAbility]) -> String {
+    if abilities.is_empty() {
+        String::new()
+    } else {
+        format!(" has {}", abilities.iter().map(|ability| ability.as_str()).collect::<Vec<_>>().join(", "))
+    }
 }
 
 fn format_effect(effect: EffectClass) -> &'static str {

@@ -227,6 +227,7 @@ fn collect_state_context_from_stmts(specs: &HashMap<String, FlowSpec>, context: 
                 collect_state_context_from_expr(specs, context, expr)
             }
             Stmt::Return(ReturnStmt { value: None, .. }) => {}
+            Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::If(if_stmt) => {
                 collect_state_context_from_expr(specs, context, &if_stmt.condition);
                 collect_state_context_from_stmts(specs, context, &if_stmt.then_branch);
@@ -377,6 +378,7 @@ fn validate_state_transition_stmt(specs: &HashMap<String, FlowSpec>, context: &A
         Stmt::Expr(expr) => validate_state_transition_expr(specs, context, expr),
         Stmt::Return(ReturnStmt { value: Some(expr), .. }) => validate_state_transition_expr(specs, context, expr),
         Stmt::Return(ReturnStmt { value: None, .. }) => Ok(()),
+        Stmt::Break(_) | Stmt::Continue(_) => Ok(()),
         Stmt::If(if_stmt) => {
             validate_state_transition_expr(specs, context, &if_stmt.condition)?;
             validate_stmt_list(specs, context, &if_stmt.then_branch)?;
@@ -548,7 +550,7 @@ fn validate_state_transition_create(
 
 fn integer_literal(expr: &Expr) -> Option<u64> {
     match expr {
-        Expr::Integer(value) => Some(*value),
+        Expr::Integer(value) => u64::try_from(*value).ok(),
         Expr::Cast(cast) => integer_literal(&cast.expr),
         _ => None,
     }

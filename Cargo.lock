@@ -412,6 +412,7 @@ version = "0.22.0"
 dependencies = [
  "anyhow",
  "blake2b-ref",
+ "cellscript",
  "ckb-jsonrpc-types",
  "ckb-types",
  "clap",

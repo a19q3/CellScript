@@ -12,18 +12,20 @@ artifact.sourcemap.json
 The artifact is executable RISC-V ELF. The metadata sidecar is the explanation:
 source identity, target profile, artifact hash, schema layout, runtime
 requirements, scheduler information, and verifier obligations. The canonical
-lowering record exposes a bounded CFG, ABI, stack, ProofPlan, syscall, runtime
-exit, and final machine-range contract. The canonical source map binds source
+lowering record exposes a bounded typed-semantics, CFG, ABI, stack, ProofPlan,
+syscall, runtime exit, and final machine-range contract. The canonical source map binds source
 spans and lowering blocks to final ELF instruction ranges. Assembly output does
 not claim this verified-artifact boundary.
 
-On the 0.24 development line it also carries mandatory `edition = "2026"` and the fully
+On the 0.25 development line it also carries mandatory `edition = "2026"` and the fully
 resolved compatibility profile. Edition contributes source semantics only.
 The profile combines that with independently versioned target,
 primitive-assurance, entry payload, witness placement, and metadata-schema
 axes. Verification rejects a sidecar whose profile does not resolve from those
 inputs; it never guesses another contract. Current outputs use metadata schema
-58, source schema 2, artifact schema 1, and constraints schema 2. Registry,
+60, source schema 2, artifact schema 1, and constraints schema 2. Schema 60
+adds canonical `public_interface` / `interface_hash` and
+`typed_semantics` / `typed_semantics_hash` pairs. Registry,
 lock, deployment, receipt, and generated-builder readers require the same
 resolved-profile identity.
 
@@ -41,7 +43,8 @@ Compiler verification is necessary, but it is not the same thing as a deployed
 transaction or chain acceptance report.
 
 If `verify-artifact` passes for an ELF, you know all four files agree and that
-the standalone checker independently accepted the bounded structural contract.
+the standalone checker independently accepted the bounded typed and structural
+contracts.
 You do not yet know that a transaction builder can provide the right inputs,
 serialize the right witness, satisfy capacity, pass dry-run, and commit. The
 checker does not claim complete source-to-machine semantic equivalence.
@@ -195,7 +198,7 @@ records the exact `identity(...)` condition declared by the same resource.
 No proof may source authority from a container or another Cell type.
 
 Top-level `enum_layouts` for concrete payload ADTs first appeared in schema 53
-and remain in current metadata schema 58. Audit the
+and remain in current metadata schema 60. Audit the
 `packed-tagged-union-v1` layout, one-byte tag, sequential variant tags, packed
 field offsets, encoded size, ownership, storage, and ABI together. A
 `linear-cell-handle` field is exactly eight bytes and forces
@@ -222,7 +225,7 @@ the `consume_each` runtime-helper tier. For `BoundedList<P, N>` driving
 the matching outputs or sufficient capacity.
 
 The validity record first appeared in schema 55 during the 0.22 line and is
-retained by current metadata schema 58 as `types[].validity_predicates`. Review each predicate's
+retained by current metadata schema 60 as `types[].validity_predicates`. Review each predicate's
 `expression`, `dependencies`, `evidence_tier`,
 `runtime_checked_on_create`, `create_paths_selected`,
 `create_paths_checked`, `update_paths_selected`, `create_path_status`,

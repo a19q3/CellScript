@@ -23,10 +23,13 @@ pub mod debug;
 pub mod docgen;
 pub mod edition;
 pub mod error;
+pub mod executable_surface;
 pub mod flow;
 pub mod fmt;
+mod generics;
 #[cfg(not(feature = "wasm"))]
 pub mod incremental;
+pub mod interface;
 pub mod ir;
 pub mod lexer;
 pub mod lsp;
@@ -40,6 +43,7 @@ pub mod resolve;
 pub mod runtime_errors;
 pub mod simulate;
 pub mod stdlib;
+mod typed_semantics;
 pub mod types;
 mod verified_artifact;
 pub mod wasm;
@@ -216,7 +220,7 @@ fn strict_capability_name(capability: ast::Capability) -> &'static str {
 const DEFAULT_TARGET: &str = "riscv64-asm";
 const DEFAULT_TARGET_PROFILE: &str = "ckb";
 const ARTIFACT_CACHE_VERSION: &str = "project-source-set-v10-verified-artifact";
-pub const METADATA_SCHEMA_VERSION: u32 = 58;
+pub const METADATA_SCHEMA_VERSION: u32 = 60;
 pub const SOURCE_METADATA_SCHEMA_VERSION: u32 = 2;
 pub const ARTIFACT_METADATA_SCHEMA_VERSION: u32 = 1;
 pub const CONSTRAINTS_METADATA_SCHEMA_VERSION: u32 = 2;
@@ -410,6 +414,14 @@ pub struct CompileMetadata {
     pub edition: CellScriptEdition,
     pub compatibility_profile: ResolvedCompatibilityProfile,
     pub module: String,
+    #[serde(default)]
+    pub public_interface: interface::PackageInterface,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub interface_hash: String,
+    #[serde(default)]
+    pub typed_semantics: cellscript_artifact_checker::TypedSemanticRecord,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub typed_semantics_hash: String,
     pub artifact_format: String,
     pub target_profile: TargetProfileMetadata,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -429,6 +441,8 @@ pub struct CompileMetadata {
     pub capability_registry: CapabilityRegistryMetadata,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enum_layouts: Vec<PayloadEnumLayoutMetadata>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub generic_instantiations: Vec<GenericInstantiationMetadata>,
     pub runtime: RuntimeMetadata,
     #[serde(default)]
     pub constraints: ConstraintsMetadata,
@@ -445,6 +459,22 @@ pub struct CompileMetadata {
     /// Embedded DWARF debug section names (non-empty when debug mode is enabled for ELF artifacts)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub debug_info_sections: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GenericInstantiationMetadata {
+    pub schema: String,
+    pub version: u32,
+    pub kind: String,
+    pub template: String,
+    pub concrete_name: String,
+    pub identity: String,
+    pub type_arguments: Vec<String>,
+    pub value_ability_registry_version: u32,
+    pub constraints_verified: bool,
+    pub fixed_layout_required: bool,
+    pub cell_backed_layout_rejected: bool,
+    pub identity_includes_phantom_arguments: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -955,6 +985,8 @@ pub struct BorrowRegionMetadata {
     pub scope_kind: String,
     pub scope_name: String,
     pub root: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<String>,
     pub binding: String,
     pub view_type: String,
     pub storage: String,
@@ -1129,6 +1161,75 @@ pub fn validate_compile_metadata(metadata: &CompileMetadata, artifact_format: Ar
             "metadata compiler_version '{}' does not match current compiler '{}'",
             metadata.compiler_version, VERSION
         )));
+    }
+    if metadata.public_interface.schema != interface::INTERFACE_SCHEMA
+        || metadata.public_interface.version != interface::INTERFACE_SCHEMA_VERSION
+        || metadata.public_interface.module != metadata.module
+    {
+        return Err(CompileError::without_span(
+            "compile metadata public interface has an invalid schema, version, or module identity",
+        ));
+    }
+    let expected_interface_hash = interface::hash(&metadata.public_interface);
+    if metadata.interface_hash != expected_interface_hash {
+        return Err(CompileError::without_span(format!(
+            "compile metadata interface_hash '{}' does not match canonical public interface '{}'",
+            metadata.interface_hash, expected_interface_hash
+        )));
+    }
+    if metadata.typed_semantics.schema != cellscript_artifact_checker::TYPED_SEMANTICS_SCHEMA
+        || metadata.typed_semantics.version != 1
+        || metadata.typed_semantics.module != metadata.module
+        || metadata.typed_semantics.interface_hash != metadata.interface_hash
+    {
+        return Err(CompileError::without_span(
+            "compile metadata typed semantics has an invalid schema, version, module, or interface identity",
+        ));
+    }
+    let expected_typed_semantics_hash =
+        cellscript_artifact_checker::canonical_hash(cellscript_artifact_checker::TYPED_SEMANTICS_SCHEMA, &metadata.typed_semantics)
+            .map_err(|error| CompileError::without_span(format!("failed to hash typed semantics: {error}")))?;
+    if metadata.typed_semantics_hash != expected_typed_semantics_hash {
+        return Err(CompileError::without_span(format!(
+            "compile metadata typed_semantics_hash '{}' does not match canonical typed semantics '{}'",
+            metadata.typed_semantics_hash, expected_typed_semantics_hash
+        )));
+    }
+    let mut previous_generic_identity = None::<&str>;
+    for instantiation in &metadata.generic_instantiations {
+        if instantiation.schema != "cellscript-generic-instantiation-v1"
+            || instantiation.version != 1
+            || instantiation.value_ability_registry_version != ast::ValueAbility::REGISTRY_VERSION
+            || !instantiation.constraints_verified
+            || instantiation.type_arguments.is_empty()
+            || !matches!(instantiation.kind.as_str(), "struct" | "enum" | "function")
+        {
+            return Err(CompileError::without_span(format!(
+                "generic instantiation metadata '{}' has an invalid schema, registry version, kind, or verification state",
+                instantiation.identity
+            )));
+        }
+        let Some((template, args)) = generics::decode_monomorph_name(&instantiation.concrete_name) else {
+            return Err(CompileError::without_span(format!(
+                "generic instantiation '{}' has a non-canonical concrete name",
+                instantiation.identity
+            )));
+        };
+        let expected_identity = format!("{}::{}<{}>", metadata.module, template, args.join(","));
+        if template != instantiation.template
+            || args != instantiation.type_arguments
+            || instantiation.identity != expected_identity
+            || !instantiation.identity_includes_phantom_arguments
+        {
+            return Err(CompileError::without_span(format!(
+                "generic instantiation '{}' does not match its canonical monomorphization identity",
+                instantiation.identity
+            )));
+        }
+        if previous_generic_identity.is_some_and(|previous| previous >= instantiation.identity.as_str()) {
+            return Err(CompileError::without_span("generic instantiation metadata must be unique and sorted by canonical identity"));
+        }
+        previous_generic_identity = Some(&instantiation.identity);
     }
     let primitive_assurance = (metadata.compatibility_profile.primitive_assurance != "default")
         .then_some(metadata.compatibility_profile.primitive_assurance.as_str());
@@ -2592,6 +2693,7 @@ fn stmt_span(stmt: &ast::Stmt) -> error::Span {
         ast::Stmt::If(if_stmt) => if_stmt.span,
         ast::Stmt::For(for_stmt) => for_stmt.span,
         ast::Stmt::While(while_stmt) => while_stmt.span,
+        ast::Stmt::Break(control) | ast::Stmt::Continue(control) => control.span,
         ast::Stmt::Borrow(borrow_stmt) => borrow_stmt.span,
     }
 }
@@ -4431,6 +4533,8 @@ pub struct FieldMetadata {
 pub struct ActionMetadata {
     pub name: String,
     pub params: Vec<ParamMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_type: Option<String>,
     pub effect_class: String,
     pub parallelizable: bool,
     pub touches_shared: Vec<String>,
@@ -5328,13 +5432,14 @@ pub fn load_modules_for_input<P: AsRef<Utf8Path>>(input: P) -> Result<Vec<Loaded
 
 fn load_project_for_entry(entry_path: &Utf8Path, entry_source_override: Option<&str>) -> Result<LoadedProject> {
     let entry_path = canonical_utf8_path(entry_path)?;
-    let modules = load_project_modules_for_entry(&entry_path, entry_source_override)?;
+    let mut modules = load_project_modules_for_entry(&entry_path, entry_source_override)?;
     let Some(entry_index) = modules.iter().position(|module| module.path == entry_path) else {
         return Err(CompileError::new(
             format!("entry source '{}' was not loaded into the project graph", entry_path),
             error::Span::default(),
         ));
     };
+    monomorphize_loaded_entry(&mut modules, entry_index)?;
     let resolver = build_module_resolver_from_loaded_modules(&modules)?;
     Ok(LoadedProject { entry_index, modules, resolver })
 }
@@ -5344,13 +5449,14 @@ fn load_project_for_entry_diagnostics(
     entry_source_override: Option<&str>,
 ) -> std::result::Result<LoadedProject, Vec<CompileError>> {
     let entry_path = canonical_utf8_path(entry_path).map_err(|error| vec![error])?;
-    let modules = load_project_modules_for_entry_diagnostics(&entry_path, entry_source_override)?;
+    let mut modules = load_project_modules_for_entry_diagnostics(&entry_path, entry_source_override)?;
     let Some(entry_index) = modules.iter().position(|module| module.path == entry_path) else {
         return Err(vec![CompileError::new(
             format!("entry source '{}' was not loaded into the project graph", entry_path),
             error::Span::default(),
         )]);
     };
+    monomorphize_loaded_entry_diagnostics(&mut modules, entry_index)?;
     let resolver = build_module_resolver_from_loaded_modules(&modules).map_err(|error| vec![error])?;
     Ok(LoadedProject { entry_index, modules, resolver })
 }
@@ -5394,6 +5500,7 @@ fn load_virtual_project_for_entry_diagnostics(
     let Some(entry_index) = modules.iter().position(|module| module.path == entry_path_buf) else {
         return Err(vec![CompileError::without_span(format!("entry source '{}' was not provided", entry_path))]);
     };
+    monomorphize_loaded_entry_diagnostics(&mut modules, entry_index)?;
     let resolver = build_module_resolver_from_loaded_modules(&modules).map_err(|error| vec![error])?;
     Ok(LoadedProject { entry_index, modules, resolver })
 }
@@ -5490,6 +5597,29 @@ fn parse_loaded_module_diagnostics(
     Ok(LoadedModule { path, source, ast, edition })
 }
 
+fn monomorphize_loaded_entry(modules: &mut [LoadedModule], entry_index: usize) -> Result<()> {
+    let module =
+        modules.get_mut(entry_index).ok_or_else(|| CompileError::without_span("entry module index is outside the loaded project"))?;
+    module.ast = generics::monomorphize(&module.ast).map_err(|error| attach_file_if_missing(error, &module.path))?;
+    Ok(())
+}
+
+fn monomorphize_loaded_entry_diagnostics(
+    modules: &mut [LoadedModule],
+    entry_index: usize,
+) -> std::result::Result<(), Vec<CompileError>> {
+    let module = modules
+        .get_mut(entry_index)
+        .ok_or_else(|| vec![CompileError::without_span("entry module index is outside the loaded project")])?;
+    match generics::monomorphize(&module.ast) {
+        Ok(ast) => {
+            module.ast = ast;
+            Ok(())
+        }
+        Err(error) => Err(vec![attach_file_if_missing(error, &module.path)]),
+    }
+}
+
 fn source_edition(path: &Utf8Path) -> Result<CellScriptEdition> {
     find_package_root(path)?
         .map(|root| load_manifest(&root).map(|manifest| manifest.package.edition))
@@ -5531,13 +5661,22 @@ fn validate_loaded_project_imports(resolver: &ModuleResolver, modules: &[LoadedM
 
 /// Compile CellScript source code
 pub fn compile(source: &str, options: CompileOptions) -> Result<CompileResult> {
+    compile_with_executable_surface_policy(source, options, ExecutableSurfacePolicy::AllowFailClosed)
+}
+
+/// Compile CellScript source under an explicit executable-surface policy.
+pub fn compile_with_executable_surface_policy(
+    source: &str,
+    options: CompileOptions,
+    policy: ExecutableSurfacePolicy,
+) -> Result<CompileResult> {
     // 1. Lexical analysis
     let tokens = lexer::lex(source)?;
 
     // 2. Parse
-    let ast = parser::parse(&tokens)?;
+    let ast = generics::monomorphize(&parser::parse(&tokens)?)?;
 
-    let mut result = compile_ast(&ast, &options, None)?;
+    let mut result = compile_ast_with_build(&ast, &options, None, None, None, policy)?;
     bind_compile_result_source_metadata(&mut result, vec![source_unit_from_bytes("<memory>", "memory", source.as_bytes())])?;
     result.validate()?;
     Ok(result)
@@ -5547,8 +5686,15 @@ pub fn compile(source: &str, options: CompileOptions) -> Result<CompileResult> {
 /// from in-memory source as the payload-free `fungible-type-group-v1` entry.
 pub fn compile_fungible_type_group_entry(source: &str, options: CompileOptions) -> Result<CompileResult> {
     let tokens = lexer::lex(source)?;
-    let ast = parser::parse(&tokens)?;
-    let mut result = compile_ast_with_build(&ast, &options, None, None, Some(&CompileEntryScope::FungibleTypeGroupV1))?;
+    let ast = generics::monomorphize(&parser::parse(&tokens)?)?;
+    let mut result = compile_ast_with_build(
+        &ast,
+        &options,
+        None,
+        None,
+        Some(&CompileEntryScope::FungibleTypeGroupV1),
+        ExecutableSurfacePolicy::AllowFailClosed,
+    )?;
     bind_compile_result_source_metadata(&mut result, vec![source_unit_from_bytes("<memory>", "memory", source.as_bytes())])?;
     result.validate()?;
     Ok(result)
@@ -5562,9 +5708,9 @@ pub fn compile_fungible_type_group_entry_for(
     type_name: impl Into<String>,
 ) -> Result<CompileResult> {
     let tokens = lexer::lex(source)?;
-    let ast = parser::parse(&tokens)?;
+    let ast = generics::monomorphize(&parser::parse(&tokens)?)?;
     let scope = CompileEntryScope::FungibleTypeGroupV1For(type_name.into());
-    let mut result = compile_ast_with_build(&ast, &options, None, None, Some(&scope))?;
+    let mut result = compile_ast_with_build(&ast, &options, None, None, Some(&scope), ExecutableSurfacePolicy::AllowFailClosed)?;
     bind_compile_result_source_metadata(&mut result, vec![source_unit_from_bytes("<memory>", "memory", source.as_bytes())])?;
     result.validate()?;
     Ok(result)
@@ -5573,13 +5719,15 @@ pub fn compile_fungible_type_group_entry_for(
 /// Only generate compile metadata, without asm/elf artifact.
 pub fn compile_metadata(source: &str, edition: CellScriptEdition, target: Option<String>) -> Result<CompileMetadata> {
     let tokens = lexer::lex(source)?;
-    let ast = parser::parse(&tokens)?;
+    let ast = generics::monomorphize(&parser::parse(&tokens)?)?;
     let artifact_format = ArtifactFormat::from_target(target.as_deref().unwrap_or(DEFAULT_TARGET))?;
     let target_profile = TargetProfile::Ckb;
     types::check(&ast)?;
     flow::check(&ast)?;
     let ir = ir::generate(&ast)?;
     let mut metadata = compile_metadata_from_ir(&ir, artifact_format, target_profile, edition, None);
+    bind_public_interface(&mut metadata, &ast);
+    bind_typed_semantics(&mut metadata, &ir);
     bind_source_metadata(&mut metadata, vec![source_unit_from_bytes("<memory>", "memory", source.as_bytes())]);
     validate_compile_metadata(&metadata, artifact_format)?;
     Ok(metadata)
@@ -5622,6 +5770,10 @@ pub fn compile_metadata_with_diagnostics(
         Ok(ast) => ast,
         Err(diagnostics) => return CompileMetadataDiagnosticReport { metadata: None, diagnostics },
     };
+    let ast = match generics::monomorphize(&ast) {
+        Ok(ast) => ast,
+        Err(error) => return CompileMetadataDiagnosticReport { metadata: None, diagnostics: vec![error] },
+    };
     let artifact_format = match ArtifactFormat::from_target(target.as_deref().unwrap_or(DEFAULT_TARGET)) {
         Ok(format) => format,
         Err(error) => return CompileMetadataDiagnosticReport { metadata: None, diagnostics: vec![error] },
@@ -5646,6 +5798,8 @@ pub fn compile_metadata_with_diagnostics(
         }
     };
     let mut metadata = compile_metadata_from_ir(&ir, artifact_format, target_profile, edition, None);
+    bind_public_interface(&mut metadata, &ast);
+    bind_typed_semantics(&mut metadata, &ir);
     bind_source_metadata(&mut metadata, vec![source_unit_from_bytes("<memory>", "memory", source.as_bytes())]);
     if let Err(error) = validate_compile_metadata(&metadata, artifact_format) {
         diagnostics.push(error);
@@ -5686,6 +5840,8 @@ pub fn compile_sources_metadata_with_diagnostics(
         }
     };
     let mut metadata = compile_metadata_from_ir(&ir, artifact_format, target_profile, edition, None);
+    bind_public_interface(&mut metadata, &entry.ast);
+    bind_typed_semantics(&mut metadata, &ir);
     let source_units = sources
         .iter()
         .map(|source| {
@@ -5785,6 +5941,8 @@ fn compile_file_metadata_with_diagnostics(
     };
     let mut metadata =
         compile_metadata_from_ir(&ir, artifact_format, target_profile, options.edition, options.primitive_compat.as_deref());
+    bind_public_interface(&mut metadata, &entry.ast);
+    bind_typed_semantics(&mut metadata, &ir);
     match collect_source_units_for_compile_file(path).and_then(|source_units| {
         bind_source_metadata(&mut metadata, source_units);
         if let Some(manifest) = manifest.as_ref() {
@@ -6010,10 +6168,6 @@ action issue_two(amount: u64) -> Token {
     }
 }
 
-fn compile_ast(ast: &ast::Module, options: &CompileOptions, resolver: Option<(&ModuleResolver, &str)>) -> Result<CompileResult> {
-    compile_ast_with_build(ast, options, resolver, None, None)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompileEntryScope {
     Action(String),
@@ -6022,12 +6176,71 @@ pub enum CompileEntryScope {
     FungibleTypeGroupV1For(String),
 }
 
+/// Controls whether artifact generation may retain compiler-recognized
+/// fail-closed lowering placeholders.
+///
+/// Metadata-only compilation is intentionally unaffected: the Playground and
+/// audit tools still need to describe reserved constructs. Production-facing
+/// callers should use `DenyFailClosed` so the compiler rejects the source
+/// before ASM or ELF bytes are generated.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExecutableSurfacePolicy {
+    #[default]
+    AllowFailClosed,
+    DenyFailClosed,
+}
+
+/// Validate the executable lowering boundary represented by compile metadata.
+///
+/// This function is public for tooling that consumes metadata directly. The
+/// production compile path also invokes the same validation before codegen.
+pub fn validate_executable_surface(metadata: &CompileMetadata, policy: ExecutableSurfacePolicy) -> Result<()> {
+    if policy == ExecutableSurfacePolicy::AllowFailClosed || metadata.runtime.fail_closed_runtime_features.is_empty() {
+        return Ok(());
+    }
+
+    let scopes = metadata
+        .actions
+        .iter()
+        .filter(|action| !action.fail_closed_runtime_features.is_empty())
+        .map(|action| format!("action {}: {}", action.name, action.fail_closed_runtime_features.join(", ")))
+        .chain(
+            metadata
+                .functions
+                .iter()
+                .filter(|function| !function.fail_closed_runtime_features.is_empty())
+                .map(|function| format!("fn {}: {}", function.name, function.fail_closed_runtime_features.join(", "))),
+        )
+        .chain(
+            metadata
+                .locks
+                .iter()
+                .filter(|lock| !lock.fail_closed_runtime_features.is_empty())
+                .map(|lock| format!("lock {}: {}", lock.name, lock.fail_closed_runtime_features.join(", "))),
+        )
+        .collect::<Vec<_>>();
+    let scope_detail = if scopes.is_empty() { metadata.runtime.fail_closed_runtime_features.join(", ") } else { scopes.join("; ") };
+
+    Err(CompileError::without_span(format!(
+        "executable surface is incomplete under deny-fail-closed; production artifact generation stopped before codegen ({scope_detail})"
+    ))
+    .with_code("E2105")
+    .with_details(serde_json::json!({
+        "policy": "deny-fail-closed",
+        "phase": "pre-codegen",
+        "module": metadata.module,
+        "features": metadata.runtime.fail_closed_runtime_features,
+        "scopes": scopes,
+    })))
+}
+
 fn compile_ast_with_build(
     ast: &ast::Module,
     options: &CompileOptions,
     resolver: Option<(&ModuleResolver, &str)>,
     build: Option<&BuildConfig>,
     entry_scope: Option<&CompileEntryScope>,
+    executable_surface_policy: ExecutableSurfacePolicy,
 ) -> Result<CompileResult> {
     validate_compile_options(options)?;
     let target_profile = TargetProfile::from_options(options, build)?;
@@ -6076,6 +6289,8 @@ fn compile_ast_with_build(
 
     let mut metadata =
         compile_metadata_from_ir(ir, artifact_format, target_profile, options.edition, options.primitive_compat.as_deref());
+    bind_public_interface(&mut metadata, lowering_ast);
+    bind_typed_semantics(&mut metadata, ir);
     let target_policy_violations = target_profile_artifact_policy_violations(&metadata, target_profile);
     if !target_policy_violations.is_empty() {
         return Err(CompileError::without_span(format!(
@@ -6084,6 +6299,7 @@ fn compile_ast_with_build(
             target_policy_violations.join("\n  - ")
         )));
     }
+    validate_executable_surface(&metadata, executable_surface_policy)?;
 
     // 5. Code generation
     let codegen_options = codegen::CodegenOptions { opt_level: options.opt_level, debug: options.debug, target_profile };
@@ -6161,7 +6377,7 @@ pub fn compile_path<P: AsRef<Utf8Path>>(path: P, options: CompileOptions) -> Res
 
 /// Compile from file
 pub fn compile_file<P: AsRef<Utf8Path>>(path: P, options: CompileOptions) -> Result<CompileResult> {
-    compile_file_with_entry_scope(path, options, None)
+    compile_file_with_entry_scope(path, options, None, ExecutableSurfacePolicy::AllowFailClosed)
 }
 
 pub fn compile_file_with_entry_action<P: AsRef<Utf8Path>>(
@@ -6169,7 +6385,12 @@ pub fn compile_file_with_entry_action<P: AsRef<Utf8Path>>(
     options: CompileOptions,
     action: impl Into<String>,
 ) -> Result<CompileResult> {
-    compile_file_with_entry_scope(path, options, Some(CompileEntryScope::Action(action.into())))
+    compile_file_with_entry_scope(
+        path,
+        options,
+        Some(CompileEntryScope::Action(action.into())),
+        ExecutableSurfacePolicy::AllowFailClosed,
+    )
 }
 
 pub fn compile_file_with_entry_lock<P: AsRef<Utf8Path>>(
@@ -6177,13 +6398,18 @@ pub fn compile_file_with_entry_lock<P: AsRef<Utf8Path>>(
     options: CompileOptions,
     lock: impl Into<String>,
 ) -> Result<CompileResult> {
-    compile_file_with_entry_scope(path, options, Some(CompileEntryScope::Lock(lock.into())))
+    compile_file_with_entry_scope(path, options, Some(CompileEntryScope::Lock(lock.into())), ExecutableSurfacePolicy::AllowFailClosed)
 }
 
 /// Compile the unique structurally eligible fungible Type Script invariant as
 /// the payload-free `fungible-type-group-v1` verifier entry.
 pub fn compile_file_with_fungible_type_group_entry<P: AsRef<Utf8Path>>(path: P, options: CompileOptions) -> Result<CompileResult> {
-    compile_file_with_entry_scope(path, options, Some(CompileEntryScope::FungibleTypeGroupV1))
+    compile_file_with_entry_scope(
+        path,
+        options,
+        Some(CompileEntryScope::FungibleTypeGroupV1),
+        ExecutableSurfacePolicy::AllowFailClosed,
+    )
 }
 
 /// Compile one named structurally eligible fungible type from a file or
@@ -6193,7 +6419,12 @@ pub fn compile_file_with_fungible_type_group_entry_for<P: AsRef<Utf8Path>>(
     options: CompileOptions,
     type_name: impl Into<String>,
 ) -> Result<CompileResult> {
-    compile_file_with_entry_scope(path, options, Some(CompileEntryScope::FungibleTypeGroupV1For(type_name.into())))
+    compile_file_with_entry_scope(
+        path,
+        options,
+        Some(CompileEntryScope::FungibleTypeGroupV1For(type_name.into())),
+        ExecutableSurfacePolicy::AllowFailClosed,
+    )
 }
 
 pub fn compile_path_with_entry_action<P: AsRef<Utf8Path>>(
@@ -6232,10 +6463,26 @@ pub fn compile_path_with_fungible_type_group_entry_for<P: AsRef<Utf8Path>>(
     compile_file_with_fungible_type_group_entry_for(&resolved, options, type_name)
 }
 
+/// Compile a file or package under an explicit executable-surface policy.
+///
+/// This is the production-facing entry used by CLI build/check commands. It
+/// keeps the existing permissive APIs source-compatible while making the
+/// policy decision explicit for callers that promise executable closure.
+pub fn compile_path_with_executable_surface_policy<P: AsRef<Utf8Path>>(
+    path: P,
+    options: CompileOptions,
+    entry_scope: Option<CompileEntryScope>,
+    policy: ExecutableSurfacePolicy,
+) -> Result<CompileResult> {
+    let resolved = resolve_input_path(path)?;
+    compile_file_with_entry_scope(&resolved, options, entry_scope, policy)
+}
+
 fn compile_file_with_entry_scope<P: AsRef<Utf8Path>>(
     path: P,
     mut options: CompileOptions,
     entry_scope: Option<CompileEntryScope>,
+    executable_surface_policy: ExecutableSurfacePolicy,
 ) -> Result<CompileResult> {
     let path = path.as_ref();
     let path = canonical_utf8_path(path)?;
@@ -6250,6 +6497,7 @@ fn compile_file_with_entry_scope<P: AsRef<Utf8Path>>(
     // Cache is only used for default entry scope (no --entry-action / --entry-lock).
     if entry_scope.is_none() {
         if let Some(cached) = incremental_cache_hit(&path, &cache_units, &options) {
+            validate_executable_surface(&cached.metadata, executable_surface_policy)?;
             return Ok(cached);
         }
     }
@@ -6268,6 +6516,7 @@ fn compile_file_with_entry_scope<P: AsRef<Utf8Path>>(
         Some((&project.resolver, &ast.name)),
         manifest.as_ref().map(|manifest| &manifest.build),
         entry_scope.as_ref(),
+        executable_surface_policy,
     )?;
     bind_compile_result_source_metadata(&mut result, source_units)?;
     if let Some(manifest) = manifest.as_ref() {
@@ -6350,7 +6599,13 @@ fn incremental_cache_hit(path: &Utf8Path, cache_units: &[SourceUnitMetadata], op
         },
         artifact_hash,
         metadata,
-        ast: ast::Module { name: String::new(), items: Vec::new(), span: crate::error::Span { start: 0, end: 0, line: 0, column: 0 } },
+        ast: ast::Module {
+            name: String::new(),
+            items: Vec::new(),
+            interface_templates: Vec::new(),
+            visibilities: BTreeMap::new(),
+            span: crate::error::Span { start: 0, end: 0, line: 0, column: 0 },
+        },
         verified_lowering_record,
         source_artifact_map,
         verified_artifact_draft: None,
@@ -6743,6 +6998,56 @@ pub fn source_map_output_path_from_artifact(artifact_path: &Utf8Path) -> Utf8Pat
     artifact_path.with_file_name(format!("{}.sourcemap.json", file_name))
 }
 
+fn generic_instantiation_metadata(ir: &ir::IrModule) -> Vec<GenericInstantiationMetadata> {
+    let mut entries = BTreeMap::<String, GenericInstantiationMetadata>::new();
+    let mut insert = |kind: &str, concrete_name: &str, fixed_layout_required: bool| {
+        let Some((template, type_arguments)) = generics::decode_monomorph_name(concrete_name) else {
+            return;
+        };
+        let identity = format!("{}::{}<{}>", ir.name, template, type_arguments.join(","));
+        entries.entry(identity.clone()).or_insert_with(|| GenericInstantiationMetadata {
+            schema: "cellscript-generic-instantiation-v1".to_string(),
+            version: 1,
+            kind: kind.to_string(),
+            template,
+            concrete_name: concrete_name.to_string(),
+            identity,
+            type_arguments,
+            value_ability_registry_version: ast::ValueAbility::REGISTRY_VERSION,
+            constraints_verified: true,
+            fixed_layout_required,
+            cell_backed_layout_rejected: fixed_layout_required,
+            identity_includes_phantom_arguments: true,
+        });
+    };
+    for item in &ir.items {
+        match item {
+            ir::IrItem::TypeDef(definition) => insert("struct", &definition.name, true),
+            ir::IrItem::PureFn(function) => insert("function", &function.name, false),
+            _ => {}
+        }
+    }
+    for name in ir.enum_layouts.keys() {
+        insert("enum", name, true);
+    }
+    entries.into_values().collect()
+}
+
+fn bind_public_interface(metadata: &mut CompileMetadata, ast: &ast::Module) {
+    metadata.public_interface = interface::build(ast, metadata);
+    metadata.interface_hash = interface::hash(&metadata.public_interface);
+}
+
+fn bind_typed_semantics(metadata: &mut CompileMetadata, ir: &ir::IrModule) {
+    let mut typed = typed_semantics::build(ir, metadata);
+    typed.interface_hash = metadata.interface_hash.clone();
+    typed.canonicalize();
+    metadata.typed_semantics_hash =
+        cellscript_artifact_checker::canonical_hash(cellscript_artifact_checker::TYPED_SEMANTICS_SCHEMA, &typed)
+            .expect("compiler-emitted typed semantics are serializable");
+    metadata.typed_semantics = typed;
+}
+
 fn compile_metadata_from_ir(
     ir: &ir::IrModule,
     artifact_format: ArtifactFormat,
@@ -6809,6 +7114,7 @@ fn compile_metadata_from_ir(
     let borrow_regions = borrow_region_metadata(ir);
     let capability_proofs = capability_proof_metadata(ir);
     let compatibility_profile = resolve_compatibility_profile(edition, target_profile.name(), primitive_assurance);
+    let generic_instantiations = generic_instantiation_metadata(ir);
     let mut metadata = CompileMetadata {
         metadata_schema_version: METADATA_SCHEMA_VERSION,
         source_metadata_schema_version: SOURCE_METADATA_SCHEMA_VERSION,
@@ -6818,6 +7124,10 @@ fn compile_metadata_from_ir(
         edition,
         compatibility_profile,
         module: ir.name.clone(),
+        public_interface: interface::PackageInterface::default(),
+        interface_hash: String::new(),
+        typed_semantics: cellscript_artifact_checker::TypedSemanticRecord::default(),
+        typed_semantics_hash: String::new(),
         artifact_format: artifact_format.display_name().to_string(),
         target_profile: target_profile.metadata(artifact_format),
         artifact_hash: None,
@@ -6836,6 +7146,7 @@ fn compile_metadata_from_ir(
         },
         capability_registry: capability_registry_metadata(),
         enum_layouts: payload_enum_layout_metadata(ir),
+        generic_instantiations,
         runtime: RuntimeMetadata {
             vm_target: "CKB-VM compatible RISC-V 64 IMC+B+MOP".to_string(),
             vm_version: "VERSION2".to_string(),
@@ -6961,6 +7272,7 @@ fn compile_metadata_from_ir(
                             &cell_type_kinds,
                             &ir.enum_layouts,
                         ),
+                        return_type: action.return_type.as_ref().map(ir_type_to_string),
                         effect_class: scheduler_effect_class,
                         parallelizable: action.scheduler_hints.parallelizable,
                         touches_shared: action.scheduler_hints.touches_shared.iter().map(hex_hash).collect(),
@@ -7942,8 +8254,9 @@ fn borrow_region_metadata(ir: &ir::IrModule) -> Vec<BorrowRegionMetadata> {
             scope_kind: scope_kind.to_string(),
             scope_name: scope_name.to_string(),
             root: region.root.clone(),
+            path: region.path.clone(),
             binding: region.binding.clone(),
-            view_type: format!("View<{}>", region.root_type),
+            view_type: format!("View<{}>", region.view_type),
             storage: "none".to_string(),
             abi: "none".to_string(),
             allowed_effects: vec!["Pure".to_string(), "ReadOnly".to_string()],
@@ -18299,10 +18612,10 @@ pub const NAME: &str = "cellc";
 mod tests {
     use super::{
         compile, compile_file, compile_file_with_entry_action, compile_file_with_entry_lock, compile_fungible_type_group_entry,
-        compile_path, decode_scheduler_witness_hex, default_output_path_for_input, encode_entry_witness_args_for_params,
-        incremental_cache_key, load_modules_for_input, resolve_input_path, source_unit_from_bytes,
-        validate_primitive_strict_017_metadata, ActionMetadata, ArtifactFormat, CkbRuntimeAccessMetadata, CompileOptions,
-        EntryWitnessArg, ENTRY_WITNESS_ABI_MAGIC, SCHEDULER_WITNESS_ABI_MOLECULE,
+        compile_path, compile_with_executable_surface_policy, decode_scheduler_witness_hex, default_output_path_for_input,
+        encode_entry_witness_args_for_params, incremental_cache_key, load_modules_for_input, resolve_input_path,
+        source_unit_from_bytes, validate_primitive_strict_017_metadata, ActionMetadata, ArtifactFormat, CkbRuntimeAccessMetadata,
+        CompileOptions, EntryWitnessArg, ExecutableSurfacePolicy, ENTRY_WITNESS_ABI_MAGIC, SCHEDULER_WITNESS_ABI_MOLECULE,
     };
     use crate::{ir, lexer, parser};
     use camino::{Utf8Path, Utf8PathBuf};
@@ -18346,8 +18659,10 @@ mod tests {
         crate::types::check(&ast).unwrap();
         crate::flow::check(&ast).unwrap();
         let ir = ir::generate(&ast).unwrap();
-        let metadata =
+        let mut metadata =
             crate::compile_metadata_from_ir(&ir, ArtifactFormat::RiscvAssembly, target_profile, crate::CURRENT_EDITION, None);
+        crate::bind_public_interface(&mut metadata, &ast);
+        crate::bind_typed_semantics(&mut metadata, &ir);
         crate::validate_compile_metadata(&metadata, ArtifactFormat::RiscvAssembly).unwrap();
         metadata
     }
@@ -21834,6 +22149,35 @@ action eq128(left: u128, right: u128) -> bool {
 }
 "#;
 
+    const U128_MOD_PROGRAM: &str = r#"
+module test
+
+fn mod128(left: u128, right: u128) -> u128 {
+    return left % right
+}
+
+action remainder(left: u128, right: u128) -> u128 {
+    verification
+        return mod128(left, right)
+}
+"#;
+
+    const U128_LITERAL_PROGRAM: &str = r#"
+module test
+
+const MAX: u128 = 340282366920938463463374607431768211455
+
+fn max_value() -> u128 {
+    let inferred = 340282366920938463463374607431768211455
+    return inferred
+}
+
+action is_max(value: u128) -> bool {
+    verification
+        return value == MAX && value == max_value()
+}
+"#;
+
     const U128_MUTATE_PROGRAM: &str = r#"
 module test
 
@@ -22614,6 +22958,82 @@ action inspect(token: Token, expected: u64) -> u64 {
         assert!(assembly.contains("call amount_is"), "missing pure borrow helper call:\n{}", assembly);
         assert!(assembly.contains("call positive"), "missing read-only borrow helper call:\n{}", assembly);
         assert!(!assembly.contains("View<Token>"), "borrow marker leaked into runtime assembly:\n{}", assembly);
+    }
+
+    #[test]
+    fn compile_checks_field_borrows_and_read_only_reborrows_against_the_linear_root() {
+        let source = r#"
+module test
+
+resource Token has destroy { amount: u64 }
+
+action inspect(token: Token) -> u64 {
+    verification
+        borrow token.amount as amount_view {
+            borrow amount_view as again {
+                require *again > 0
+            }
+        }
+        destroy token
+        return 0
+}
+"#;
+
+        let result = compile(source, CompileOptions::default()).unwrap();
+        assert_eq!(result.metadata.runtime.borrow_regions.len(), 2);
+        let field = &result.metadata.runtime.borrow_regions[0];
+        assert_eq!(field.root, "token");
+        assert_eq!(field.path, ["amount"]);
+        assert_eq!(field.view_type, "View<u64>");
+        let reborrow = &result.metadata.runtime.borrow_regions[1];
+        assert_eq!(reborrow.root, "token");
+        assert_eq!(reborrow.path, ["amount"]);
+        assert_eq!(reborrow.view_type, "View<u64>");
+
+        let invalid = r#"
+module test
+resource Token has destroy { amount: u64 }
+action bad(token: Token) {
+    verification
+        borrow token.amount as amount_view {
+            borrow amount_view as again {
+                destroy token
+                require *again > 0
+            }
+        }
+}
+"#;
+        let error = compile(invalid, CompileOptions::default()).unwrap_err();
+        assert!(error.message.contains("cannot cross destroy of linear root 'token'"), "unexpected error: {}", error.message);
+    }
+
+    #[test]
+    fn generic_read_only_calls_preserve_cell_borrow_authority() {
+        let source = r#"
+module test
+
+resource Token has destroy { amount: u64 }
+
+#[effect(Pure)]
+fn visible<T: cell>(value: &T) -> bool {
+    return true
+}
+
+action inspect(token: Token) -> u64 {
+    verification
+        borrow token as view {
+            require visible<Token>(view)
+        }
+        destroy token
+        return 0
+}
+"#;
+        let result = compile(source, CompileOptions::default()).unwrap();
+        assert!(result
+            .metadata
+            .generic_instantiations
+            .iter()
+            .any(|entry| entry.template == "visible" && entry.type_arguments == ["Token"]));
     }
 
     #[test]
@@ -24576,7 +24996,7 @@ action issue(witness old_cell: OutPoint, witness digest: Hash) -> issued: Receip
 
         let duplicate = compile(DUPLICATE_MATCH_VARIANT_PROGRAM, CompileOptions::default()).unwrap_err();
         assert!(
-            duplicate.message.contains("duplicate match arm for enum variant 'Flag::On'"),
+            duplicate.message.contains("duplicate exhaustive match coverage for enum variant 'On'"),
             "unexpected error: {}",
             duplicate.message
         );
@@ -24594,7 +25014,7 @@ action issue(witness old_cell: OutPoint, witness digest: Hash) -> issued: Receip
     fn compile_rejects_payload_enum_pattern_arity_mismatches() {
         let err = compile(ENUM_PAYLOAD_VARIANT_PROGRAM, CompileOptions::default()).unwrap_err();
         assert!(
-            err.message.contains("match pattern 'MaybeAmount::Some' expects 1 payload binding(s), got 0"),
+            err.message.contains("match pattern 'MaybeAmount::Some' expects 1 payload pattern(s), got 0"),
             "unexpected error: {}",
             err.message
         );
@@ -24620,15 +25040,12 @@ action issue(witness old_cell: OutPoint, witness digest: Hash) -> issued: Receip
         let unknown = compile(UNKNOWN_NAMED_TYPE_PROGRAM, CompileOptions::default()).unwrap_err();
         assert!(unknown.message.contains("unknown type 'MissingType'"), "unexpected error: {}", unknown.message);
 
-        let reserved = compile(RESERVED_OPTION_TYPE_PROGRAM, CompileOptions::default()).unwrap_err();
-        assert!(
-            reserved.message.contains("type 'Option' is reserved for the explicit error model but is not implemented yet"),
-            "unexpected error: {}",
-            reserved.message
-        );
+        let option = compile(RESERVED_OPTION_TYPE_PROGRAM, CompileOptions::default()).unwrap();
+        assert!(option.metadata.generic_instantiations.iter().any(|item| item.template == "Option"));
 
         let generic = compile(USER_GENERIC_TYPE_PROGRAM, CompileOptions::default()).unwrap_err();
-        assert!(generic.message.contains("post-v1 template/codegen syntax"), "unexpected error: {}", generic.message);
+        assert_eq!(generic.code.as_deref(), Some("E2111"));
+        assert!(generic.message.contains("has no local template available"), "unexpected error: {}", generic.message);
     }
 
     #[test]
@@ -26108,6 +26525,104 @@ action batch(collection_before: Collection, recipients: Vec<Address>) -> collect
             "u128 equality should not fall through to the generic fail-closed path:\n{}",
             asm
         );
+    }
+
+    #[test]
+    fn compile_lowers_u128_modulo_without_fail_closed_debt() {
+        let result = compile_with_executable_surface_policy(
+            U128_MOD_PROGRAM,
+            CompileOptions::default(),
+            ExecutableSurfacePolicy::DenyFailClosed,
+        )
+        .unwrap();
+        let asm = String::from_utf8(result.artifact_bytes.clone()).unwrap();
+        assert!(
+            !result.metadata.runtime.fail_closed_runtime_features.contains(&"u128-modulo".to_string()),
+            "u128 modulo must not carry fail-closed metadata: {:?}",
+            result.metadata.runtime.fail_closed_runtime_features
+        );
+        assert!(asm.contains("checked u128 remainder by restoring long division"), "missing u128 remainder lowering:\n{asm}");
+        assert!(!asm.contains("u128 Mod requires full-width lowering"), "legacy fail-closed modulo path remains:\n{asm}");
+    }
+
+    #[test]
+    fn compile_preserves_full_width_u128_decimal_literals() {
+        let result = compile_with_executable_surface_policy(
+            U128_LITERAL_PROGRAM,
+            CompileOptions::default(),
+            ExecutableSurfacePolicy::DenyFailClosed,
+        )
+        .unwrap();
+        let asm = String::from_utf8(result.artifact_bytes).unwrap();
+
+        assert!(asm.contains("# cellscript abi: u128 compare high limb first"));
+        let max_value_body = asm
+            .split(".global max_value")
+            .nth(1)
+            .and_then(|body| body.split(".section .text").next())
+            .expect("max_value assembly body");
+        assert!(max_value_body.contains("# cellscript abi: materialize u128 const at stack+"));
+        assert_eq!(
+            max_value_body.matches("sb t0, ").count(),
+            16,
+            "u128::MAX must materialize all sixteen 0xff bytes:\n{max_value_body}"
+        );
+    }
+
+    #[test]
+    fn compile_rejects_u128_decimal_literal_in_u64_context() {
+        let source = r#"
+module test
+
+fn too_narrow() -> u64 {
+    return 18446744073709551616
+}
+"#;
+        let error = compile(source, CompileOptions::default()).expect_err("a literal wider than u64 must not be truncated");
+        assert!(
+            error.message.contains("integer literal 18446744073709551616 does not fit expected type u64"),
+            "unexpected error: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn compile_lowers_integer_bitwise_and_shift_operations_to_elf() {
+        let source = r#"
+module bitwise_shift
+
+fn scalar(value: u64, mask: u64, count: u64) -> u64 {
+    return ((value & mask) | (value ^ mask)) << count
+}
+
+fn wide(value: u128, mask: u128, count: u64) -> u128 {
+    return ((value & mask) | (value ^ mask)) >> count
+}
+
+fn contextual_literals() -> u8 {
+    return (1 << 7) | 3
+}
+"#;
+        for opt_level in [0, 1] {
+            let result =
+                compile(source, CompileOptions { target: Some("riscv64-elf".to_string()), opt_level, ..CompileOptions::default() })
+                    .unwrap();
+            assert!(result.artifact_bytes.starts_with(b"\x7fELF"));
+        }
+    }
+
+    #[test]
+    fn compile_rejects_static_shift_amount_at_value_width() {
+        let source = r#"
+module bitwise_shift
+
+fn bad(value: u8) -> u8 {
+    return value << 8
+}
+"#;
+        let error = compile(source, CompileOptions::default()).expect_err("static shift amount at width must be rejected");
+        assert_eq!(error.code.as_deref(), Some("E2106"));
+        assert!(error.message.contains("out of range for 8-bit u8"), "unexpected error: {}", error.message);
     }
 
     #[test]
@@ -29937,6 +30452,7 @@ action transfer_token(token: Token, to: Address) -> next_token: Token {
         ActionMetadata {
             name: "scheduler".to_string(),
             params: vec![],
+            return_type: Some("unit".to_string()),
             effect_class: "Pure".to_string(),
             parallelizable: false,
             touches_shared: vec![],
@@ -33549,9 +34065,11 @@ enum Bytes { None, Some(Vec<u8>) }
             (
                 r#"
 module payload::generic
-enum Option<T> { None, Some(T) }
+resource Token has consume { amount: u64 }
+enum Boxed<T> { Empty, Some(T) }
+fn hide(input: Token) -> Boxed<Token> { Boxed::Some<Token>(input) }
 "#,
-                "generic enum declarations are deferred",
+                "cannot be hidden in ordinary generic layout",
             ),
             (
                 r#"
@@ -33587,5 +34105,232 @@ fn limit() -> Limit { Limit::Some(7) }
         result.metadata.enum_layouts[0].variants[1].fields[0].offset_bytes = 2;
         let error = result.validate().unwrap_err();
         assert!(error.message.contains("canonical indices and packed offsets"), "unexpected error: {}", error.message);
+    }
+
+    #[test]
+    fn generic_value_struct_and_function_monomorphize_to_executable_elf() {
+        let source = r#"
+module generics::pair
+
+struct Pair<T: copy + drop + store + fixed + serializable + non_linear>
+    has copy, drop, store, fixed, serializable, non_linear
+{
+    left: T,
+    right: T,
+}
+
+fn choose_first<T: copy + drop + store + fixed + serializable + non_linear>(left: T, right: T) -> T {
+    return left
+}
+
+action verify() -> u64 {
+    verification
+        let pair: Pair<u64> = Pair<u64> { left: 42, right: 7 }
+        return choose_first(pair.left, pair.right)
+}
+"#;
+        let result = compile(source, CompileOptions { target: Some("riscv64-elf".to_string()), ..CompileOptions::default() }).unwrap();
+        assert_eq!(&result.artifact_bytes[..4], b"\x7fELF");
+        assert!(result.metadata.generic_instantiations.iter().any(|entry| {
+            entry.kind == "struct"
+                && entry.template == "Pair"
+                && entry.type_arguments == ["u64"]
+                && entry.identity == "generics::pair::Pair<u64>"
+        }));
+        assert!(result
+            .metadata
+            .generic_instantiations
+            .iter()
+            .any(|entry| { entry.kind == "function" && entry.template == "choose_first" && entry.type_arguments == ["u64"] }));
+    }
+
+    #[test]
+    fn generic_value_enum_preserves_payload_layout_and_match_semantics() {
+        let source = r#"
+module generics::option
+
+enum Maybe<T: copy + drop + store + fixed + serializable + non_linear>
+    has copy, drop, store, fixed, serializable, non_linear
+{
+    None,
+    Some(T),
+}
+
+fn unwrap_or<T: copy + drop + store + fixed + serializable + non_linear>(value: Maybe<T>, fallback: T) -> T {
+    return match value {
+        Maybe::Some(inner) => { inner }
+        Maybe::None => { fallback }
+    }
+}
+
+action verify() -> u64 {
+    verification
+        let value: Maybe<u64> = Maybe::Some<u64>(42)
+        return unwrap_or<u64>(value, 0)
+}
+"#;
+        let result = compile(source, CompileOptions::default()).unwrap();
+        assert!(result.metadata.enum_layouts.iter().any(|layout| layout.variants.iter().any(|variant| variant.name == "Some")));
+        assert!(result
+            .metadata
+            .generic_instantiations
+            .iter()
+            .any(|entry| { entry.kind == "enum" && entry.template == "Maybe" && entry.type_arguments == ["u64"] }));
+    }
+
+    #[test]
+    fn nested_generic_values_preserve_derived_abilities() {
+        let source = r#"
+module generics::nested
+
+struct Pair<T: copy + drop + store + fixed + serializable + non_linear>
+    has copy, drop, store, fixed, serializable, non_linear
+{
+    left: T,
+    right: T,
+}
+
+struct Envelope<T: copy + drop + store + fixed + serializable + non_linear>
+    has copy, drop, store, fixed, serializable, non_linear
+{
+    value: T,
+}
+
+action verify() -> u64 {
+    verification
+        let pair: Pair<u64> = Pair<u64> { left: 20, right: 22 }
+        let envelope: Envelope<Pair<u64>> = Envelope<Pair<u64>> { value: pair }
+        return envelope.value.left + envelope.value.right
+}
+"#;
+        let result = compile(source, CompileOptions::default()).unwrap();
+        assert!(result.metadata.generic_instantiations.iter().any(|entry| entry.identity == "generics::nested::Envelope<Pair<u64>>"));
+    }
+
+    #[test]
+    fn nested_tuple_struct_enum_and_or_patterns_lower_completely() {
+        let source = r#"
+module patterns::complete
+
+struct Point { x: u64, y: u64 }
+enum Inner { None, Some((u64, u64)) }
+enum Outer { Empty, Wrapped(Inner) }
+enum Switch { Off, On, Unknown }
+
+action verify() -> u64 {
+    verification
+        let point: Point = Point { x: 1, y: 2 }
+        let point_sum = match point {
+            Point { x, y } => { x + y }
+        }
+        let inner: Inner = Inner::Some((20, 22))
+        let outer: Outer = Outer::Wrapped(inner)
+        let payload_sum = match outer {
+            Outer::Wrapped(Inner::Some((left, right))) => { left + right }
+            _ => { 0 }
+        }
+        let switch: Switch = Switch::Unknown
+        let switched = match switch {
+            Switch::On | Switch::Unknown => { 1 }
+            Switch::Off => { 0 }
+        }
+        return point_sum + payload_sum + switched
+}
+"#;
+        let result = compile(source, CompileOptions { target: Some("riscv64-elf".to_string()), ..CompileOptions::default() }).unwrap();
+        assert_eq!(&result.artifact_bytes[..4], b"\x7fELF");
+        result.validate().unwrap();
+    }
+
+    #[test]
+    fn builtin_option_and_generic_fixed_vector_use_the_same_kernel() {
+        let source = r#"
+module generics::prelude
+
+fn duplicate<T: copy + drop + store + fixed + serializable + non_linear>(value: T) -> [T; 2] {
+    return [value, value]
+}
+
+action verify() -> u64 {
+    verification
+        let values: [u64; 2] = duplicate<u64>(21)
+        let optional: Option<u64> = Option::Some<u64>(values[1])
+        return match optional {
+            Option::Some(value) => { value }
+            Option::None => { 0 }
+        }
+}
+"#;
+        let result = compile(source, CompileOptions::default()).unwrap();
+        assert!(result.metadata.generic_instantiations.iter().any(|entry| entry.identity == "generics::prelude::Option<u64>"));
+        assert!(result.metadata.generic_instantiations.iter().any(|entry| entry.identity == "generics::prelude::duplicate<u64>"));
+    }
+
+    #[test]
+    fn phantom_arguments_change_identity_without_hiding_cell_layout() {
+        let source = r#"
+module generics::phantom
+
+resource AssetA has consume { amount: u64 }
+resource AssetB has consume { amount: u64 }
+
+struct Tagged<phantom T> has copy, drop, store, fixed, serializable, non_linear {
+    value: u64,
+}
+
+action verify() -> u64 {
+    verification
+        let left: Tagged<AssetA> = Tagged<AssetA> { value: 20 }
+        let right: Tagged<AssetB> = Tagged<AssetB> { value: 22 }
+        return left.value + right.value
+}
+"#;
+        let result = compile(source, CompileOptions::default()).unwrap();
+        let identities = result
+            .metadata
+            .generic_instantiations
+            .iter()
+            .filter(|entry| entry.template == "Tagged")
+            .map(|entry| entry.identity.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(identities, ["generics::phantom::Tagged<AssetA>", "generics::phantom::Tagged<AssetB>"]);
+    }
+
+    #[test]
+    fn generic_kernel_rejects_phantom_layout_use_and_hidden_cells() {
+        let phantom = compile(
+            r#"
+module generics::bad_phantom
+struct Bad<phantom T> { value: T }
+"#,
+            CompileOptions::default(),
+        )
+        .unwrap_err();
+        assert_eq!(phantom.code.as_deref(), Some("E2110"));
+        assert!(phantom.message.contains("appears in serialized layout"));
+
+        let hidden = compile(
+            r#"
+module generics::hidden_cell
+resource Token has consume { amount: u64 }
+struct Box<T> { value: T }
+fn hide(value: Token) -> Box<Token> { Box<Token> { value } }
+"#,
+            CompileOptions::default(),
+        )
+        .unwrap_err();
+        assert_eq!(hidden.code.as_deref(), Some("E2111"));
+        assert!(hidden.message.contains("cannot be hidden in ordinary generic layout"));
+
+        let reserved = compile(
+            r#"
+module generics::reserved
+enum Option<T> { None, Some(T) }
+"#,
+            CompileOptions::default(),
+        )
+        .unwrap_err();
+        assert_eq!(reserved.code.as_deref(), Some("E2110"));
+        assert!(reserved.message.contains("reserved by the CellScript prelude"));
     }
 }

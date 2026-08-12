@@ -81,14 +81,15 @@ implicit backend contracts more implicit.
   internal assembler.
 - The current Tier 1 real instruction forms are `add`, `addi`, `sub`, `and`,
   `andi`, `or`, `xor`, `mul`, `div`, `divu`, `rem`, `remu`, `slt`, `sltu`,
-  `xori`, `ld`, `lbu`, `sb`, `sh`, `sw`, `sd`, `slli`, `srli`, `beq`, `bne`,
-  `blt`, `bge`, `bltu`, `bgeu`, `ret`, and `ecall`.
+  `xori`, `ld`, `lbu`, `sb`, `sh`, `sw`, `sd`, `sll`, `srl`, `sra`, `slli`,
+  `srli`, `srai`, `beq`, `bne`, `blt`, `bge`, `bltu`, `bgeu`, `ret`, and
+  `ecall`.
 - Treat pseudo-instructions and aliases as explicit API. `li`, `la`, `call`,
   `j`, `mv`, `seqz`, `snez`, `neg`, `sgt`, `sgtu`, `bgt`, `bgez`, `beqz`, and
   `bnez` are supported because current generated surfaces use them.
 - Tier 2 candidates may be added when an optimizer, typed emission path, or
   constant materializer needs them: `nop`, `lui`, `auipc`, raw `jal`/`jalr`,
-  `ori`, `sll`, `srl`, `sra`, `srai`, `addw`, `addiw`, and `subw`.
+  `ori`, `addw`, `addiw`, and `subw`.
 - Tier 3 instructions remain demand-driven: signed byte/half/word loads,
   unsigned half/word loads, `slti`, `sltiu`, branch aliases such as `ble`,
   `bleu`, `bgtu`, `bltz`, `bgtz`, `blez`, plus `not` and `jr`.

@@ -16,6 +16,7 @@ mod ckb_acceptance_live;
 mod ckb_adapter_live;
 mod ckb_devnet;
 mod crypto;
+mod executable_surface;
 mod external_attestation;
 mod external_handoff;
 mod fiber_experiments;
@@ -151,6 +152,11 @@ enum Command {
     },
     /// Validate freshness markers in CellScript documentation headers.
     CheckDocStatus,
+    /// Validate or regenerate the compiler-owned executable-surface matrix.
+    CheckExecutableSurface {
+        #[arg(long)]
+        write: bool,
+    },
     /// Validate repository-local Markdown link targets.
     CheckMarkdownLinks,
     /// Reject retired runtime sources, artifacts, and active-tooling residue.
@@ -400,6 +406,10 @@ fn main() -> ExitCode {
             }
         }
         Command::CheckDocStatus => match repository_checks::check_doc_status(&root) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => failure(error),
+        },
+        Command::CheckExecutableSurface { write } => match executable_surface::run(&root, write) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => failure(error),
         },

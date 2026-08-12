@@ -25,6 +25,7 @@ struct Args {
     artifact_kind: String,
     profile: String,
     compatibility_profile_hash: Option<String>,
+    interface_hash: Option<String>,
     artifact_hash: Option<String>,
     abi_hash: Option<String>,
     build_recipe_hash: Option<String>,
@@ -40,6 +41,7 @@ struct VerificationOutput {
     source_hash: String,
     manifest_hash: String,
     compatibility_profile_hash: Option<String>,
+    interface_hash: Option<String>,
     artifact_format: String,
     checker_version: Option<String>,
     checker_policy_schema: Option<String>,
@@ -156,6 +158,7 @@ fn verify(args: Args) -> Result<VerificationOutput> {
 fn verify_cellscript_source(args: Args, snapshot: &[u8]) -> Result<VerificationOutput> {
     let compatibility_profile_expected =
         args.compatibility_profile_hash.as_deref().context("cellscript_source requires --compatibility-profile-hash")?;
+    let interface_expected = args.interface_hash.as_deref().context("cellscript_source requires --interface-hash")?;
 
     let work = unique_work_dir()?;
     let _cleanup = Cleanup(work.clone());
@@ -189,6 +192,7 @@ fn verify_cellscript_source(args: Args, snapshot: &[u8]) -> Result<VerificationO
         serde_json::to_vec(&result.metadata.compatibility_profile).context("failed to serialize compatibility profile")?;
     let compatibility_profile_hash = hex::encode(cellscript::ckb_blake2b256(&compatibility_profile_bytes));
     require_matching_hash("compatibility_profile_hash", &compatibility_profile_hash, compatibility_profile_expected)?;
+    require_matching_hash("interface_hash", &result.metadata.interface_hash, interface_expected)?;
 
     let artifact_hash = result.metadata.artifact_hash.clone().unwrap_or_else(|| hex::encode(result.artifact_hash));
     let metadata_bytes = serde_json::to_vec(&result.metadata).context("failed to serialize compile metadata")?;
@@ -203,6 +207,7 @@ fn verify_cellscript_source(args: Args, snapshot: &[u8]) -> Result<VerificationO
         source_hash: args.source_hash,
         manifest_hash: args.manifest_hash,
         compatibility_profile_hash: args.compatibility_profile_hash,
+        interface_hash: args.interface_hash,
         artifact_format: result.artifact_format.display_name().to_string(),
         checker_version: None,
         checker_policy_schema: None,
@@ -337,6 +342,7 @@ fn verify_artifact_bundle(args: Args, snapshot: &[u8]) -> Result<VerificationOut
         source_hash: args.source_hash,
         manifest_hash: args.manifest_hash,
         compatibility_profile_hash: verified_compatibility_profile_hash,
+        interface_hash: None,
         artifact_format: artifact_format.to_string(),
         checker_version,
         checker_policy_schema,
@@ -412,6 +418,7 @@ fn parse_args() -> Result<Args> {
         artifact_kind: take("--artifact-kind")?,
         profile: take("--profile")?,
         compatibility_profile_hash: values.remove("--compatibility-profile-hash"),
+        interface_hash: values.remove("--interface-hash"),
         artifact_hash: values.remove("--artifact-hash"),
         abi_hash: values.remove("--abi-hash"),
         build_recipe_hash: values.remove("--build-recipe-hash"),
@@ -590,6 +597,7 @@ action identity(value: u64) -> u64 {
             artifact_kind: "source_library".to_string(),
             profile: "cellscript_source".to_string(),
             compatibility_profile_hash: Some(compatibility_profile_hash.clone()),
+            interface_hash: Some(result.metadata.interface_hash.clone()),
             artifact_hash: None,
             abi_hash: None,
             build_recipe_hash: None,
@@ -599,6 +607,7 @@ action identity(value: u64) -> u64 {
         assert_eq!(output.source_hash, source_hash);
         assert_eq!(output.manifest_hash, manifest_hash);
         assert_eq!(output.compatibility_profile_hash.as_deref(), Some(compatibility_profile_hash.as_str()));
+        assert_eq!(output.interface_hash.as_deref(), Some(result.metadata.interface_hash.as_str()));
         assert_eq!(output.artifact_hash.as_deref().unwrap().len(), 64);
         assert_eq!(output.metadata_hash.len(), 64);
     }
@@ -807,6 +816,7 @@ action identity(value: u64) -> u64 {
             artifact_kind: kind.to_string(),
             profile: profile.to_string(),
             compatibility_profile_hash: None,
+            interface_hash: None,
             artifact_hash,
             abi_hash,
             build_recipe_hash,

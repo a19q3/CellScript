@@ -114,6 +114,36 @@ pub const COMPILER_ERROR_INFOS: &[CompilerErrorInfo] = &[
         hint: "Inspect the function call ABI, return layout, and unsupported expression in the diagnostic.",
     },
     CompilerErrorInfo {
+        code: "E2105",
+        name: "executable-surface-incomplete",
+        description: "Production artifact generation was requested for source whose executable lowering is incomplete.",
+        hint: "Remove the reported construct, use metadata-only analysis, or complete its compiler and CKB-VM lowering before production use.",
+    },
+    CompilerErrorInfo {
+        code: "E2106",
+        name: "shift-amount-out-of-range",
+        description: "A compile-time integer shift amount is outside the width of its left operand.",
+        hint: "Use a shift amount from zero up to one less than the left operand's bit width.",
+    },
+    CompilerErrorInfo {
+        code: "E2110",
+        name: "generic-declaration-invalid",
+        description: "A generic declaration violates parameter, phantom, or value-ability rules.",
+        hint: "Check parameter uniqueness, phantom layout use, and the separation between value abilities and Cell capabilities.",
+    },
+    CompilerErrorInfo {
+        code: "E2111",
+        name: "generic-instantiation-invalid",
+        description: "A concrete generic instantiation violates arity, constraints, layout, or Cell-ownership rules.",
+        hint: "Supply explicit type arguments that satisfy the declared value constraints and do not hide Cell-backed values.",
+    },
+    CompilerErrorInfo {
+        code: "E2112",
+        name: "generic-instantiation-budget",
+        description: "Generic specialization exceeded a deterministic nesting, count, or identity-size budget.",
+        hint: "Reduce nested or recursively expanding instantiations and keep concrete type identities compact.",
+    },
+    CompilerErrorInfo {
         code: "E2200",
         name: "unresolved-assembly-symbol",
         description: "Generated assembly references a label or call target that was not emitted.",

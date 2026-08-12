@@ -53,6 +53,7 @@ struct Oracle {
     capability_operation: Option<String>,
     capability_type: Option<String>,
     payload_enum: Option<String>,
+    generic_identity: Option<String>,
     protocol_role_action: Option<String>,
     protocol_role: Option<String>,
     protocol_role_source: Option<String>,
@@ -186,6 +187,7 @@ fn parse_seed(root: &Path, path: &Path) -> Result<AuditCase> {
             "capability_operation" => oracle.capability_operation = Some(value),
             "capability_type" => oracle.capability_type = Some(value),
             "payload_enum" => oracle.payload_enum = Some(value),
+            "generic_identity" => oracle.generic_identity = Some(value),
             "protocol_role_action" => oracle.protocol_role_action = Some(value),
             "protocol_role" => oracle.protocol_role = Some(value),
             "protocol_role_source" => oracle.protocol_role_source = Some(value),
@@ -489,6 +491,20 @@ fn validate_metadata(root: &Path, case: &AuditCase, metadata_path: &Path, run_di
     }
 
     let oracle = &case.oracle;
+    if let Some(identity) = &oracle.generic_identity {
+        let instantiations = metadata.get("generic_instantiations").and_then(Value::as_array).cloned().unwrap_or_default();
+        if !instantiations.iter().any(|entry| entry.get("identity").and_then(Value::as_str) == Some(identity)) {
+            push_failure(
+                &mut failures,
+                root,
+                case,
+                run_dir,
+                "SCA-META-GENERIC-IDENTITY",
+                format!("missing generic instantiation identity {identity}"),
+            )?;
+        }
+    }
+
     if let Some(operation) = &oracle.capability_operation {
         let registry = metadata.get("capability_registry").unwrap_or(&Value::Null);
         if registry.get("capability_set_version").and_then(Value::as_u64) != Some(1)

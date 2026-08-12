@@ -167,6 +167,10 @@ export interface RegistryVersionEntry {
   edition?: typeof CELLSCRIPT_EDITION;
   /** Hash of the resolved edition + target + assurance + ABI + schema axes. */
   compatibility_profile_hash?: string;
+  /** CKB Blake2b-256 hash of the canonical CellScript public interface. */
+  interface_hash?: string;
+  /** Canonical interface used for deterministic server-side upgrade admission. */
+  interface?: Record<string, unknown>;
   artifact_hash?: string;
   build_recipe_hash?: string;
   abi_hash?: string;
@@ -720,6 +724,79 @@ export function validatePublishPayload(payload: unknown, registryOrigin: string,
   return result;
 }
 
+/**
+ * Conservative server-side upgrade admission for canonical CellScript
+ * interfaces. Additive exports are accepted; removing or changing an existing
+ * public signature, layout, effect/capability, builder, runtime, or deployment
+ * contract is rejected before the signed release is recorded.
+ */
+export function validateInterfaceUpgrade(previous: unknown, candidate: unknown): void {
+  const oldInterface = assertPlainObject(previous, "invalid_previous_public_interface");
+  const newInterface = assertPlainObject(candidate, "invalid_public_interface");
+  for (const key of ["types", "constants", "callables"] as const) {
+    const oldItems = interfaceItems(oldInterface[key], key);
+    const newItems = interfaceItems(newInterface[key], key);
+    for (const [identity, oldItem] of oldItems) {
+      const newItem = newItems.get(identity);
+      if (!newItem) {
+        throw new ApiError(409, "incompatible_public_interface", `${key} export '${identity}' was removed`);
+      }
+      const oldComparable = interfaceCompatibilityShape(key, oldItem);
+      const newComparable = interfaceCompatibilityShape(key, newItem);
+      if (canonicalJson(oldComparable) !== canonicalJson(newComparable)) {
+        throw new ApiError(409, "incompatible_public_interface", `${key} export '${identity}' changed incompatibly`);
+      }
+    }
+  }
+  for (const key of ["runtime_contract", "deployment_contract_hash"] as const) {
+    if (canonicalJson(oldInterface[key]) !== canonicalJson(newInterface[key])) {
+      throw new ApiError(409, "incompatible_public_interface", `${key} changed incompatibly`);
+    }
+  }
+}
+
+function interfaceItems(value: unknown, label: string): Map<string, Record<string, unknown>> {
+  if (!Array.isArray(value)) {
+    throw new ApiError(400, "invalid_public_interface", `public interface ${label} must be an array`);
+  }
+  const items = new Map<string, Record<string, unknown>>();
+  for (const rawItem of value) {
+    const item = assertPlainObject(rawItem, "invalid_public_interface");
+    const identity = requireString(item, "identity");
+    if (items.has(identity)) {
+      throw new ApiError(400, "invalid_public_interface", `duplicate public interface identity '${identity}'`);
+    }
+    items.set(identity, item);
+  }
+  return items;
+}
+
+function interfaceCompatibilityShape(kind: "types" | "constants" | "callables", item: Record<string, unknown>): unknown {
+  if (kind === "types") {
+    return {
+      kind: item["kind"],
+      type_parameters: item["type_parameters"],
+      value_abilities: item["value_abilities"],
+      cell_capabilities: item["cell_capabilities"],
+      layout_identity: item["layout_identity"],
+      type_identity: item["type_identity"] ?? null,
+    };
+  }
+  if (kind === "callables") {
+    return {
+      kind: item["kind"],
+      type_parameters: item["type_parameters"],
+      params: item["params"],
+      return_type: item["return_type"] ?? null,
+      outputs: item["outputs"],
+      effect: item["effect"],
+      entry_witness_abi: item["entry_witness_abi"] ?? null,
+      builder_contract_hash: item["builder_contract_hash"],
+    };
+  }
+  return { type: item["type"] };
+}
+
 function validateHash(value: string, field: string, code: string): void {
   if (!/^(?:0x)?[0-9a-fA-F]{64}$/.test(value)) {
     throw new ApiError(400, code, `${field} must be a 32-byte hex content hash`);
@@ -780,6 +857,16 @@ function validateRegistryEntry(
       }
       const compatibilityProfileHash = requireString(published, "compatibility_profile_hash");
       validateHash(compatibilityProfileHash, "compatibility_profile_hash", "invalid_compatibility_profile_hash");
+      const interfaceHash = requireString(published, "interface_hash");
+      validateHash(interfaceHash, "interface_hash", "invalid_interface_hash");
+      const publicInterface = assertPlainObject(published["interface"], "invalid_public_interface");
+      if (publicInterface["schema"] !== "cellscript-package-interface-v1" || publicInterface["version"] !== 1) {
+        throw new ApiError(400, "unsupported_public_interface", "public interface must use cellscript-package-interface-v1");
+      }
+      const computedInterfaceHash = ckbBlake2bHex(canonicalJson(publicInterface));
+      if (computedInterfaceHash.replace(/^0x/, "") !== interfaceHash.replace(/^0x/, "")) {
+        throw new ApiError(400, "interface_hash_mismatch", "interface_hash must bind the canonical public interface");
+      }
       const dependencies = assertPlainObject(published["dependencies"], "invalid_registry_dependencies");
       for (const [dependencyName, dependencyValue] of Object.entries(dependencies)) {
         validatePackageIdent(dependencyName, "dependency name");

@@ -252,6 +252,7 @@ async function runBuildVerification(job: VerificationJobRecord, version: Package
     job.artifact.profile,
   ];
   if (job.compatibility_profile_hash) verifierArgs.push("--compatibility-profile-hash", job.compatibility_profile_hash);
+  if (published.interface_hash) verifierArgs.push("--interface-hash", published.interface_hash);
   if (published.artifact_hash) verifierArgs.push("--artifact-hash", published.artifact_hash);
   if (published.abi_hash) verifierArgs.push("--abi-hash", published.abi_hash);
   if (published.build_recipe_hash) verifierArgs.push("--build-recipe-hash", published.build_recipe_hash);

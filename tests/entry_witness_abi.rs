@@ -45,6 +45,157 @@ action always_success() -> u64 {
 }
 "#;
 
+const LOOP_CONTROL_ENTRY: &str = r#"
+module loop_control_entry
+
+action verify() -> u64 {
+    verification
+        let mut total: u64 = 0
+        label outer: for i in 0..4 {
+            for j in 0..4 {
+                if j == 0 {
+                    continue
+                }
+                if i == 2 {
+                    break outer
+                }
+                total += 1
+            }
+        }
+        require total == 6
+        return 0
+}
+"#;
+
+const U128_DIV_REM_ENTRY: &str = r#"
+module entry_witness_u128_div_rem
+
+action verify(
+    witness left: u128,
+    witness right: u128,
+    witness expected_quotient: u128,
+    witness expected_remainder: u128,
+) -> u64 {
+    verification
+        require left / right == expected_quotient
+        require left % right == expected_remainder
+        return 0
+}
+"#;
+
+const SCALAR_DIV_REM_ENTRY: &str = r#"
+module entry_witness_scalar_div_rem
+
+action verify(
+    witness left: u64,
+    witness right: u64,
+    witness expected_quotient: u64,
+    witness expected_remainder: u64,
+) -> u64 {
+    verification
+        require left / right == expected_quotient
+        require left % right == expected_remainder
+        return 0
+}
+"#;
+
+const U128_BITWISE_SHIFT_ENTRY: &str = r#"
+module entry_witness_u128_bitwise_shift
+
+action verify(
+    witness value: u128,
+    witness other: u128,
+    witness count: u64,
+    witness expected_and: u128,
+    witness expected_or: u128,
+    witness expected_xor: u128,
+    witness expected_left: u128,
+    witness expected_right: u128,
+) -> u64 {
+    verification
+        require (value & other) == expected_and
+        require (value | other) == expected_or
+        require (value ^ other) == expected_xor
+        require (value << count) == expected_left
+        require (value >> count) == expected_right
+        return 0
+}
+"#;
+
+const SCALAR_SHIFT_ENTRY: &str = r#"
+module entry_witness_scalar_shift
+
+action verify(
+    witness unsigned: u32,
+    witness signed: i32,
+    witness count: u64,
+    witness expected_left: u32,
+    witness expected_right: u32,
+    witness expected_signed_right: i32,
+) -> u64 {
+    verification
+        require (unsigned << count) == expected_left
+        require (unsigned >> count) == expected_right
+        require (signed >> count) == expected_signed_right
+        return 0
+}
+"#;
+
+const GENERIC_VALUE_ENTRY: &str = r#"
+module entry_witness_generic_values
+
+struct Pair<T: copy + drop + store + fixed + serializable + non_linear>
+    has copy, drop, store, fixed, serializable, non_linear
+{
+    left: T,
+    right: T,
+}
+
+fn first<T: copy + drop + store + fixed + serializable + non_linear>(pair: Pair<T>) -> T {
+    return pair.left
+}
+
+action verify(witness expected: u64) -> u64 {
+    verification
+        let pair: Pair<u64> = Pair<u64> { left: expected, right: 0 }
+        let optional: Option<u64> = Option::Some<u64>(first<u64>(pair))
+        let actual: u64 = match optional {
+            Option::Some(value) => { value }
+            Option::None => { 0 }
+        }
+        require actual == expected
+        return 0
+}
+"#;
+
+const COMPLETE_PATTERN_ENTRY: &str = r#"
+module entry_witness_complete_patterns
+
+struct Point { x: u64, y: u64 }
+enum Inner { None, Some((u64, u64)) }
+enum Outer { Empty, Wrapped(Inner) }
+enum Switch { Off, On, Unknown }
+
+action verify() -> u64 {
+    verification
+        let point: Point = Point { x: 1, y: 2 }
+        let point_sum = match point { Point { x, y } => { x + y } }
+        let inner: Inner = Inner::Some((20, 22))
+        let outer: Outer = Outer::Wrapped(inner)
+        let payload_sum = match outer {
+            Outer::Wrapped(Inner::Some((left, right))) => { left + right }
+            _ => { 0 }
+        }
+        let switch: Switch = Switch::Unknown
+        let switched = match switch {
+            Switch::On | Switch::Unknown => { 1 }
+            Switch::Off => { 0 }
+        }
+        require point_sum + payload_sum + switched == 46
+        return 0
+}
+"#;
+
 const SIGNED_TX_MAX_CYCLES: u64 = 70_000_000;
 
 fn canonical_multisig_v2_witness(entry_payload: Bytes) -> packed::WitnessArgs {
@@ -70,6 +221,91 @@ fn raw_entry_payload(value: u64) -> Bytes {
     let mut payload = b"CSARGv1\0".to_vec();
     payload.extend_from_slice(&value.to_le_bytes());
     Bytes::from(payload)
+}
+
+fn raw_u128_div_rem_payload(left: u128, right: u128, expected_quotient: u128, expected_remainder: u128) -> Bytes {
+    let mut payload = b"CSARGv1\0".to_vec();
+    payload.extend_from_slice(&left.to_le_bytes());
+    payload.extend_from_slice(&right.to_le_bytes());
+    payload.extend_from_slice(&expected_quotient.to_le_bytes());
+    payload.extend_from_slice(&expected_remainder.to_le_bytes());
+    Bytes::from(payload)
+}
+
+fn execute_u128_div_rem(
+    elf: &[u8],
+    left: u128,
+    right: u128,
+    expected_quotient: u128,
+    expected_remainder: u128,
+) -> ckb_script_runner::CkbScriptExecutionResult {
+    let witness = canonical_multisig_v2_witness(raw_u128_div_rem_payload(left, right, expected_quotient, expected_remainder));
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    fixture.witnesses = vec![witness.as_bytes()];
+    execute_cellscript_script(elf, &fixture)
+}
+
+fn execute_scalar_div_rem(
+    elf: &[u8],
+    left: u64,
+    right: u64,
+    expected_quotient: u64,
+    expected_remainder: u64,
+) -> ckb_script_runner::CkbScriptExecutionResult {
+    let mut payload = b"CSARGv1\0".to_vec();
+    for value in [left, right, expected_quotient, expected_remainder] {
+        payload.extend_from_slice(&value.to_le_bytes());
+    }
+    let witness = canonical_multisig_v2_witness(Bytes::from(payload));
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    fixture.witnesses = vec![witness.as_bytes()];
+    execute_cellscript_script(elf, &fixture)
+}
+
+fn raw_u128_bitwise_shift_payload(value: u128, other: u128, count: u64, expected: [u128; 5]) -> Bytes {
+    let mut payload = b"CSARGv1\0".to_vec();
+    payload.extend_from_slice(&value.to_le_bytes());
+    payload.extend_from_slice(&other.to_le_bytes());
+    payload.extend_from_slice(&count.to_le_bytes());
+    for item in expected {
+        payload.extend_from_slice(&item.to_le_bytes());
+    }
+    Bytes::from(payload)
+}
+
+fn execute_u128_bitwise_shift(
+    elf: &[u8],
+    value: u128,
+    other: u128,
+    count: u64,
+    expected: [u128; 5],
+) -> ckb_script_runner::CkbScriptExecutionResult {
+    let witness = canonical_multisig_v2_witness(raw_u128_bitwise_shift_payload(value, other, count, expected));
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    fixture.witnesses = vec![witness.as_bytes()];
+    execute_cellscript_script(elf, &fixture)
+}
+
+fn execute_scalar_shift(
+    elf: &[u8],
+    unsigned: u32,
+    signed: i32,
+    count: u64,
+    expected_left: u32,
+    expected_right: u32,
+    expected_signed_right: i32,
+) -> ckb_script_runner::CkbScriptExecutionResult {
+    let mut payload = b"CSARGv1\0".to_vec();
+    payload.extend_from_slice(&unsigned.to_le_bytes());
+    payload.extend_from_slice(&signed.to_le_bytes());
+    payload.extend_from_slice(&count.to_le_bytes());
+    payload.extend_from_slice(&expected_left.to_le_bytes());
+    payload.extend_from_slice(&expected_right.to_le_bytes());
+    payload.extend_from_slice(&expected_signed_right.to_le_bytes());
+    let witness = canonical_multisig_v2_witness(Bytes::from(payload));
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    fixture.witnesses = vec![witness.as_bytes()];
+    execute_cellscript_script(elf, &fixture)
 }
 
 fn execute_on_second_group_input(witness: Bytes) -> ckb_script_runner::CkbScriptExecutionResult {
@@ -193,6 +429,104 @@ fn witnessargs_input_type_falls_back_to_group_output_zero() {
     let witness = canonical_multisig_v2_witness(raw_entry_payload(42));
     let result = execute_on_output_only_group(witness.as_bytes());
     assert_eq!(result.exit_code, 0, "an output-only type group must resolve GroupOutput#0: {:?}", result.captured_debug);
+}
+
+#[test]
+fn u128_division_and_modulo_execute_exact_wide_values_in_ckb_vm() {
+    let elf = compile_cellscript_source_to_elf(U128_DIV_REM_ENTRY, "verify", None);
+    let vectors = [(0, 1), (u64::MAX as u128 + 17, 97), (1u128 << 127, 3), (u128::MAX, (1u128 << 127) + 123), (u128::MAX, u128::MAX)];
+
+    for (left, right) in vectors {
+        let expected_quotient = left / right;
+        let expected_remainder = left % right;
+        let result = execute_u128_div_rem(&elf, left, right, expected_quotient, expected_remainder);
+        assert_eq!(
+            result.exit_code, 0,
+            "{left} / {right} should equal {expected_quotient} with remainder {expected_remainder} in CKB-VM: {:?}",
+            result.captured_debug
+        );
+    }
+
+    let zero = execute_u128_div_rem(&elf, u128::MAX, 0, 0, 0);
+    assert_eq!(zero.exit_code, 20, "u128 division or modulo by zero must use the stable numeric failure: {:?}", zero.captured_debug);
+}
+
+#[test]
+fn scalar_division_and_modulo_reject_zero_in_ckb_vm() {
+    let elf = compile_cellscript_source_to_elf(SCALAR_DIV_REM_ENTRY, "verify", None);
+    let valid = execute_scalar_div_rem(&elf, u64::MAX, 97, u64::MAX / 97, u64::MAX % 97);
+    assert_eq!(valid.exit_code, 0, "scalar division and modulo must execute exactly: {:?}", valid.captured_debug);
+
+    let zero = execute_scalar_div_rem(&elf, u64::MAX, 0, 0, 0);
+    assert_eq!(zero.exit_code, 20, "scalar division or modulo by zero must use the stable numeric failure: {:?}", zero.captured_debug);
+}
+
+#[test]
+fn u128_bitwise_and_shift_operations_execute_in_ckb_vm() {
+    let elf = compile_cellscript_source_to_elf(U128_BITWISE_SHIFT_ENTRY, "verify", None);
+    let vectors = [
+        (u128::MAX, 0x55aa_55aa_55aa_55aa_aa55_aa55_aa55_aa55, 0),
+        (0x0123_4567_89ab_cdef_fedc_ba98_7654_3210, 0xf0f0_0f0f_f0f0_0f0f_aaaa_5555_aaaa_5555, 1),
+        (1, u128::MAX - 1, 63),
+        (1, u128::MAX - 1, 64),
+        (0x8000_0000_0000_0001_0000_0000_0000_0001, u128::MAX, 127),
+    ];
+    for (value, other, count) in vectors {
+        let expected = [value & other, value | other, value ^ other, value << count, value >> count];
+        let result = execute_u128_bitwise_shift(&elf, value, other, count, expected);
+        assert_eq!(
+            result.exit_code, 0,
+            "u128 bitwise/shift vector count={count} must execute exactly in CKB-VM: {:?}",
+            result.captured_debug
+        );
+    }
+
+    let invalid = execute_u128_bitwise_shift(&elf, 1, 0, 128, [0, 1, 1, 0, 0]);
+    assert_eq!(
+        invalid.exit_code, 65,
+        "runtime shift amount equal to the value width must use shift-amount-invalid: {:?}",
+        invalid.captured_debug
+    );
+}
+
+#[test]
+fn scalar_shift_width_and_i32_signedness_execute_in_ckb_vm() {
+    let elf = compile_cellscript_source_to_elf(SCALAR_SHIFT_ENTRY, "verify", None);
+    let result = execute_scalar_shift(&elf, 0xf000_000f, -16, 4, 0x0000_00f0, 0x0f00_0000, -1);
+    assert_eq!(result.exit_code, 0, "u32 truncation and i32 arithmetic shift must match source widths: {:?}", result.captured_debug);
+
+    let invalid = execute_scalar_shift(&elf, 1, -1, 32, 0, 0, 0);
+    assert_eq!(
+        invalid.exit_code, 65,
+        "runtime shift amount equal to the u32 width must use shift-amount-invalid: {:?}",
+        invalid.captured_debug
+    );
+}
+
+#[test]
+fn generic_struct_function_and_option_execute_in_ckb_vm() {
+    let elf = compile_cellscript_source_to_elf(GENERIC_VALUE_ENTRY, "verify", None);
+    let witness = canonical_multisig_v2_witness(raw_entry_payload(42));
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    fixture.witnesses = vec![witness.as_bytes()];
+    let result = execute_cellscript_script(&elf, &fixture);
+    assert_eq!(result.exit_code, 0, "generic value kernel must execute in CKB-VM: {:?}", result.captured_debug);
+}
+
+#[test]
+fn complete_value_patterns_execute_in_ckb_vm() {
+    let elf = compile_cellscript_source_to_elf(COMPLETE_PATTERN_ENTRY, "verify", None);
+    let fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let result = execute_cellscript_script(&elf, &fixture);
+    assert_eq!(result.exit_code, 0, "nested/struct/tuple/or patterns must execute in CKB-VM: {:?}", result.captured_debug);
+}
+
+#[test]
+fn labeled_break_and_continue_execute_in_ckb_vm() {
+    let elf = compile_cellscript_source_to_elf(LOOP_CONTROL_ENTRY, "verify", None);
+    let fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let result = execute_cellscript_script(&elf, &fixture);
+    assert_eq!(result.exit_code, 0, "labeled break and continue must execute in CKB-VM: {:?}", result.captured_debug);
 }
 
 #[test]

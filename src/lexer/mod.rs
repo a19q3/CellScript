@@ -140,8 +140,11 @@ impl<'a> Lexer<'a> {
         }
 
         let text = &self.input[start..self.position];
-        let value = text.parse::<u64>().map_err(|_| {
-            CompileError::new(format!("invalid integer literal: {}", text), Span::new(start, self.position, start_line, start_col))
+        let value = text.parse::<u128>().map_err(|_| {
+            CompileError::new(
+                format!("integer literal exceeds the supported 128-bit source range: {}", text),
+                Span::new(start, self.position, start_line, start_col),
+            )
         })?;
 
         let span = Span::new(start, self.position, start_line, start_col);
@@ -440,6 +443,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             '.' => Ok(Token::new(TokenKind::Dot, span, ".")),
+            '^' => Ok(Token::new(TokenKind::Caret, span, "^")),
 
             _ => Ok(Token::new(TokenKind::Invalid(c), span, c.to_string())),
         }
@@ -503,6 +507,18 @@ mod tests {
     }
 
     #[test]
+    fn accepts_the_full_u128_decimal_literal_range() {
+        let tokens = lex("340282366920938463463374607431768211455").unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Integer(value) if value == u128::MAX));
+    }
+
+    #[test]
+    fn rejects_decimal_literals_above_u128() {
+        let error = lex("340282366920938463463374607431768211456").expect_err("u128 overflow must be rejected by the lexer");
+        assert!(error.message.contains("exceeds the supported 128-bit source range"), "unexpected error: {}", error.message);
+    }
+
+    #[test]
     fn rejects_hex_literal_without_digits() {
         for source in ["0x", "0xG"] {
             let error = lex(source).expect_err("empty hex payload must be rejected");
@@ -519,7 +535,7 @@ mod tests {
 
     #[test]
     fn test_operators() {
-        let input = "+ - * / == != <= >= && ||";
+        let input = "+ - * / == != <= >= && || & | ^";
         let tokens = lex(input).unwrap();
         assert_eq!(tokens[0].kind, TokenKind::Plus);
         assert_eq!(tokens[1].kind, TokenKind::Minus);
@@ -531,6 +547,9 @@ mod tests {
         assert_eq!(tokens[7].kind, TokenKind::Ge);
         assert_eq!(tokens[8].kind, TokenKind::And);
         assert_eq!(tokens[9].kind, TokenKind::Or);
+        assert_eq!(tokens[10].kind, TokenKind::Ampersand);
+        assert_eq!(tokens[11].kind, TokenKind::Pipe);
+        assert_eq!(tokens[12].kind, TokenKind::Caret);
     }
 
     #[test]

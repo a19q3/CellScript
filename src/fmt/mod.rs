@@ -55,6 +55,14 @@ impl Formatter {
                 }
             }
             first = false;
+            if let Some(name) = item.name() {
+                match module.visibility_of(name) {
+                    Visibility::LegacyPublic => {}
+                    Visibility::Public => self.output.push_str("public "),
+                    Visibility::Package => self.output.push_str("public(package) "),
+                    Visibility::Private => self.output.push_str("private "),
+                }
+            }
             self.format_item(item)?;
         }
 
@@ -75,6 +83,7 @@ impl Formatter {
                     &resource.name,
                     &resource.fields,
                     Some(&resource.capabilities),
+                    None,
                     Some(&resource.identity),
                     resource.default_hash_type.as_ref(),
                     resource.capacity_floor.as_ref(),
@@ -88,6 +97,7 @@ impl Formatter {
                     &shared.name,
                     &shared.fields,
                     Some(&shared.capabilities),
+                    None,
                     Some(&shared.identity),
                     shared.default_hash_type.as_ref(),
                     shared.capacity_floor.as_ref(),
@@ -100,11 +110,13 @@ impl Formatter {
             }
             Item::Struct(struct_def) => {
                 self.format_type_id_attr(struct_def.type_id.as_ref());
+                let name = format!("{}{}", struct_def.name, format_type_params(&struct_def.type_params));
                 self.format_type_def(
                     "struct",
-                    &struct_def.name,
+                    &name,
                     &struct_def.fields,
                     None,
+                    Some(&struct_def.abilities),
                     None,
                     struct_def.default_hash_type.as_ref(),
                     struct_def.capacity_floor.as_ref(),
@@ -123,7 +135,11 @@ impl Formatter {
                 Ok(())
             }
             Item::Enum(enum_def) => {
-                self.push_line(&format!("enum {} {{", enum_def.name));
+                let mut header = format!("enum {}{}", enum_def.name, format_type_params(&enum_def.type_params));
+                if !enum_def.abilities.is_empty() {
+                    header.push_str(&format!(" has {}", format_value_abilities(&enum_def.abilities)));
+                }
+                self.push_line(&format!("{} {{", header));
                 self.indent_level += 1;
                 for variant in &enum_def.variants {
                     self.push_indent();
@@ -212,6 +228,7 @@ impl Formatter {
         name: &str,
         fields: &[Field],
         capabilities: Option<&[Capability]>,
+        value_abilities: Option<&[ValueAbility]>,
         identity: Option<&IdentityPolicy>,
         default_hash_type: Option<&HashTypeDecl>,
         capacity_floor: Option<&CapacityFloorDecl>,
@@ -222,6 +239,11 @@ impl Formatter {
             if !capabilities.is_empty() {
                 let rendered = capabilities.iter().map(format_capability).collect::<Vec<_>>().join(", ");
                 header.push_str(&format!(" has {}", rendered));
+            }
+        }
+        if let Some(abilities) = value_abilities {
+            if !abilities.is_empty() {
+                header.push_str(&format!(" has {}", format_value_abilities(abilities)));
             }
         }
         if has_type_policy(identity, default_hash_type, capacity_floor) {
@@ -398,7 +420,7 @@ impl Formatter {
         }
 
         let params = function.params.iter().map(format_param).collect::<Vec<_>>().join(", ");
-        let mut signature = format!("fn {}({})", function.name, params);
+        let mut signature = format!("fn {}{}({})", function.name, format_type_params(&function.type_params), params);
         if let Some(return_type) = &function.return_type {
             signature.push_str(&format!(" -> {}", format_type(return_type)));
         }
@@ -449,6 +471,14 @@ impl Formatter {
             Stmt::If(if_stmt) => self.format_if_stmt(if_stmt),
             Stmt::For(for_stmt) => self.format_for_stmt(for_stmt),
             Stmt::While(while_stmt) => self.format_while_stmt(while_stmt),
+            Stmt::Break(control) => self.push_line(&match &control.label {
+                Some(label) => format!("break {label}"),
+                None => "break".to_string(),
+            }),
+            Stmt::Continue(control) => self.push_line(&match &control.label {
+                Some(label) => format!("continue {label}"),
+                None => "continue".to_string(),
+            }),
             Stmt::Borrow(borrow_stmt) => self.format_borrow_stmt(borrow_stmt),
         }
     }
@@ -486,7 +516,12 @@ impl Formatter {
     }
 
     fn format_for_stmt(&mut self, for_stmt: &ForStmt) {
-        self.push_line(&format!("for {} in {} {{", format_binding_pattern(&for_stmt.pattern), self.format_expr(&for_stmt.iterable)));
+        let prefix = for_stmt.label.as_ref().map_or(String::new(), |label| format!("label {label}: "));
+        self.push_line(&format!(
+            "{prefix}for {} in {} {{",
+            format_binding_pattern(&for_stmt.pattern),
+            self.format_expr(&for_stmt.iterable)
+        ));
         self.indent_level += 1;
         for stmt in &for_stmt.body {
             self.format_stmt(stmt);
@@ -496,7 +531,8 @@ impl Formatter {
     }
 
     fn format_while_stmt(&mut self, while_stmt: &WhileStmt) {
-        self.push_line(&format!("while {} {{", self.format_expr(&while_stmt.condition)));
+        let prefix = while_stmt.label.as_ref().map_or(String::new(), |label| format!("label {label}: "));
+        self.push_line(&format!("{prefix}while {} {{", self.format_expr(&while_stmt.condition)));
         self.indent_level += 1;
         for stmt in &while_stmt.body {
             self.format_stmt(stmt);
@@ -506,7 +542,11 @@ impl Formatter {
     }
 
     fn format_borrow_stmt(&mut self, borrow_stmt: &BorrowStmt) {
-        self.push_line(&format!("borrow {} as {} {{", borrow_stmt.root, borrow_stmt.binding));
+        let source = std::iter::once(borrow_stmt.root.as_str())
+            .chain(borrow_stmt.path.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(".");
+        self.push_line(&format!("borrow {} as {} {{", source, borrow_stmt.binding));
         self.indent_level += 1;
         for stmt in &borrow_stmt.body {
             self.format_stmt(stmt);
@@ -538,9 +578,19 @@ impl Formatter {
                 self.format_expr(&assign.value)
             ),
             Expr::Binary(binary) => {
-                format!("{} {} {}", self.format_expr(&binary.left), format_binary_op(binary.op), self.format_expr(&binary.right))
+                let precedence = binary_precedence(binary.op);
+                let left = self.format_binary_operand(&binary.left, precedence, false);
+                let right = self.format_binary_operand(&binary.right, precedence, true);
+                format!("{} {} {}", left, format_binary_op(binary.op), right)
             }
-            Expr::Unary(unary) => format!("{}{}", format_unary_op(unary.op), self.format_expr(&unary.expr)),
+            Expr::Unary(unary) => {
+                let inner = self.format_expr(&unary.expr);
+                if matches!(unary.expr.as_ref(), Expr::Assign(_) | Expr::Binary(_) | Expr::Range(_)) {
+                    format!("{}({})", format_unary_op(unary.op), inner)
+                } else {
+                    format!("{}{}", format_unary_op(unary.op), inner)
+                }
+            }
             Expr::Call(call) => {
                 let func = self.format_expr(&call.func);
                 let type_args = if call.type_args.is_empty() {
@@ -675,6 +725,19 @@ impl Formatter {
                     format!("{} {{\n{}\n{}}}", base, fields, closing_indent)
                 }
             }
+        }
+    }
+
+    fn format_binary_operand(&self, expr: &Expr, parent_precedence: u8, right_operand: bool) -> String {
+        let rendered = self.format_expr(expr);
+        let Expr::Binary(binary) = expr else {
+            return rendered;
+        };
+        let child_precedence = binary_precedence(binary.op);
+        if child_precedence < parent_precedence || right_operand && child_precedence == parent_precedence {
+            format!("({})", rendered)
+        } else {
+            rendered
         }
     }
 
@@ -862,6 +925,33 @@ fn format_binding_pattern(pattern: &BindingPattern) -> String {
     }
 }
 
+fn format_type_params(params: &[TypeParam]) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    let rendered = params
+        .iter()
+        .map(|param| {
+            let mut value = String::new();
+            if param.phantom {
+                value.push_str("phantom ");
+            }
+            value.push_str(&param.name);
+            if !param.constraints.is_empty() {
+                value.push_str(": ");
+                value.push_str(&param.constraints.iter().map(|ability| ability.as_str()).collect::<Vec<_>>().join(" + "));
+            }
+            value
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("<{}>", rendered)
+}
+
+fn format_value_abilities(abilities: &[ValueAbility]) -> String {
+    abilities.iter().map(|ability| ability.as_str()).collect::<Vec<_>>().join(", ")
+}
+
 fn format_type(ty: &Type) -> String {
     match ty {
         Type::U8 => "u8".to_string(),
@@ -897,6 +987,26 @@ fn format_binary_op(op: BinaryOp) -> &'static str {
         BinaryOp::Ge => ">=",
         BinaryOp::And => "&&",
         BinaryOp::Or => "||",
+        BinaryOp::BitAnd => "&",
+        BinaryOp::BitOr => "|",
+        BinaryOp::BitXor => "^",
+        BinaryOp::Shl => "<<",
+        BinaryOp::Shr => ">>",
+    }
+}
+
+fn binary_precedence(op: BinaryOp) -> u8 {
+    match op {
+        BinaryOp::Or => 1,
+        BinaryOp::And => 2,
+        BinaryOp::BitOr => 3,
+        BinaryOp::BitXor => 4,
+        BinaryOp::BitAnd => 5,
+        BinaryOp::Eq | BinaryOp::Ne => 6,
+        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => 7,
+        BinaryOp::Shl | BinaryOp::Shr => 8,
+        BinaryOp::Add | BinaryOp::Sub => 9,
+        BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => 10,
     }
 }
 
@@ -945,6 +1055,31 @@ mod tests {
     use crate::{lexer, parser};
 
     #[test]
+    fn format_preserves_labeled_loop_control() {
+        let source = r#"
+module demo
+
+fn count() -> u64 {
+    label outer: for i in 0..4 {
+        if i == 1 {
+            continue outer
+        }
+        break outer
+    }
+    return 0
+}
+"#;
+        let formatted = verify_idempotent(source, FormatConfig::default()).and_then(|_| {
+            let module = parser::parse(&lexer::lex(source)?)?;
+            format_default(&module)
+        });
+        let formatted = formatted.unwrap();
+        assert!(formatted.contains("label outer: for i in 0..4 {"), "{formatted}");
+        assert!(formatted.contains("continue outer"), "{formatted}");
+        assert!(formatted.contains("break outer"), "{formatted}");
+    }
+
+    #[test]
     fn format_round_trips_simple_module() {
         let source = r#"
 module demo
@@ -963,6 +1098,44 @@ action add(x: u64, y: u64) -> u64 {
         assert!(formatted.contains("action add(x: u64, y: u64) -> u64 {\n    verification"));
         assert!(formatted.contains("let z = x + y"));
         assert!(formatted.contains("return z"));
+    }
+
+    #[test]
+    fn format_preserves_full_width_u128_decimal_literals() {
+        let source = r#"
+module demo
+
+const MAX: u128 = 340282366920938463463374607431768211455
+
+fn max_value() -> u128 {
+    return MAX
+}
+"#;
+        let tokens = lexer::lex(source).unwrap();
+        let module = parser::parse(&tokens).unwrap();
+        let formatted = format_default(&module).unwrap();
+
+        assert!(formatted.contains("340282366920938463463374607431768211455"));
+        let reparsed = parser::parse(&lexer::lex(&formatted).unwrap()).unwrap();
+        let reformatted = format_default(&reparsed).unwrap();
+        assert_eq!(formatted, reformatted);
+    }
+
+    #[test]
+    fn format_preserves_bitwise_shift_precedence() {
+        let source = r#"
+module demo
+
+fn mix(value: u64, mask: u64, count: u64) -> u64 {
+    return ((value & mask) | (value ^ mask)) << count
+}
+"#;
+        let formatted = verify_idempotent(source, FormatConfig::default()).and_then(|_| {
+            let module = parser::parse(&lexer::lex(source)?)?;
+            format_default(&module)
+        });
+        let formatted = formatted.unwrap();
+        assert!(formatted.contains("return (value & mask | value ^ mask) << count"), "{formatted}");
     }
 
     #[test]
@@ -1388,6 +1561,34 @@ struct Legacy {
         assert!(formatted.contains("\n    validity\n        require amount > 0, \"amount must be positive\""));
         assert!(formatted.contains("require amount > env::block_number()"));
         assert!(formatted.contains("validity: u64,"), "contextual field was reformatted as a block:\n{formatted}");
+        let reparsed = parser::parse(&lexer::lex(&formatted).unwrap()).unwrap();
+        assert_eq!(formatted, format_default(&reparsed).unwrap());
+    }
+
+    #[test]
+    fn format_round_trips_generic_parameters_abilities_and_calls() {
+        let source = r#"
+module fmt::generics
+
+struct Tagged<phantom Tag, T: copy + fixed + serializable + non_linear> has copy, fixed, serializable, non_linear {
+    value: T
+}
+
+fn identity<T: copy + drop>(value: T) -> T {
+    return value
+}
+
+action verify() -> u64 {
+    verification
+        let tagged: Tagged<Hash, u64> = Tagged<Hash, u64> { value: identity<u64>(42) }
+        return tagged.value
+}
+"#;
+        let module = parser::parse(&lexer::lex(source).unwrap()).unwrap();
+        let formatted = format_default(&module).unwrap();
+        assert!(formatted.contains("struct Tagged<phantom Tag, T: copy + fixed + serializable + non_linear>"));
+        assert!(formatted.contains("fn identity<T: copy + drop>(value: T) -> T"));
+        assert!(formatted.contains("identity<u64>(42)"));
         let reparsed = parser::parse(&lexer::lex(&formatted).unwrap()).unwrap();
         assert_eq!(formatted, format_default(&reparsed).unwrap());
     }

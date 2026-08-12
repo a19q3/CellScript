@@ -1,0 +1,661 @@
+//! Canonical public package interfaces and deterministic compatibility reports.
+//!
+//! This module intentionally depends on source AST plus already-checked compile
+//! metadata. It does not infer authority from names: exported signatures,
+//! layouts, effects, Cell capabilities, builder inputs, and deployment ABI are
+//! recorded as separate compatibility dimensions.
+
+use crate::ast::{self, Item, TypeParam};
+use crate::{ckb_blake2b256, CompileMetadata};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+
+pub const INTERFACE_SCHEMA: &str = "cellscript-package-interface-v1";
+pub const INTERFACE_SCHEMA_VERSION: u32 = 1;
+pub const COMPATIBILITY_SCHEMA: &str = "cellscript-interface-compatibility-v1";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PackageInterface {
+    pub schema: String,
+    pub version: u32,
+    pub module: String,
+    pub module_identity: String,
+    pub edition: String,
+    pub visibility_default: String,
+    pub types: Vec<InterfaceType>,
+    pub constants: Vec<InterfaceConstant>,
+    pub callables: Vec<InterfaceCallable>,
+    pub generic_instantiations: Vec<InterfaceInstantiation>,
+    pub runtime_contract: InterfaceRuntimeContract,
+    pub builder_contract_hash: String,
+    pub deployment_contract_hash: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterfaceType {
+    pub identity: String,
+    pub name: String,
+    pub kind: String,
+    pub visibility: String,
+    pub type_parameters: Vec<InterfaceTypeParameter>,
+    pub value_abilities: Vec<String>,
+    pub cell_capabilities: Vec<String>,
+    pub fields: Vec<InterfaceField>,
+    pub variants: Vec<InterfaceVariant>,
+    pub layout_identity: String,
+    pub type_identity: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterfaceTypeParameter {
+    pub name: String,
+    pub phantom: bool,
+    pub constraints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterfaceField {
+    pub name: String,
+    pub r#type: String,
+    pub offset: Option<usize>,
+    pub encoded_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterfaceVariant {
+    pub name: String,
+    pub fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterfaceConstant {
+    pub identity: String,
+    pub name: String,
+    pub visibility: String,
+    pub r#type: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterfaceCallable {
+    pub identity: String,
+    pub name: String,
+    pub kind: String,
+    pub visibility: String,
+    pub type_parameters: Vec<InterfaceTypeParameter>,
+    pub params: Vec<InterfaceParam>,
+    pub return_type: Option<String>,
+    pub outputs: Vec<InterfaceParam>,
+    pub effect: String,
+    pub entry_witness_abi: Option<String>,
+    pub builder_contract_hash: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterfaceParam {
+    pub name: String,
+    pub r#type: String,
+    pub source: String,
+    pub mutable: bool,
+    pub reference: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterfaceInstantiation {
+    pub kind: String,
+    pub template: String,
+    pub identity: String,
+    pub type_arguments: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterfaceRuntimeContract {
+    pub target_profile: String,
+    pub vm_abi: String,
+    pub witness_abi: String,
+    pub lock_args_abi: String,
+    pub source_encoding: String,
+    pub spawn_ipc_abi: String,
+    pub compatibility_profile_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterfaceCompatibilityReport {
+    pub schema: String,
+    pub version: u32,
+    pub old_interface_hash: String,
+    pub new_interface_hash: String,
+    pub compatible: bool,
+    pub dimensions: Vec<CompatibilityDimension>,
+    pub changes: Vec<CompatibilityChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompatibilityDimension {
+    pub dimension: String,
+    pub classification: String,
+    pub breaking_changes: usize,
+    pub compatible_changes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompatibilityChange {
+    pub code: String,
+    pub dimension: String,
+    pub classification: String,
+    pub item: String,
+    pub detail: String,
+}
+
+pub fn build(ast: &ast::Module, metadata: &CompileMetadata) -> PackageInterface {
+    let metadata_types = metadata.types.iter().map(|ty| (ty.name.as_str(), ty)).collect::<BTreeMap<_, _>>();
+    let action_metadata = metadata.actions.iter().map(|item| (item.name.as_str(), item)).collect::<BTreeMap<_, _>>();
+    let function_metadata = metadata.functions.iter().map(|item| (item.name.as_str(), item)).collect::<BTreeMap<_, _>>();
+    let lock_metadata = metadata.locks.iter().map(|item| (item.name.as_str(), item)).collect::<BTreeMap<_, _>>();
+
+    let mut types = Vec::new();
+    let mut constants = Vec::new();
+    let mut callables = Vec::new();
+    let items = ast.items.iter().chain(ast.interface_templates.iter());
+    for item in items {
+        let Some(name) = item.name() else { continue };
+        let visibility = ast.visibility_of(name);
+        if !visibility.is_exported() {
+            continue;
+        }
+        let identity = canonical_item_identity(&ast.name, name);
+        match item {
+            Item::Resource(def) => types.push(interface_structural_type(
+                &identity,
+                name,
+                "resource",
+                visibility.as_str(),
+                &[],
+                &[],
+                &def.capabilities.iter().map(|item| item.as_str().to_string()).collect::<Vec<_>>(),
+                &def.fields,
+                &[],
+                def.type_id.as_ref().map(|item| item.value.clone()),
+                metadata_types.get(name).copied(),
+            )),
+            Item::Shared(def) => types.push(interface_structural_type(
+                &identity,
+                name,
+                "shared",
+                visibility.as_str(),
+                &[],
+                &[],
+                &def.capabilities.iter().map(|item| item.as_str().to_string()).collect::<Vec<_>>(),
+                &def.fields,
+                &[],
+                def.type_id.as_ref().map(|item| item.value.clone()),
+                metadata_types.get(name).copied(),
+            )),
+            Item::Receipt(def) => types.push(interface_structural_type(
+                &identity,
+                name,
+                "receipt",
+                visibility.as_str(),
+                &[],
+                &[],
+                &def.capabilities.iter().map(|item| item.as_str().to_string()).collect::<Vec<_>>(),
+                &def.fields,
+                &[],
+                def.type_id.as_ref().map(|item| item.value.clone()),
+                metadata_types.get(name).copied(),
+            )),
+            Item::Struct(def) => types.push(interface_structural_type(
+                &identity,
+                name,
+                "struct",
+                visibility.as_str(),
+                &def.type_params,
+                &def.abilities.iter().map(|item| item.as_str().to_string()).collect::<Vec<_>>(),
+                &[],
+                &def.fields,
+                &[],
+                def.type_id.as_ref().map(|item| item.value.clone()),
+                metadata_types.get(name).copied(),
+            )),
+            Item::Enum(def) => {
+                let variants = def
+                    .variants
+                    .iter()
+                    .map(|variant| InterfaceVariant {
+                        name: variant.name.clone(),
+                        fields: variant.fields.iter().map(crate::generics::render_type).collect(),
+                    })
+                    .collect::<Vec<_>>();
+                types.push(interface_structural_type(
+                    &identity,
+                    name,
+                    "enum",
+                    visibility.as_str(),
+                    &def.type_params,
+                    &def.abilities.iter().map(|item| item.as_str().to_string()).collect::<Vec<_>>(),
+                    &[],
+                    &[],
+                    &variants,
+                    None,
+                    metadata_types.get(name).copied(),
+                ));
+            }
+            Item::Const(def) => constants.push(InterfaceConstant {
+                identity,
+                name: name.to_string(),
+                visibility: visibility.as_str().to_string(),
+                r#type: crate::generics::render_type(&def.ty),
+            }),
+            Item::Action(def) => {
+                let params = source_params(&def.params);
+                let outputs = def
+                    .outputs
+                    .iter()
+                    .map(|output| InterfaceParam {
+                        name: output.name.clone(),
+                        r#type: crate::generics::render_type(&output.ty),
+                        source: "output".to_string(),
+                        mutable: false,
+                        reference: false,
+                    })
+                    .collect::<Vec<_>>();
+                let builder_contract_hash = action_metadata
+                    .get(name)
+                    .map(|item| hash_serializable(&(item.params.clone(), item.transaction_runtime_input_requirements.clone())))
+                    .unwrap_or_else(|| hash_serializable(&(params.clone(), outputs.clone())));
+                callables.push(InterfaceCallable {
+                    identity,
+                    name: name.to_string(),
+                    kind: "action".to_string(),
+                    visibility: visibility.as_str().to_string(),
+                    type_parameters: Vec::new(),
+                    params,
+                    return_type: def.return_type.as_ref().map(crate::generics::render_type),
+                    outputs,
+                    effect: format!("{:?}", def.effect),
+                    entry_witness_abi: Some(metadata.target_profile.witness_abi.clone()),
+                    builder_contract_hash,
+                });
+            }
+            Item::Function(def) => {
+                let params = source_params(&def.params);
+                let builder_contract_hash = function_metadata
+                    .get(name)
+                    .map(|item| hash_serializable(&(item.params.clone(), item.transaction_runtime_input_requirements.clone())))
+                    .unwrap_or_else(|| hash_serializable(&params));
+                callables.push(InterfaceCallable {
+                    identity,
+                    name: name.to_string(),
+                    kind: "function".to_string(),
+                    visibility: visibility.as_str().to_string(),
+                    type_parameters: type_parameters(&def.type_params),
+                    params,
+                    return_type: def.return_type.as_ref().map(crate::generics::render_type),
+                    outputs: Vec::new(),
+                    effect: format!("{:?}", def.effect),
+                    entry_witness_abi: None,
+                    builder_contract_hash,
+                });
+            }
+            Item::Lock(def) => {
+                let params = source_params(&def.params);
+                let builder_contract_hash = lock_metadata
+                    .get(name)
+                    .map(|item| hash_serializable(&(item.params.clone(), item.transaction_runtime_input_requirements.clone())))
+                    .unwrap_or_else(|| hash_serializable(&params));
+                callables.push(InterfaceCallable {
+                    identity,
+                    name: name.to_string(),
+                    kind: "lock".to_string(),
+                    visibility: visibility.as_str().to_string(),
+                    type_parameters: Vec::new(),
+                    params,
+                    return_type: Some(crate::generics::render_type(&def.return_type)),
+                    outputs: Vec::new(),
+                    effect: "ReadOnly".to_string(),
+                    entry_witness_abi: Some(metadata.target_profile.witness_abi.clone()),
+                    builder_contract_hash,
+                });
+            }
+            Item::Flow(_) | Item::Invariant(_) | Item::Use(_) => {}
+        }
+    }
+
+    types.sort_by(|left, right| left.identity.cmp(&right.identity));
+    types.dedup_by(|left, right| left.identity == right.identity);
+    constants.sort_by(|left, right| left.identity.cmp(&right.identity));
+    callables.sort_by(|left, right| left.identity.cmp(&right.identity));
+    callables.dedup_by(|left, right| left.identity == right.identity);
+
+    let generic_instantiations = metadata
+        .generic_instantiations
+        .iter()
+        .map(|item| InterfaceInstantiation {
+            kind: item.kind.clone(),
+            template: item.template.clone(),
+            identity: item.identity.clone(),
+            type_arguments: item.type_arguments.clone(),
+        })
+        .collect::<Vec<_>>();
+    let runtime_contract = InterfaceRuntimeContract {
+        target_profile: metadata.target_profile.name.clone(),
+        vm_abi: metadata.target_profile.vm_abi.clone(),
+        witness_abi: metadata.target_profile.witness_abi.clone(),
+        lock_args_abi: metadata.target_profile.lock_args_abi.clone(),
+        source_encoding: metadata.target_profile.source_encoding.clone(),
+        spawn_ipc_abi: metadata.target_profile.spawn_ipc_abi.clone(),
+        compatibility_profile_id: metadata.compatibility_profile.id.clone(),
+    };
+    let builder_contract_hash =
+        hash_serializable(&callables.iter().map(|item| (&item.identity, &item.builder_contract_hash)).collect::<Vec<_>>());
+    let deployment_contract_hash = hash_serializable(&runtime_contract);
+    PackageInterface {
+        schema: INTERFACE_SCHEMA.to_string(),
+        version: INTERFACE_SCHEMA_VERSION,
+        module: ast.name.clone(),
+        module_identity: module_identity(&ast.name),
+        edition: metadata.edition.to_string(),
+        visibility_default: "legacy-public (Edition 2026 compatibility)".to_string(),
+        types,
+        constants,
+        callables,
+        generic_instantiations,
+        runtime_contract,
+        builder_contract_hash,
+        deployment_contract_hash,
+    }
+}
+
+pub fn hash(interface: &PackageInterface) -> String {
+    hash_serializable(interface)
+}
+
+pub fn compare(old: &PackageInterface, new: &PackageInterface) -> InterfaceCompatibilityReport {
+    const DIMENSIONS: [&str; 6] = ["source_api", "serialized_layout", "runtime_abi", "effects_capabilities", "builder", "deployment"];
+    let mut changes = Vec::new();
+    compare_types(old, new, &mut changes);
+    compare_callables(old, new, &mut changes);
+    compare_constants(old, new, &mut changes);
+    if old.runtime_contract != new.runtime_contract {
+        push_breaking(
+            &mut changes,
+            "ICOMP3001",
+            "runtime_abi",
+            &new.module_identity,
+            "target profile or versioned runtime ABI changed",
+        );
+    }
+    if old.builder_contract_hash != new.builder_contract_hash && !changes.iter().any(|change| change.dimension == "builder") {
+        push_breaking(&mut changes, "ICOMP5001", "builder", &new.module_identity, "generated builder contract changed");
+    }
+    if old.deployment_contract_hash != new.deployment_contract_hash {
+        push_breaking(&mut changes, "ICOMP6001", "deployment", &new.module_identity, "deployment identity contract changed");
+    }
+    changes.sort_by(|left, right| {
+        left.dimension.cmp(&right.dimension).then_with(|| left.item.cmp(&right.item)).then_with(|| left.code.cmp(&right.code))
+    });
+    let dimensions = DIMENSIONS
+        .into_iter()
+        .map(|dimension| {
+            let breaking_changes =
+                changes.iter().filter(|change| change.dimension == dimension && change.classification == "breaking").count();
+            let compatible_changes =
+                changes.iter().filter(|change| change.dimension == dimension && change.classification == "compatible").count();
+            CompatibilityDimension {
+                dimension: dimension.to_string(),
+                classification: if breaking_changes == 0 { "compatible" } else { "breaking" }.to_string(),
+                breaking_changes,
+                compatible_changes,
+            }
+        })
+        .collect::<Vec<_>>();
+    InterfaceCompatibilityReport {
+        schema: COMPATIBILITY_SCHEMA.to_string(),
+        version: 1,
+        old_interface_hash: hash(old),
+        new_interface_hash: hash(new),
+        compatible: dimensions.iter().all(|dimension| dimension.classification == "compatible"),
+        dimensions,
+        changes,
+    }
+}
+
+fn interface_structural_type(
+    identity: &str,
+    name: &str,
+    kind: &str,
+    visibility: &str,
+    params: &[TypeParam],
+    value_abilities: &[String],
+    cell_capabilities: &[String],
+    fields: &[ast::Field],
+    variants: &[InterfaceVariant],
+    type_identity: Option<String>,
+    metadata: Option<&crate::TypeMetadata>,
+) -> InterfaceType {
+    let fields = fields
+        .iter()
+        .map(|field| {
+            let layout = metadata.and_then(|metadata| metadata.fields.iter().find(|candidate| candidate.name == field.name));
+            InterfaceField {
+                name: field.name.clone(),
+                r#type: crate::generics::render_type(&field.ty),
+                offset: layout.map(|layout| layout.offset),
+                encoded_size: layout.and_then(|layout| layout.encoded_size),
+            }
+        })
+        .collect::<Vec<_>>();
+    let layout_identity = hash_serializable(&(kind, &fields, variants));
+    InterfaceType {
+        identity: identity.to_string(),
+        name: name.to_string(),
+        kind: kind.to_string(),
+        visibility: visibility.to_string(),
+        type_parameters: type_parameters(params),
+        value_abilities: value_abilities.to_vec(),
+        cell_capabilities: cell_capabilities.to_vec(),
+        fields,
+        variants: variants.to_vec(),
+        layout_identity,
+        type_identity,
+    }
+}
+
+fn type_parameters(params: &[TypeParam]) -> Vec<InterfaceTypeParameter> {
+    params
+        .iter()
+        .map(|param| InterfaceTypeParameter {
+            name: param.name.clone(),
+            phantom: param.phantom,
+            constraints: param.constraints.iter().map(|item| item.as_str().to_string()).collect(),
+        })
+        .collect()
+}
+
+fn source_params(params: &[ast::Param]) -> Vec<InterfaceParam> {
+    params
+        .iter()
+        .map(|param| InterfaceParam {
+            name: param.name.clone(),
+            r#type: crate::generics::render_type(&param.ty),
+            source: match param.source {
+                ast::ParamSource::Default => "default",
+                ast::ParamSource::Witness => "witness",
+                ast::ParamSource::LockArgs => "lock_args",
+                ast::ParamSource::Input => "input",
+                ast::ParamSource::Output => "output",
+                ast::ParamSource::Protected => "protected",
+            }
+            .to_string(),
+            mutable: param.is_mut,
+            reference: param.is_ref || param.is_read_ref,
+        })
+        .collect()
+}
+
+fn canonical_item_identity(module: &str, name: &str) -> String {
+    format!("{}::{}", module, name)
+}
+
+fn module_identity(module: &str) -> String {
+    let mut bytes = b"cellscript-module-identity-v1\0".to_vec();
+    bytes.extend_from_slice(module.as_bytes());
+    format!("blake2b:{}", hex::encode(ckb_blake2b256(&bytes)))
+}
+
+fn hash_serializable(value: &impl Serialize) -> String {
+    let value = serde_json::to_value(value).expect("interface records are serializable");
+    let canonical = crate::package::registry::canonical_json_value(&value);
+    let bytes = serde_json::to_vec(&canonical).expect("canonical interface JSON is serializable");
+    hex::encode(ckb_blake2b256(&bytes))
+}
+
+fn compare_types(old: &PackageInterface, new: &PackageInterface, changes: &mut Vec<CompatibilityChange>) {
+    let old_types = old.types.iter().map(|item| (item.identity.as_str(), item)).collect::<BTreeMap<_, _>>();
+    let new_types = new.types.iter().map(|item| (item.identity.as_str(), item)).collect::<BTreeMap<_, _>>();
+    for (identity, old_type) in &old_types {
+        let Some(new_type) = new_types.get(identity) else {
+            push_breaking(changes, "ICOMP1001", "source_api", identity, "exported type was removed or made non-public");
+            continue;
+        };
+        if old_type.kind != new_type.kind || old_type.type_parameters != new_type.type_parameters {
+            push_breaking(changes, "ICOMP1002", "source_api", identity, "type kind or generic constraints changed");
+        }
+        if old_type.layout_identity != new_type.layout_identity || old_type.type_identity != new_type.type_identity {
+            push_breaking(
+                changes,
+                "ICOMP2001",
+                "serialized_layout",
+                identity,
+                "serialized fields, variants, offsets, or type identity changed",
+            );
+        }
+        if old_type.value_abilities != new_type.value_abilities || old_type.cell_capabilities != new_type.cell_capabilities {
+            push_breaking(
+                changes,
+                "ICOMP4001",
+                "effects_capabilities",
+                identity,
+                "value abilities or Cell lifecycle capabilities changed",
+            );
+        }
+    }
+    for identity in new_types.keys().filter(|identity| !old_types.contains_key(*identity)) {
+        push_compatible(changes, "ICOMP1101", "source_api", identity, "exported type was added");
+    }
+}
+
+fn compare_callables(old: &PackageInterface, new: &PackageInterface, changes: &mut Vec<CompatibilityChange>) {
+    let old_items = old.callables.iter().map(|item| (item.identity.as_str(), item)).collect::<BTreeMap<_, _>>();
+    let new_items = new.callables.iter().map(|item| (item.identity.as_str(), item)).collect::<BTreeMap<_, _>>();
+    for (identity, old_item) in &old_items {
+        let Some(new_item) = new_items.get(identity) else {
+            push_breaking(changes, "ICOMP1003", "source_api", identity, "exported callable was removed or made non-public");
+            continue;
+        };
+        if old_item.kind != new_item.kind
+            || old_item.type_parameters != new_item.type_parameters
+            || old_item.params != new_item.params
+            || old_item.return_type != new_item.return_type
+            || old_item.outputs != new_item.outputs
+        {
+            push_breaking(changes, "ICOMP1004", "source_api", identity, "callable signature changed");
+            push_breaking(changes, "ICOMP3002", "runtime_abi", identity, "entry or call ABI changed");
+        }
+        if old_item.entry_witness_abi != new_item.entry_witness_abi {
+            push_breaking(changes, "ICOMP3003", "runtime_abi", identity, "entry witness ABI changed");
+        }
+        if old_item.effect != new_item.effect {
+            push_breaking(changes, "ICOMP4002", "effects_capabilities", identity, "declared or inferred effect changed");
+        }
+        if old_item.builder_contract_hash != new_item.builder_contract_hash {
+            push_breaking(changes, "ICOMP5002", "builder", identity, "builder inputs or transaction requirements changed");
+        }
+    }
+    for identity in new_items.keys().filter(|identity| !old_items.contains_key(*identity)) {
+        push_compatible(changes, "ICOMP1102", "source_api", identity, "exported callable was added");
+        push_compatible(changes, "ICOMP5101", "builder", identity, "builder for a new exported callable was added");
+    }
+}
+
+fn compare_constants(old: &PackageInterface, new: &PackageInterface, changes: &mut Vec<CompatibilityChange>) {
+    let old_items = old.constants.iter().map(|item| (item.identity.as_str(), item)).collect::<BTreeMap<_, _>>();
+    let new_items = new.constants.iter().map(|item| (item.identity.as_str(), item)).collect::<BTreeMap<_, _>>();
+    let identities = old_items.keys().chain(new_items.keys()).copied().collect::<BTreeSet<_>>();
+    for identity in identities {
+        match (old_items.get(identity), new_items.get(identity)) {
+            (Some(_), None) => {
+                push_breaking(changes, "ICOMP1005", "source_api", identity, "exported constant was removed or made non-public")
+            }
+            (Some(old_item), Some(new_item)) if old_item.r#type != new_item.r#type => {
+                push_breaking(changes, "ICOMP1006", "source_api", identity, "exported constant type changed")
+            }
+            (None, Some(_)) => push_compatible(changes, "ICOMP1103", "source_api", identity, "exported constant was added"),
+            _ => {}
+        }
+    }
+}
+
+fn push_breaking(changes: &mut Vec<CompatibilityChange>, code: &str, dimension: &str, item: &str, detail: &str) {
+    changes.push(CompatibilityChange {
+        code: code.to_string(),
+        dimension: dimension.to_string(),
+        classification: "breaking".to_string(),
+        item: item.to_string(),
+        detail: detail.to_string(),
+    });
+}
+
+fn push_compatible(changes: &mut Vec<CompatibilityChange>, code: &str, dimension: &str, item: &str, detail: &str) {
+    changes.push(CompatibilityChange {
+        code: code.to_string(),
+        dimension: dimension.to_string(),
+        classification: "compatible".to_string(),
+        item: item.to_string(),
+        detail: detail.to_string(),
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{compile_metadata, lexer, parser, CellScriptEdition};
+
+    fn interface(source: &str) -> PackageInterface {
+        let tokens = lexer::lex(source).unwrap();
+        let ast = parser::parse(&tokens).unwrap();
+        let monomorphized = crate::generics::monomorphize(&ast).unwrap();
+        let metadata = compile_metadata(source, CellScriptEdition::Edition2026, None).unwrap();
+        build(&monomorphized, &metadata)
+    }
+
+    #[test]
+    fn visibility_and_interface_hash_are_deterministic() {
+        let source = r#"
+module api
+private struct Hidden { value: u64, }
+public struct Box<T: copy + drop + store + fixed + serializable + non_linear> has copy, drop, store, fixed, serializable, non_linear { value: T, }
+public fn id<T: copy + drop>(value: T) -> T { return value }
+fn use_it() -> u64 { return id<u64>(7) }
+"#;
+        let first = interface(source);
+        let second = interface(source);
+        assert_eq!(hash(&first), hash(&second));
+        assert!(first.types.iter().all(|item| item.name != "Hidden"));
+        assert!(first.types.iter().any(|item| item.name == "Box" && !item.type_parameters.is_empty()));
+    }
+
+    #[test]
+    fn compatibility_report_separates_additive_and_layout_changes() {
+        let old = interface("module api\npublic struct Value { amount: u64, }\n");
+        let additive = interface("module api\npublic struct Value { amount: u64, }\npublic fn read() -> u64 { return 1 }\n");
+        assert!(compare(&old, &additive).compatible);
+
+        let changed = interface("module api\npublic struct Value { amount: u128, }\n");
+        let report = compare(&old, &changed);
+        assert!(!report.compatible);
+        assert!(report
+            .dimensions
+            .iter()
+            .any(|dimension| dimension.dimension == "serialized_layout" && dimension.classification == "breaking"));
+    }
+}

@@ -515,7 +515,7 @@ fn scenario_argument_value(argument: &ScenarioArgument) -> Result<SimValue> {
         "u8" | "u16" | "u32" | "u64" => argument
             .value
             .as_u64()
-            .map(SimValue::Integer)
+            .map(|value| SimValue::Integer(value.into()))
             .ok_or_else(|| CompileError::without_span(format!("argument '{}' must be an unsigned integer", argument.name))),
         "bool" => argument
             .value

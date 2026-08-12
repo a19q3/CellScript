@@ -1,8 +1,16 @@
-// audit: phase=reject_parse
-// audit: contains=generic enum declarations are deferred
+// audit: phase=reject_compile
+// audit: contains=cannot be hidden in ordinary generic layout
 module cellscript::audit::seed_payload_enum_generic_reject
 
-enum Option<T> {
-    None,
+resource Token has consume {
+    amount: u64,
+}
+
+enum Boxed<T> {
+    Empty,
     Some(T),
+}
+
+fn hide(input: Token) -> Boxed<Token> {
+    Boxed::Some<Token>(input)
 }

@@ -162,6 +162,8 @@ pub(crate) fn build_verified_artifact_boundary(
         artifact_format: metadata.artifact_format.clone(),
         artifact_hash: metadata.artifact_hash.clone().ok_or_else(|| boundary_error("metadata artifact hash is missing"))?,
         artifact_size_bytes: artifact.len() as u64,
+        typed_semantics: metadata.typed_semantics.clone(),
+        typed_semantics_hash: metadata.typed_semantics_hash.clone(),
         text_range: MachineRange { start: draft.machine_layout.text_start, end: draft.machine_layout.text_end },
         entries,
         blocks,
@@ -270,7 +272,12 @@ fn build_entries(metadata: &CompileMetadata, frame_sizes: &BTreeMap<String, u32>
     let mut entries = Vec::new();
     for owner in first_block_by_owner.keys() {
         let (kind, params, return_type, effect) = if let Some(action) = metadata.actions.iter().find(|entry| entry.name == *owner) {
-            (EntryKind::Action, action.params.as_slice(), "unit".to_string(), action.effect_class.clone())
+            (
+                EntryKind::Action,
+                action.params.as_slice(),
+                action.return_type.clone().unwrap_or_else(|| "unit".to_string()),
+                action.effect_class.clone(),
+            )
         } else if let Some(lock) = metadata.locks.iter().find(|entry| entry.name == *owner) {
             (EntryKind::Lock, lock.params.as_slice(), "bool".to_string(), "lock-predicate".to_string())
         } else if let Some(function) = metadata.functions.iter().find(|entry| entry.name == *owner) {

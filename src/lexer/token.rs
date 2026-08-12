@@ -15,6 +15,8 @@ pub enum TokenKind {
     Action,       // action
     Fn,           // fn
     Lock,         // lock
+    Public,       // public
+    Private,      // private
     Transition,   // transition
     Verification, // verification
     Has,          // has
@@ -25,6 +27,9 @@ pub enum TokenKind {
     For,          // for
     In,           // in
     While,        // while
+    Break,        // break
+    Continue,     // continue
+    Label,        // label
     Borrow,       // borrow
     Match,        // match
     Return,       // return
@@ -46,7 +51,7 @@ pub enum TokenKind {
     Std,          // std
 
     Identifier(String),
-    Integer(u64),
+    Integer(u128),
     HexLiteral(String),
     ByteString(Vec<u8>),
     String(String),
@@ -94,6 +99,7 @@ pub enum TokenKind {
     Not,       // !
     Ampersand, // &
     Pipe,      // |
+    Caret,     // ^
 
     Comment(String),
     Whitespace,
@@ -118,6 +124,8 @@ impl fmt::Display for TokenKind {
             TokenKind::Action => write!(f, "'action'"),
             TokenKind::Fn => write!(f, "'fn'"),
             TokenKind::Lock => write!(f, "'lock'"),
+            TokenKind::Public => write!(f, "'public'"),
+            TokenKind::Private => write!(f, "'private'"),
             TokenKind::Transition => write!(f, "'transition'"),
             TokenKind::Verification => write!(f, "'verification'"),
             TokenKind::Has => write!(f, "'has'"),
@@ -128,6 +136,9 @@ impl fmt::Display for TokenKind {
             TokenKind::For => write!(f, "'for'"),
             TokenKind::In => write!(f, "'in'"),
             TokenKind::While => write!(f, "'while'"),
+            TokenKind::Break => write!(f, "'break'"),
+            TokenKind::Continue => write!(f, "'continue'"),
+            TokenKind::Label => write!(f, "'label'"),
             TokenKind::Borrow => write!(f, "'borrow'"),
             TokenKind::Match => write!(f, "'match'"),
             TokenKind::Return => write!(f, "'return'"),
@@ -193,6 +204,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Not => write!(f, "'!'"),
             TokenKind::Ampersand => write!(f, "'&'"),
             TokenKind::Pipe => write!(f, "'|'"),
+            TokenKind::Caret => write!(f, "'^'"),
             TokenKind::Comment(_) => write!(f, "comment"),
             TokenKind::Whitespace => write!(f, "whitespace"),
             TokenKind::Newline => write!(f, "newline"),
@@ -235,6 +247,8 @@ pub fn keyword_or_identifier(text: &str) -> TokenKind {
         "action" => TokenKind::Action,
         "fn" => TokenKind::Fn,
         "lock" => TokenKind::Lock,
+        "public" => TokenKind::Public,
+        "private" => TokenKind::Private,
         "transition" => TokenKind::Transition,
         "verification" => TokenKind::Verification,
         "has" => TokenKind::Has,
@@ -245,6 +259,9 @@ pub fn keyword_or_identifier(text: &str) -> TokenKind {
         "for" => TokenKind::For,
         "in" => TokenKind::In,
         "while" => TokenKind::While,
+        "break" => TokenKind::Break,
+        "continue" => TokenKind::Continue,
+        "label" => TokenKind::Label,
         "borrow" => TokenKind::Borrow,
         "match" => TokenKind::Match,
         "return" => TokenKind::Return,
