@@ -1971,7 +1971,7 @@ impl CommandExecutor {
             if let Some(parent) = output_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&output_path, json)?;
+            std::fs::write(output_path, json)?;
             println!("{}", "Metadata generated".green());
             println!("  Output: {}", output_path.display());
         } else {
@@ -2006,7 +2006,7 @@ impl CommandExecutor {
             if let Some(parent) = output_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&output_path, format!("{json}\n"))?;
+            std::fs::write(output_path, format!("{json}\n"))?;
             println!("{}", "Public interface generated".green());
             println!("  Hash: {}", result.metadata.interface_hash);
             println!("  Output: {}", output_path.display());
@@ -2026,7 +2026,7 @@ impl CommandExecutor {
             if let Some(parent) = output_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&output_path, format!("{json}\n"))?;
+            std::fs::write(output_path, format!("{json}\n"))?;
         }
         if args.json || args.output.is_none() {
             println!("{json}");
