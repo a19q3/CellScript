@@ -114,7 +114,8 @@ action buy_from_listing(nft_before: NFT, listing: Listing, buyer: Address, royal
         require royalty_payment.amount + seller_payment.amount == listing.price, "Payment must equal listing price"
         require royalty_payment.symbol == seller_payment.symbol, "Payment token mismatch"
         require nft_before.royalty_bps <= 1000, "Royalty too high"
-        require nft_before.royalty_bps == 0 || listing.price <= U64_MAX / nft_before.royalty_bps as u64, "Royalty overflow"
+        let royalty_divisor = if nft_before.royalty_bps == 0 { 1 } else { nft_before.royalty_bps as u64 }
+        require nft_before.royalty_bps == 0 || listing.price <= U64_MAX / royalty_divisor, "Royalty overflow"
         let royalty_amount = listing.price * nft_before.royalty_bps as u64 / 10000
         require royalty_payment.amount == royalty_amount, "Incorrect royalty payment"
         require seller_payment.amount == listing.price - royalty_amount, "Incorrect seller payment"
@@ -154,7 +155,8 @@ action accept_offer(nft_before: NFT, offer: Offer, royalty_payment: Token, selle
         require royalty_payment.symbol == offer.payment_symbol, "Wrong royalty payment token"
         require seller_payment.symbol == offer.payment_symbol, "Wrong seller payment token"
         require nft_before.royalty_bps <= 1000, "Royalty too high"
-        require nft_before.royalty_bps == 0 || offer.price <= U64_MAX / nft_before.royalty_bps as u64, "Royalty overflow"
+        let royalty_divisor = if nft_before.royalty_bps == 0 { 1 } else { nft_before.royalty_bps as u64 }
+        require nft_before.royalty_bps == 0 || offer.price <= U64_MAX / royalty_divisor, "Royalty overflow"
         let royalty_amount = offer.price * nft_before.royalty_bps as u64 / 10000
         require royalty_payment.amount == royalty_amount, "Incorrect royalty payment"
         require seller_payment.amount == offer.price - royalty_amount, "Incorrect seller payment"

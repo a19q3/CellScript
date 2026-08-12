@@ -62,7 +62,8 @@ action claim_vested(grant: VestingGrant) -> (tokens: Token, updated_grant: Vesti
         let elapsed = now - grant.cliff_timepoint
         let vesting_period = grant.end_timepoint - grant.cliff_timepoint
         require vesting_period > 0, "invalid vesting period"
-        require elapsed == 0 || grant.total_amount <= U64_MAX / elapsed, "vesting calculation overflow"
+        let safe_elapsed = if elapsed == 0 { 1 } else { elapsed }
+        require elapsed == 0 || grant.total_amount <= U64_MAX / safe_elapsed, "vesting calculation overflow"
         let vested_total = grant.total_amount * elapsed / vesting_period
         require grant.claimed_amount <= vested_total, "claimed amount exceeds vested amount"
         let claimable = vested_total - grant.claimed_amount
@@ -94,7 +95,8 @@ action revoke_grant(read config: VestingConfig, grant: VestingGrant, claimed_adm
         let elapsed = if now >= grant.cliff_timepoint { now - grant.cliff_timepoint } else { 0 }
         let vesting_period = grant.end_timepoint - grant.cliff_timepoint
         require vesting_period > 0, "invalid vesting period"
-        require now >= grant.end_timepoint || elapsed == 0 || grant.total_amount <= U64_MAX / elapsed, "vesting calculation overflow"
+        let safe_elapsed = if elapsed == 0 { 1 } else { elapsed }
+        require now >= grant.end_timepoint || elapsed == 0 || grant.total_amount <= U64_MAX / safe_elapsed, "vesting calculation overflow"
         let vested = if now >= grant.end_timepoint { grant.total_amount } else { grant.total_amount * elapsed / vesting_period }
         require grant.claimed_amount <= vested, "claimed amount exceeds vested amount"
         let unclaimed_vested = vested - grant.claimed_amount
