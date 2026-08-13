@@ -117,6 +117,21 @@ implements the described decoder correctly, and they are not a security audit.
 The full profile and operator boundary are documented in the
 [LS-IDL Registry profile](../CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md).
 
+## Mainnet And Testnet Registry Parity
+
+The production and Pudge Testnet Registry websites now build from one shared
+interface contract. Browse, Publish, LS-IDL, API, Manage, and dynamic artifact
+detail are present in both outputs and load the same byte-identical generated
+CSS and JavaScript. The website CI build produces both environments and rejects
+a missing route, divergent asset, or missing shared workflow hook.
+
+Network context remains explicit rather than cosmetically erased. Testnet uses
+its own API and object origins, `ckt` address prefix, Pudge chain, expiry policy,
+and isolated records. Its LS-IDL form and copied API example default to
+`testnet`; Manage and artifact details do not preload or fall back to mainnet
+records. Production continues to default to mainnet. The environment control
+is the intended visible distinction between otherwise matching interfaces.
+
 ## Playground Experience Upgrade
 
 The browser Playground is now a recoverable Cell-oriented workbench rather

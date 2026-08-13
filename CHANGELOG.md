@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Keep the production and Pudge Testnet Registry websites on one UI contract.
+  The website gate now builds both environments from the same source, verifies
+  six shared Registry routes, and requires every generated CSS/JavaScript asset
+  to be byte-identical. Testnet now ships the LS-IDL route, defaults LS-IDL
+  lookups and API examples to `testnet`, and no longer preloads production
+  package records into Manage or artifact-detail fallbacks. Network-specific
+  origins, chain selection, sandbox expiry, no-index policy, and storage remain
+  isolated.
 - Correct the 0.24 website release lineage after the first production build
   retained stale 0.22 release metadata and Playground assets. The homepage now
   advertises the official `v0.23.0` stable release and its 2026-08-11 date, the

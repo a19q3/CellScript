@@ -46,6 +46,14 @@ Registry compatibility route. The website names this surface `LS-IDL`
 explicitly and aligns it with the full-width Browse surface. This does not
 expand the language edition or claim implementation correctness.
 
+The mainnet and Pudge Testnet Registry sites also share one versioned interface
+contract. Both builds must expose the same six Registry routes and load the
+same byte-identical visual and interactive assets. Only network authority and
+network-derived state may differ: API/static origins, address prefix, chain,
+sandbox expiry and indexing policy, and the records admitted to each isolated
+store. Testnet lookup, API examples, Manage defaults, and artifact fallbacks
+must never silently select mainnet.
+
 ## Why This Is The Next Boundary
 
 CellScript 0.23 completed an operational distribution and evidence layer:

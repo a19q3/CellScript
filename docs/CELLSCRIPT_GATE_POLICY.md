@@ -79,7 +79,10 @@ Node-backed CI uses Node 22. After one checked Registry-data generation pass,
 the unified gate and manual website workflow both run
 `npm --prefix website run build:ci`; that target owns the complete Registry,
 playground, visual, homepage, preference, documentation, dist, deploy, Astro
-check, and Astro build regression contract.
+check, and Astro build regression contract. It builds both production and
+Pudge Testnet Registry outputs, checks the six shared routes in each, and
+requires their generated CSS and JavaScript assets to be byte-identical while
+allowing only explicit network authority and admitted-data differences.
 
 The 0.23 line also has one edition contract: every package declares
 `edition = "2026"`, and all emitted evidence binds the resolved compatibility
