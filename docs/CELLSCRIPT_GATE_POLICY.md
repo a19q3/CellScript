@@ -420,13 +420,18 @@ release-evidence boundary.
 
 The following ecosystem/bridge scripts are standalone manual tools that are
 **not** wired into any gate mode and are **not** part of the release-evidence
-boundary. They require sibling checkouts (`../ckb`, `../CellFabric`) or external
-runtimes and are documented in their respective guides for focused, opt-in use:
+boundary. They require sibling or explicitly selected external checkouts and
+runtimes, and are documented in their respective guides for focused, opt-in
+use:
 
 - `./scripts/cellscript_ckb_ecosystem_reuse_gate.sh` — CKB-ecosystem reuse
   checks; see `docs/CELLSCRIPT_CKB_ADAPTER.md`.
 - `./scripts/cellscript_ckb_adapter_acceptance.sh` — adapter acceptance against
   a sibling CKB checkout; see `docs/CELLSCRIPT_CKB_STD_COMPAT.md`.
+- `./scripts/cellscript_ls_idl_upstream_acceptance.sh` — exact-pinned LS-IDL
+  derive, client, and example-script compatibility, including the actual
+  upstream Rust client calling the Registry compatibility handler; see
+  `docs/CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md`.
 - `./scripts/cellscript_cellfabric_bridge_smoke.sh` — CellFabric bridge smoke
   test; see `docs/CELLSCRIPT_CELLFABRIC_BRIDGE.md`.
 

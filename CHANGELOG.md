@@ -16,9 +16,13 @@
   both verifier boundaries, immutable object storage, Postgres lookup,
   canonical `/v1/ckb/scripts/:code_hash/interfaces/ls-idl` reads, and the
   compatibility `/idl/:code_hash` route all enforce the same schema and
-  executable-suffix contract. Add curated compatibility vectors, a runnable
+  executable-suffix contract. Pin all 17 current upstream client vectors and
+  seven derive/example IDLs, and add an opt-in test that runs the actual
+  upstream Rust client against Registry's compatibility handler. Add a runnable
   Rust example, website lookup/detail surfaces, and VS Code validate/bind/fetch
-  commands. Keep implementation correctness and security review outside this
+  commands. Name the website tab `LS-IDL` rather than the ambiguous
+  `Interface`, and align its lookup panel with the full-width Browse surface.
+  Keep implementation correctness and security review outside this
   byte-identity claim.
 - Ship the 0.24 package and Registry trust closure, informed by Sui Move's
   package-alt separation of resolution from compilation. Replace permissive

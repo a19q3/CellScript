@@ -1,0 +1,16 @@
+{
+  "witness": [
+    {
+      "name": "signature",
+      "type": "secp256k1_sig",
+      "required": true,
+      "description": "65-byte secp256k1 ECDSA signature (r || s || v)"
+    },
+    {
+      "name": "unlock_time",
+      "type": "uint64",
+      "required": true,
+      "description": "Unix timestamp (u64 LE) before which the cell cannot be spent"
+    }
+  ]
+}

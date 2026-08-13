@@ -176,8 +176,8 @@ cellc artifact ls-idl fetch \
 ```
 
 The VS Code extension exposes the validate, bind, and fetch operations through
-the command palette. The Registry website exposes both package-bound interface
-facts and a direct Script-identity lookup.
+the command palette. The Registry website exposes package-bound LS-IDL facts
+and a direct Script-identity lookup under an explicit `LS-IDL` tab.
 
 ## Storage And Admission
 
@@ -194,22 +194,51 @@ is rejected before it can become searchable.
 
 ## Compatibility Evidence
 
-CellScript's curated vectors live in
-`examples/registry_ls_idl/vectors.json`. The complete upstream client vector
-corpus is intentionally referenced rather than copied:
+The deterministic compatibility corpus lives under `tests/compat/ls_idl/` and
+pins the current public inputs from all three repositories linked by the
+proposal:
 
 - `ckb-idl-derive` commit
   `e7ee35766b9084099e9d840ccd37d2b5d40074a1`;
 - `ckb-idl-client` commit
   `7d883e0abccba56d423449b673567ee817747936`;
+- `ckb_sudt_script` commit
+  `33bc56d84e8a181d855da5b82a87740825017f29`; and
 - upstream `test-vectors.json` SHA-256
   `a9a6dca4fd0c5fcd2ca7aea6468784be7fdb29d6274049f07090cbab0ce9c1bb`.
 
+`tests/ls_idl_upstream.rs` pins the complete 17-vector client corpus and all
+seven checked-in IDL outputs from the derive and example-script repositories.
+It admits every known document and wire type while confirming that the
+`molecule_bytes` unknown-type vector fails closed. Files without final newlines
+are Base64-wrapped so their decoded bytes and upstream SHA-256 remain exact.
+
+For an external checkout-level check, run:
+
+```bash
+./scripts/cellscript_ls_idl_upstream_acceptance.sh \
+  --derive-repo /path/to/ckb-idl-derive \
+  --client-repo /path/to/ckb-idl-client \
+  --scripts-repo /path/to/ckb_sudt_script
+```
+
+The script requires clean checkouts at the pinned commits, checks every raw
+fixture hash, runs the derive and client library tests plus the example
+scripts' structural witness tests, validates all seven upstream IDLs with
+`cellc`, and runs the actual upstream Rust client against the Registry
+`/idl/:code_hash` handler. That final probe covers fetch, raw-byte SHA-256
+verification, cache use, and linear witness decoding.
+
+This remains an opt-in compatibility tool rather than release-gate evidence.
+At the pinned client commit, the complete vector and library tests pass; the
+repository's separate property-test suite still contains Blake2b commitment
+fixtures even though production `verify` uses SHA-256. The full example-script
+VM suite also requires its RISC-V contracts to be built first. These upstream
+conditions are recorded rather than hidden or promoted into Registry claims.
+
 The upstream mini Registry example parses and reserialises JSON, so it is not
-used as the byte-preserving production storage contract. One upstream property
-test also constructs a Blake2b commitment while the production client verifies
-SHA-256. CellScript follows the production client and proposal commitment,
-records those upstream revisions, and tests SHA-256 end to end.
+used as the byte-preserving production storage contract. CellScript follows
+the production client and proposal commitment and tests SHA-256 end to end.
 
 ## Operational Boundary
 

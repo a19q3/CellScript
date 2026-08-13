@@ -98,11 +98,18 @@ executable's final 32 bytes. The API returns the stored bytes directly through
 the canonical Script-identity route and the existing-client `/idl/:code_hash`
 compatibility route; it never parses and reserialises the committed JSON.
 
-The website now has a standalone Script-identity lookup and a dedicated
-interface section on matching artifact pages. The VS Code extension exposes
-validate, bind, and fetch commands. The runnable `examples/registry_ls_idl`
-bundle records the supported wire types, normal and negative vectors, upstream
-commit pins, and the complete upstream vector hash.
+The website now has a standalone Script-identity lookup under the explicit
+`LS-IDL` tab and a dedicated LS-IDL document section on matching artifact
+pages. The lookup surface is full-width and aligned with Registry browsing
+rather than presented as a smaller generic “Interface” utility. The VS Code
+extension exposes validate, bind, and fetch commands.
+
+Compatibility evidence pins all 17 current `ckb-idl-client` vectors and all
+seven checked-in IDLs from `ckb-idl-derive` and `ckb_sudt_script`. An opt-in
+checkout-level acceptance script validates their raw hashes and runs the actual
+upstream Rust client against Registry's `/idl/:code_hash` handler, covering
+fetch, SHA-256 suffix verification, cache use, and witness decoding. The
+runnable `examples/registry_ls_idl` remains the smaller explanatory fixture.
 
 This is deliberately a narrow trust claim. Schema and suffix binding prove
 which bytes were published and committed. They do not prove that a Lock Script

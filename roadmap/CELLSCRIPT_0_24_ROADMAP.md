@@ -40,7 +40,11 @@ An additional delivered Registry slice makes LS-IDL a first-class interface
 for deployed CKB Lock Scripts. The profile preserves exact upstream IDL bytes,
 binds their SHA-256 to the executable suffix, validates them in both Registry
 verifier boundaries, and resolves them by chain-verified Script identity. It
-does not expand the language edition or claim implementation correctness.
+also pins the complete current client vectors and derive/example IDLs and
+provides an opt-in direct test in which the upstream Rust client calls the
+Registry compatibility route. The website names this surface `LS-IDL`
+explicitly and aligns it with the full-width Browse surface. This does not
+expand the language edition or claim implementation correctness.
 
 ## Why This Is The Next Boundary
 

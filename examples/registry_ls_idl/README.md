@@ -48,10 +48,13 @@ correctness, authorization semantics, or the security of the Lock Script.
 `required = false` remains descriptive in LS-IDL 0.1; it does not make a field
 conditionally absent from the current linear decoder.
 
-`vectors.json` is a small Registry-facing compatibility subset. The upstream
-client repository remains authoritative for its complete evolving vector set.
-This example was checked against `ckb-idl-derive` commit
+`vectors.json` remains a small, readable Registry-facing example. The exact
+upstream compatibility corpus is separately pinned and executed under
+`tests/compat/ls_idl/` and `tests/ls_idl_upstream.rs`. This example was checked
+against `ckb-idl-derive` commit
 `e7ee35766b9084099e9d840ccd37d2b5d40074a1` and `ckb-idl-client` commit
 `7d883e0abccba56d423449b673567ee817747936`; that client's complete
 `test-vectors.json` has SHA-256
 `a9a6dca4fd0c5fcd2ca7aea6468784be7fdb29d6274049f07090cbab0ce9c1bb`.
+The opt-in `scripts/cellscript_ls_idl_upstream_acceptance.sh` additionally runs
+that actual Rust client against CellScript Registry's compatibility route.
