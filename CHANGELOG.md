@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Correct the 0.24 website release lineage after the first production build
+  retained stale 0.22 release metadata and Playground assets. The homepage now
+  advertises the official `v0.23.0` stable release and its 2026-08-11 date, the
+  Playground loads the released 0.23 WASM bundle, and distribution checks bind
+  the exact release URL, displayed tag, compiler asset identity, compiler
+  version, and WASM SHA-256. Rebuild and redeploy the immutable static site from
+  the corrected parent website gitlink.
 - Add first-class LS-IDL publication and discovery for CKB Lock Scripts.
   `cellc artifact ls-idl` validates the bounded 0.1 schema, appends
   `SHA-256(raw idl.json)` to an executable, generates a publish-ready bundle,

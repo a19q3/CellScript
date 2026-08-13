@@ -126,6 +126,33 @@ the same workbench but expands it to the viewport; mobile retains a compact
 panel switcher. The WASM boundary remains metadata-only: the Playground does
 not claim to emit or execute a production ELF.
 
+## Website Release Integrity Correction
+
+A production review on 2026-08-13 found that the first 0.24 website deployment
+had been built from a feature branch that diverged before the 0.23 website
+release synchronization. The deployed homepage therefore still labelled
+`v0.22.0` as the latest release, the Playground still loaded the 0.22 WASM
+bundle, and the distribution regression test incorrectly asserted those stale
+values. The server was serving the requested new directory; the error was in
+the source lineage and its matching test expectation.
+
+The corrected website now:
+
+- links the homepage release card to the official
+  [CellScript v0.23.0 release](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.23.0),
+  published on 2026-08-11;
+- loads the released 0.23 Playground asset identified by
+  `20260811-v0.23.0-fa369818`, with WASM SHA-256
+  `fa369818631532c657e73e970b6138e3a231d532a073d428dfe7f61686135dd5`;
+- asserts the release URL, displayed tag, compiler version, cache-busting asset
+  identity, and exact WASM digest during the website build; and
+- remains explicit that `nightly-0.24` is a development line. Advertising the
+  latest stable `v0.23.0` release does not claim that 0.24 itself has shipped.
+
+The corrected parent commit is
+`1aeea3cc2e41644873ec31b12ef5e2dc8138f230`, which pins website commit
+`00f0e2cb184c1343d2c6b57aa6a413028976a3e0`.
+
 ## Integration Status
 
 - The CellScript side of the Myelin 0.24 handoff is versioned and tested. The
@@ -276,6 +303,16 @@ copied into the parent repository. Commit
 `0e18ccd97bd75cac7de9211dc8d344c0bc08942f` is published on that submodule's
 `main` branch, and the parent repository binds the same gitlink, so a clean
 clone can reconstruct the exact evidence tree that passed `backend`.
+
+After the website release-integrity correction, `npm run build` passed with
+Node 22 in a clean parent worktree. That run covered the Registry and
+Playground tests, Astro checks and production build, homepage and LS-IDL
+regressions, documentation links, exact distribution identities, and the
+production deployment contract. The resulting static site was deployed at
+`https://cellscript.dev/` from the immutable server directory
+`/data/cellscript/releases/release-023-00f0e2c-1aeea3cc`; the unmodified public
+homepage returned HTTP 200 with the `v0.23.0` link and date, and the site
+container returned `running healthy`.
 
 ## Detailed References
 

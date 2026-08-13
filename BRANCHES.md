@@ -37,11 +37,17 @@ nightly branch name.
 comparisons and an exact nightly branch for development-scope comparisons;
 do not infer release evidence from `main` alone.
 
+## v0.23.0
+
+`v0.23.0` is the current stable release baseline. Use the exact tag ref
+`refs/tags/v0.23.0` for stable comparisons; later nightly branches describe
+development work and do not supersede that stable boundary by themselves.
+
 ## v0.22.0
 
-`v0.22.0` is the current stable release baseline. Use the exact tag ref
-`refs/tags/v0.22.0` for stable comparisons; later nightly branches describe
-development work and do not supersede that stable boundary by themselves.
+`v0.22.0` is the historical stable baseline for the type-and-set-theory line.
+Use the exact tag ref `refs/tags/v0.22.0` when reproducing that release rather
+than treating a later nightly branch as equivalent evidence.
 
 ## 0.16
 

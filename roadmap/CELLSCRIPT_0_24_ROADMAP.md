@@ -393,6 +393,38 @@ the independent live-state readability/spendability versus authorization/
 predicate-security axes. Merely resolving two nodes does not make conflicting
 CellScript module/type identities compatible.
 
+## Website And Stable-Release Integrity
+
+The 2026-08-13 production deployment audit found that the 0.24 website branch
+had diverged before the two website commits that published the 0.23 stable
+release identity. The resulting build contained the 0.24 Registry and
+Playground experience, but its homepage still advertised `v0.22.0`, its
+Playground still loaded the 0.22 WASM bundle, and its distribution regression
+test incorrectly required those stale identities. A green website build was
+therefore not sufficient evidence that the public release identity was current.
+
+The corrected website gitlink `00f0e2cb184c1343d2c6b57aa6a413028976a3e0`
+closes that gap:
+
+- the homepage release card names the current stable release `v0.23.0`, its
+  2026-08-11 publication date, and the exact GitHub release URL;
+- the Playground loads the released 0.23 WASM asset identified by
+  `20260811-v0.23.0-fa369818` and SHA-256
+  `fa369818631532c657e73e970b6138e3a231d532a073d428dfe7f61686135dd5`;
+- the homepage and distribution checks reject a stale release link, tag,
+  compiler asset version, compiler version, or WASM digest; and
+- the production site is built from the parent repository's exact website
+  gitlink rather than from whichever branch happens to be checked out in a
+  developer's submodule worktree.
+
+Before any later website deployment, the checked-in GitHub activity snapshot
+must be regenerated and reviewed against GitHub's published release state, and
+the website branch must include the latest stable-release synchronization
+before feature work is layered on top. The homepage continues to advertise the
+latest stable tag; the 0.24 nightly branch and these development release notes
+do not turn into a stable release merely because their website changes are
+deployed.
+
 ## Gate Integration
 
 ### `dev`
@@ -411,7 +443,8 @@ CellScript module/type identities compatible.
 - package simulator and CKB-VM tests;
 - source-map round-trip and semantic coverage fixtures;
 - Registry worker/checker integration; and
-- current website/WASM/package checks.
+- current website/WASM/package checks, including the stable release tag,
+  compiler asset identity, and exact WASM digest.
 
 ### `backend`
 
@@ -525,6 +558,9 @@ evidence from the remaining external handoff and promotion checkpoints:
   normalization have positive and fail-closed regressions.
 - [x] Registry profile admission uses a versioned catalog and only
   `cellscript_source` is dependency-resolving.
+- [x] The production website advertises the actual current stable release,
+  binds the matching released Playground WASM, and rejects stale release or
+  compiler-asset identities in its build regressions.
 - [ ] The Myelin adapter pins and verifies the upstream compiler/checker
   contract without vendoring compiler source or accepting raw-witness aliases.
   CellScript publishes and tests the versioned handoff contract; Myelin's exact
