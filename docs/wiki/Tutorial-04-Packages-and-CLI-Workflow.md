@@ -481,7 +481,7 @@ unknown fields, identities, roles, or lifecycle state:
 | --- | --- | --- |
 | `source_library` / `profile_library` | yes | Compiler-backed source and API identity are pinned in `Cell.lock`. |
 | `runtime_verifier` | no | `artifact fetch`, `verify`, and `pin`; verifier ID, IPC ABI, artifact, build, security, and production CellDep remain explicit TCB facts. |
-| `deployable_contract` | no | `artifact fetch`, `verify`, `pin`, `record-deployment`, and `cell-dep` bind build and live mainnet deployment identity. |
+| `deployable_contract` | no | `artifact fetch`, `verify`, `pin`, `record-deployment`, and `cell-dep` bind build and live mainnet deployment identity; `artifact ls-idl` validates, binds, bundles, or resolves a Lock Script interface without making it a source dependency. |
 | `reproducible_binary` | no | `artifact reproduction-evidence` binds independent builders to source, recipe, environment, executable, and logs before verified use. |
 | `template` | no | `artifact copy` authenticates a bounded file map, rejects traversal and overwrite, and then leaves local project source. |
 
@@ -561,6 +561,11 @@ Non-CellScript profiles publish with `Artifact.toml` and
 none silently turns an executable, TCB object, or template into a source
 dependency. `run`, `repl`, and cryptographic audit-signature verification
 retain their separate documented assurance boundaries.
+
+For LS-IDL Lock Scripts, `cellc artifact ls-idl validate|bind|bundle` prepares
+the byte-exact interface contract and `fetch` resolves it by chain-verified
+Script identity. The raw IDL SHA-256/executable-suffix relationship is an
+identity check, not proof of implementation correctness.
 
 ## Next
 

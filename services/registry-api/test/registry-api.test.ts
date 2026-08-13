@@ -24,6 +24,7 @@ import {
   artifactProfileSupportsDependencyResolution,
   joyidPrincipalIdFromBinding,
   scopeAllows,
+  sha256Hex,
   validatePublishPayload,
   validateArtifactDescriptor,
   type CapabilityAuthorisationPayload,
@@ -501,6 +502,33 @@ describe("generic artifact profile contracts", () => {
 
     expect(validatePublishPayload(payload, DEFAULT_REGISTRY_ORIGIN, now).artifact.profile).toBe("ckb_executable");
   });
+
+  it("admits only the exact LS-IDL 0.1 lock-script profile shape", async () => {
+    const payload = await ckbExecutablePublishPayload("cap_test");
+    const release = payload.registry_entry.versions[0];
+    const contract = release.profile_contract!;
+    (contract["ckb"] as Record<string, unknown>)["script_role"] = "lock";
+    contract["interface"] = {
+      schema: "cellscript-registry-ls-idl-interface-v1",
+      format: "ls-idl",
+      format_version: "0.1",
+      object_role: "abi",
+      content_type: "application/vnd.ckb.ls-idl+json",
+      encoding: "linear-le-v0",
+      commitment: {
+        algorithm: "sha256",
+        placement: "code-cell-data-suffix-32",
+        digest: `0x${"77".repeat(32)}`,
+      },
+    };
+    payload.manifest_hash = ckbBlake2bHex(canonicalJson(contract));
+    expect(validatePublishPayload(payload, DEFAULT_REGISTRY_ORIGIN, now).registry_entry.versions[0].profile_contract)
+      .toMatchObject({ interface: { format: "ls-idl", format_version: "0.1" } });
+
+    (contract["ckb"] as Record<string, unknown>)["script_role"] = "type";
+    payload.manifest_hash = ckbBlake2bHex(canonicalJson(contract));
+    expect(() => validatePublishPayload(payload, DEFAULT_REGISTRY_ORIGIN, now)).toThrow(/script_role must be 'lock'/);
+  });
 });
 
 function deploymentPayload(keyId: string): DeploymentPayload {
@@ -633,6 +661,105 @@ async function completeBrowserAuthorisationSession(
 }
 
 describe("registry api", () => {
+  it("serves exact LS-IDL bytes by chain-verified code hash without JSON reserialization", async () => {
+    const store = new MemoryRegistryStore();
+    const idl = "{\n  \"witness\": [{\"name\":\"signature\",\"type\":\"secp256k1_sig\",\"required\":true}]\n}\n";
+    const digest = await sha256Hex(new TextEncoder().encode(idl));
+    const codeHash = `0x${"31".repeat(32)}`;
+    const payload = await ckbExecutablePublishPayload("cap_test");
+    const release = payload.registry_entry.versions[0];
+    const contract = release.profile_contract!;
+    (contract["ckb"] as Record<string, unknown>)["script_role"] = "lock";
+    contract["interface"] = {
+      schema: "cellscript-registry-ls-idl-interface-v1",
+      format: "ls-idl",
+      format_version: "0.1",
+      object_role: "abi",
+      content_type: "application/vnd.ckb.ls-idl+json",
+      encoding: "linear-le-v0",
+      commitment: { algorithm: "sha256", placement: "code-cell-data-suffix-32", digest: `0x${digest}` },
+    };
+    payload.manifest_hash = ckbBlake2bHex(canonicalJson(contract));
+    const version: PackageVersionRecord = {
+      namespace: "cellscript",
+      name: "demo",
+      version: "1.2.3",
+      status: "deployed",
+      artifact: payload.artifact,
+      verification_status: "hash_bound",
+      deployment_status: "chain_verified",
+      availability_status: "active",
+      source_hash: payload.source_hash,
+      manifest_hash: payload.manifest_hash,
+      capability_key_id: "cap_test",
+      principal_type: "joyid_ckb",
+      principal_id: `0x${"11".repeat(20)}`,
+      registry_entry: payload.registry_entry,
+      snapshot_hash: `sha256:${"ab".repeat(32)}`,
+      direct_url: "https://registry.cellscript.dev/artifacts/cellscript/demo/releases/1.2.3.json",
+      created_at: now.toISOString(),
+      registry_environment: "production",
+      network: "mainnet",
+    };
+    store.packageVersions.set("cellscript/demo@1.2.3", version);
+    store.packageEvidence.set("cellscript/demo@1.2.3:deployed:test", {
+      namespace: "cellscript",
+      name: "demo",
+      version: "1.2.3",
+      kind: "deployed",
+      evidence_hash: `sha256:${"cd".repeat(32)}`,
+      evidence: {
+        network: "mainnet",
+        code_hash: codeHash,
+        data_hash: codeHash,
+        hash_type: "data1",
+        dep_type: "code",
+      },
+      request_id: "test",
+      admin_actor: "test",
+      created_at: now.toISOString(),
+    });
+    store.snapshots.set(version.snapshot_hash, {
+      snapshot_hash: version.snapshot_hash,
+      r2_key: "source-snapshots/cellscript/demo/1.2.3/bundle.json",
+      source_hash: version.source_hash,
+      size_bytes: 1,
+      content_type: "application/vnd.cellscript.artifact-bundle+json",
+    });
+    const bundle = JSON.stringify({
+      schema: "cellscript-registry-bundle",
+      namespace: "cellscript",
+      name: "demo",
+      release: "1.2.3",
+      profile: "ckb_executable",
+      manifest_json: canonicalJson(contract),
+      objects: [
+        { role: "source", content_base64: base64("source") },
+        { role: "executable", content_base64: base64("binary") },
+        { role: "abi", content_base64: base64(idl) },
+      ],
+    });
+    const app = createApp({
+      store,
+      registryObjectReader: {
+        async get(key) {
+          expect(key).toBe("source-snapshots/cellscript/demo/1.2.3/bundle.json");
+          return { body: bundle, contentType: "application/json" };
+        },
+      },
+    });
+
+    const compatibility = await get(app, `/idl/${codeHash.slice(2)}`);
+    expect(compatibility.status).toBe(200);
+    expect(await compatibility.text()).toBe(idl);
+    expect(compatibility.headers.get("x-ls-idl-sha256")).toBe(digest);
+    expect(compatibility.headers.get("x-ls-idl-verification")).toBe("schema-and-suffix-bound");
+
+    const formal = await get(app, `/v1/ckb/scripts/${codeHash}/interfaces/ls-idl?hash_type=data1&data_hash=${codeHash}`);
+    expect(formal.status).toBe(200);
+    expect(await formal.text()).toBe(idl);
+  });
+
   it("matches the canonical CKB Molecule Script hash", () => {
     expect(ckbScriptHash({
       code_hash: `0x${"11".repeat(32)}`,

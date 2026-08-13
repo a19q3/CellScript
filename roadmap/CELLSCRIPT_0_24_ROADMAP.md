@@ -36,6 +36,12 @@ does not become a CellScript target profile. Fiber and RGB++ promotion remains
 evidence-gated and cannot turn an incomplete external matrix into a compiler
 claim.
 
+An additional delivered Registry slice makes LS-IDL a first-class interface
+for deployed CKB Lock Scripts. The profile preserves exact upstream IDL bytes,
+binds their SHA-256 to the executable suffix, validates them in both Registry
+verifier boundaries, and resolves them by chain-verified Script identity. It
+does not expand the language edition or claim implementation correctness.
+
 ## Why This Is The Next Boundary
 
 CellScript 0.23 completed an operational distribution and evidence layer:

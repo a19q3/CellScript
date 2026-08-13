@@ -1,0 +1,21 @@
+{
+  "witness": [
+    {
+      "name": "signature",
+      "type": "secp256k1_sig",
+      "required": true,
+      "description": "Recoverable CKB secp256k1 signature"
+    },
+    {
+      "name": "nonce",
+      "type": "uint64",
+      "required": true
+    },
+    {
+      "name": "memo",
+      "type": "bytes",
+      "required": false,
+      "description": "Length-prefixed application bytes; required=false is descriptive in 0.1"
+    }
+  ]
+}

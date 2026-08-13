@@ -614,6 +614,14 @@ code CellDeps can produce current `on_chain_committed` state. Scheduled
 reconciliation demotes that current state when the commitment or deployment
 Cell is spent or no longer sufficiently confirmed.
 
+LS-IDL introduces another narrow Registry evidence layer. The interface
+verifier checks a bounded IDL schema, `SHA-256` of the exact ABI object bytes,
+and the executable's final 32-byte commitment. A chain-verified lookup also
+binds those bytes to a deployed Script identity. This is still not proof that
+the Lock Script implements the decoder correctly and is not a security audit.
+Do not promote `schema-and-suffix-bound` into semantic, VM, or chain-execution
+evidence.
+
 Package resolution is an earlier, separate gate. `Cell.lock` v3 binds the
 exact `Cell.toml` digest, dependency graph edges, dependency manifests,
 whole-tree hashes, exact Git/Registry source pins, feature/test modes, and CKB

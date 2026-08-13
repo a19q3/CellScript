@@ -405,6 +405,33 @@ async function routeRequest(
   const registryOrigin = env.REGISTRY_ORIGIN ?? DEFAULT_REGISTRY_ORIGIN;
   const staticOrigin = env.STATIC_REGISTRY_ORIGIN ?? DEFAULT_STATIC_REGISTRY_ORIGIN;
 
+  const lsIdlInterfaceMatch = url.pathname.match(/^\/v1\/ckb\/scripts\/([^/]+)\/interfaces\/ls-idl$/);
+  if (request.method === "GET" && lsIdlInterfaceMatch) {
+    return handleLsIdlRead(
+      request,
+      env,
+      deps,
+      store,
+      requestId,
+      headers,
+      decodeURIComponent(lsIdlInterfaceMatch[1] ?? ""),
+      false,
+    );
+  }
+  const lsIdlCompatibilityMatch = url.pathname.match(/^\/idl\/([^/]+)$/);
+  if (request.method === "GET" && lsIdlCompatibilityMatch) {
+    return handleLsIdlRead(
+      request,
+      env,
+      deps,
+      store,
+      requestId,
+      headers,
+      decodeURIComponent(lsIdlCompatibilityMatch[1] ?? ""),
+      true,
+    );
+  }
+
   if (request.method === "POST" && url.pathname === "/v1/authorisation-sessions") {
     return handleCreateAuthorisationSession(request, env, store, requestId, registryOrigin, now, headers);
   }
@@ -643,6 +670,141 @@ async function routeRequest(
   }
 
   throw new ApiError(404, "not_found", "route not found");
+}
+
+async function handleLsIdlRead(
+  request: Request,
+  env: Env,
+  deps: AppDeps,
+  store: RegistryStore,
+  requestId: string,
+  headers: Headers,
+  codeHashInput: string,
+  compatibilityRoute: boolean,
+): Promise<Response> {
+  const codeHash = canonicalLookupHash(codeHashInput, "code_hash");
+  const params = new URL(request.url).searchParams;
+  const runtime = registryRuntimeConfig(env);
+  const network = optionalPublicQuery(params, "network") ?? runtime.network;
+  if (network !== "mainnet" && network !== "testnet") {
+    throw new ApiError(400, "invalid_network", "network must be mainnet or testnet");
+  }
+  const hashTypeRaw = optionalPublicQuery(params, "hash_type");
+  const hashType = hashTypeRaw
+    ? requireOneOf(hashTypeRaw, ["data", "data1", "data2", "type"] as const, "invalid_hash_type") as
+      "data" | "data1" | "data2" | "type"
+    : undefined;
+  const dataHashRaw = optionalPublicQuery(params, "data_hash");
+  const dataHash = dataHashRaw ? canonicalLookupHash(dataHashRaw, "data_hash") : undefined;
+  if (!compatibilityRoute && hashType === "type" && !dataHash) {
+    throw new ApiError(
+      400,
+      "ls_idl_data_hash_required",
+      "Type-hash LS-IDL lookup requires data_hash so an upgrade cannot resolve to ambiguous interface bytes",
+    );
+  }
+  const candidates = await store.findScriptInterfaceCandidates({
+    code_hash: codeHash,
+    network,
+    ...(hashType ? { hash_type: hashType } : {}),
+    ...(dataHash ? { data_hash: dataHash } : {}),
+    limit: 17,
+  });
+  if (candidates.length === 0) {
+    throw new ApiError(404, "ls_idl_not_found", "no active chain-verified LS-IDL release matches this script identity");
+  }
+  if (candidates.length !== 1) {
+    throw new ApiError(
+      409,
+      "ls_idl_ambiguous",
+      "multiple active LS-IDL releases match this code hash; provide hash_type and data_hash on the versioned endpoint",
+    );
+  }
+  const candidate = candidates[0]!;
+  const deployment = candidate.deployment.evidence;
+  if (!compatibilityRoute && deployment["hash_type"] === "type" && !dataHash) {
+    throw new ApiError(
+      409,
+      "ls_idl_data_hash_required",
+      "this Type-hash deployment requires data_hash to bind the current code Cell bytes",
+    );
+  }
+  const signedRelease = candidate.version.registry_entry.versions.find((entry) => entry.version === candidate.version.version);
+  const profileContract = signedRelease?.profile_contract as Record<string, unknown> | undefined;
+  const interfaceContract = profileContract?.["interface"] as Record<string, unknown> | undefined;
+  const commitment = interfaceContract?.["commitment"] as Record<string, unknown> | undefined;
+  if (interfaceContract?.["format"] !== "ls-idl" || commitment?.["algorithm"] !== "sha256") {
+    throw new ApiError(500, "ls_idl_contract_inconsistent", "stored release no longer has a readable LS-IDL contract");
+  }
+  const expectedDigest = canonicalLookupHash(String(commitment["digest"] ?? ""), "interface commitment digest");
+  const snapshot = await requireSnapshot(store, candidate.version);
+  const reader = deps.registryObjectReader ?? r2RegistryObjectReader(env);
+  const object = await reader.get(snapshot.r2_key);
+  if (!object) {
+    throw new ApiError(503, "ls_idl_bundle_unavailable", "the immutable LS-IDL bundle is temporarily unavailable");
+  }
+  const bundleBytes = new Uint8Array(await new Response(object.body).arrayBuffer());
+  if (bundleBytes.length === 0 || bundleBytes.length > DEFAULT_MAX_SNAPSHOT_BYTES) {
+    throw new ApiError(500, "ls_idl_bundle_invalid", "the immutable LS-IDL bundle violates its size contract");
+  }
+  let bundle: Record<string, unknown>;
+  try {
+    bundle = assertPlainObject(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bundleBytes)), "ls_idl_bundle_invalid");
+  } catch {
+    throw new ApiError(500, "ls_idl_bundle_invalid", "the immutable LS-IDL bundle is not valid UTF-8 JSON");
+  }
+  if (bundle["schema"] !== "cellscript-registry-bundle"
+    || bundle["namespace"] !== candidate.version.namespace
+    || bundle["name"] !== candidate.version.name
+    || bundle["release"] !== candidate.version.version
+    || bundle["profile"] !== "ckb_executable") {
+    throw new ApiError(500, "ls_idl_bundle_invalid", "the immutable LS-IDL bundle identity does not match its Registry release");
+  }
+  const objects = bundle["objects"];
+  if (!Array.isArray(objects)) {
+    throw new ApiError(500, "ls_idl_bundle_invalid", "the immutable LS-IDL bundle has no object list");
+  }
+  const abiObjects = objects.filter((value) => {
+    try { return assertPlainObject(value, "ls_idl_bundle_invalid")["role"] === "abi"; } catch { return false; }
+  });
+  if (abiObjects.length !== 1) {
+    throw new ApiError(500, "ls_idl_bundle_invalid", "the immutable LS-IDL bundle must contain exactly one abi object");
+  }
+  const abiObject = assertPlainObject(abiObjects[0], "ls_idl_bundle_invalid");
+  if (typeof abiObject["content_base64"] !== "string") {
+    throw new ApiError(500, "ls_idl_bundle_invalid", "the immutable LS-IDL abi object is not base64 encoded");
+  }
+  let idlBytes: Uint8Array;
+  try {
+    idlBytes = base64ToBytes(abiObject["content_base64"]);
+  } catch {
+    throw new ApiError(500, "ls_idl_bundle_invalid", "the immutable LS-IDL abi object is malformed base64");
+  }
+  if (idlBytes.length === 0 || idlBytes.length > 256 * 1024) {
+    throw new ApiError(500, "ls_idl_bundle_invalid", "the immutable LS-IDL document violates its size contract");
+  }
+  const actualDigest = await sha256Hex(idlBytes);
+  if (actualDigest !== expectedDigest.slice(2)) {
+    throw new ApiError(500, "ls_idl_digest_mismatch", "stored LS-IDL bytes no longer match the admitted SHA-256 commitment");
+  }
+  const out = new Headers(headers);
+  out.set("content-type", "application/vnd.ckb.ls-idl+json");
+  out.set("cache-control", "public, max-age=300, stale-while-revalidate=3600");
+  out.set("etag", `"sha256-${actualDigest}"`);
+  out.set("x-ls-idl-format-version", String(interfaceContract["format_version"] ?? "0.1"));
+  out.set("x-ls-idl-sha256", actualDigest);
+  out.set("x-ls-idl-coordinate", `${candidate.version.namespace}/${candidate.version.name}@${candidate.version.version}`);
+  out.set("x-ls-idl-commitment", "code-cell-data-suffix-32");
+  out.set("x-ls-idl-verification", "schema-and-suffix-bound");
+  return new Response(idlBytes.slice().buffer as ArrayBuffer, { status: 200, headers: out });
+}
+
+function canonicalLookupHash(value: string, label: string): string {
+  const bare = value.replace(/^0x/i, "");
+  if (!/^[0-9a-fA-F]{64}$/.test(bare)) {
+    throw new ApiError(400, "invalid_script_hash", `${label} must be a 32-byte hexadecimal hash`);
+  }
+  return `0x${bare.toLowerCase()}`;
 }
 
 async function handleStaticPackageVersionRead(
@@ -1027,6 +1189,7 @@ async function handleRecordDeployment(
       : await verifyDeployment(env, payload);
     const previousEvidence = await store.listPackageEvidence(namespace, name, release);
     const buildEvidence = latestBuildEvidence(previousEvidence, version);
+    const lsIdlInterface = releaseLsIdlInterface(version);
     const evidence = {
       schema: "cellscript-registry-evidence",
       kind: "deployed",
@@ -1045,6 +1208,7 @@ async function handleRecordDeployment(
       out_point: payload.out_point,
       deployment_status: "live",
       chain_verification: "get_transaction+get_live_cell",
+      ...(lsIdlInterface ? { interface: lsIdlInterface } : {}),
       ...(chain.block_hash ? { block_hash: chain.block_hash } : {}),
       ...(chain.block_number ? { block_number: chain.block_number } : {}),
       ...(chain.tip_block_number ? { observed_tip_block_number: chain.tip_block_number } : {}),
@@ -3664,6 +3828,7 @@ function staticRegistryVersionPayload(
     ...(signedRelease.abi_hash ? { abi_hash: signedRelease.abi_hash } : {}),
     ...(signedRelease.build_recipe_hash ? { build_recipe_hash: signedRelease.build_recipe_hash } : {}),
     ...(signedRelease.profile_contract ? { profile_contract: signedRelease.profile_contract } : {}),
+    ...(releaseLsIdlInterface(version) ? { interface: releaseLsIdlInterface(version) } : {}),
     ...(version.edition ? { edition: version.edition } : {}),
     ...(version.compatibility_profile_hash ? { compatibility_profile_hash: version.compatibility_profile_hash } : {}),
     capability_key_id: version.capability_key_id,
@@ -3679,6 +3844,22 @@ function staticRegistryVersionPayload(
     ...(version.expires_at ? { expires_at: version.expires_at } : {}),
     ...(version.purge_after ? { purge_after: version.purge_after } : {}),
     evidence,
+  };
+}
+
+function releaseLsIdlInterface(version: PackageVersionRecord): Record<string, unknown> | null {
+  const signedRelease = version.registry_entry.versions.find((entry) => entry.version === version.version);
+  const interfaceContract = signedRelease?.profile_contract?.["interface"];
+  if (!interfaceContract || typeof interfaceContract !== "object" || Array.isArray(interfaceContract)) return null;
+  const value = interfaceContract as Record<string, unknown>;
+  if (value["format"] !== "ls-idl") return null;
+  return {
+    schema: value["schema"],
+    format: "ls-idl",
+    format_version: value["format_version"],
+    content_type: value["content_type"],
+    encoding: value["encoding"],
+    commitment: value["commitment"],
   };
 }
 
@@ -4496,7 +4677,7 @@ function corsHeaders(requestId: string): Headers {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET,POST,OPTIONS",
     "access-control-allow-headers": "content-type,authorization,idempotency-key,x-registry-admin-token,x-registry-admin-actor",
-    "access-control-expose-headers": "x-request-id,x-idempotency-status",
+    "access-control-expose-headers": "x-request-id,x-idempotency-status,etag,x-ls-idl-format-version,x-ls-idl-sha256,x-ls-idl-coordinate,x-ls-idl-commitment,x-ls-idl-verification",
     "cache-control": "no-store",
     "content-security-policy": "default-src 'none'; base-uri 'none'; frame-ancestors 'none'",
     "permissions-policy": "camera=(), geolocation=(), microphone=()",

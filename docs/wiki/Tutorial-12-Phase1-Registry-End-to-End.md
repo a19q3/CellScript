@@ -251,7 +251,57 @@ For a DepGroup OutPoint, the API decodes the live Cell data as the canonical
 Molecule `OutPointVec` and finds the matching live code member. It does not hash
 the DepGroup container as though it were the executable.
 
-## 6. Inspect and consume the artifact
+## 6. Publish and resolve an LS-IDL Lock Script interface
+
+For a Lock Script that follows LS-IDL 0.1, start with the original `idl.json`
+bytes. Do not pretty-print or reserialise them after computing the commitment:
+
+```bash
+cellc artifact ls-idl validate --idl idl.json
+cellc artifact ls-idl bind \
+  --idl idl.json \
+  --executable target/release/vault-lock \
+  --output target/release/vault-lock.ls-idl
+cellc artifact ls-idl bundle \
+  --idl idl.json \
+  --executable target/release/vault-lock.ls-idl \
+  --source src/lib.rs \
+  --namespace acme \
+  --name vault-lock \
+  --release 1.0.0 \
+  --language rust \
+  --hash-type data1 \
+  --dep-type code \
+  --toolchain rust-1.97.1 \
+  --source-revision <40-hex-git-commit> \
+  --output artifact.bundle.json \
+  --artifact-manifest-output Artifact.toml
+cellc publish --artifact-manifest Artifact.toml --dry-run --json
+```
+
+After publishing and recording chain-verified deployment evidence, resolve the
+same bytes through either the CLI or canonical API:
+
+```bash
+cellc artifact ls-idl fetch \
+  --code-hash 0x<64-hex> \
+  --hash-type data1 \
+  --network mainnet \
+  --output idl.json
+
+curl --fail \
+  'https://api.registry.cellscript.dev/v1/ckb/scripts/0x<64-hex>/interfaces/ls-idl?network=mainnet&hash_type=data1' \
+  --output idl.json
+```
+
+The compatibility route `/idl/:code_hash` returns the same original bytes.
+The Registry proves the document schema, raw-byte digest, executable suffix,
+and deployment identity. It does not prove that the Lock Script correctly
+implements the interface, and it is not a security audit. See the
+[LS-IDL Registry profile](../CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md) for the
+closed schema and trust boundary.
+
+## 7. Inspect and consume the artifact
 
 Open the artifact detail page or query the API:
 
@@ -318,7 +368,7 @@ cellc artifact record-deployment acme/vault-lock@1.0.0 \
 `cell-dep` reads the accepted evidence network and defaults to the matching
 official RPC; an explicit `--rpc-url` still has to report the same chain.
 
-## 7. Other artifact kinds
+## 8. Other artifact kinds
 
 - `runtime_verifier`: `ckb_executable` bundle with source, executable, and ABI;
   consumption mode is `tcb`.
@@ -344,13 +394,13 @@ immutable `audit_report` bundle object whose CKB Blake2b-256 hash exactly
 matches `security.audit_report_hash`. This authenticates the referenced report;
 it does not make the Registry the auditor.
 
-## 8. Naming rules
+## 9. Naming rules
 
 Namespace and artifact names are 1–64 characters. Use lowercase letters and
 digits; `_` and `-` may appear only between characters. A one-character name is
 valid. The UI and API enforce the same rule.
 
-## 9. Registry scope and repository validation
+## 10. Registry scope and repository validation
 
 The Registry names code, build recipes, TCB inputs, deployment facts, and
 compact commitments. It does not operate application business Cells. Those

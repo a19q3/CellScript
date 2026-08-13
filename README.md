@@ -641,7 +641,7 @@ CKB cycle/capacity estimates.
 |---|---|---|
 | **CLI** | `cli/` + `main.rs` | `cellc` binary with all subcommands |
 | **LSP** | `lsp/` + `lsp/server.rs` | In-process `LspServer` + `tower-lsp` JSON-RPC over stdio (`cellc --lsp`) |
-| **VS Code** | `editors/vscode-cellscript/` | Shells out to `cellc` for LSP startup, reports, action-builder generation, and package/registry verification |
+| **VS Code** | `editors/vscode-cellscript/` | Shells out to `cellc` for LSP startup, reports, action-builder generation, package/registry verification, and LS-IDL validate/bind/fetch flows |
 | **MCP server** | `cellscript-mcp` (separate bin) | Read-only Model Context Protocol JSON-RPC server that exposes compiler reports and explain commands to MCP-aware agents (Claude Code, Cursor, Aider, Codex, etc.) |
 | **Formatter** | `fmt/` | Idempotent formatter for `cellc fmt` and LSP |
 | **Doc generator** | `docgen/` | HTML/Markdown/JSON docs from AST + metadata |
@@ -809,6 +809,8 @@ Non-CellScript artifact profiles still fail closed.
   test-only dependency, and explicit CKB-environment graph
 - `examples/scenario_basics` — runnable positive and exact-negative scenarios
   under both simulator and CKB-VM, plus a four-file artifact walkthrough
+- `examples/registry_ls_idl` — runnable LS-IDL validation, executable binding,
+  Registry bundle scaffolding, exact-byte fetch, and compatibility vectors
 - `cellc info --json` — exposes package metadata for CI and tooling
 - `cellc package verify --json` — fails closed when `Cell.toml`, source hash,
   dependency resolution, or build identity disagree with `Cell.lock`; run an
@@ -899,6 +901,13 @@ the manual, CI, recovery, and external-wallet path.
   `cellscript_source` dependency-resolving; non-CellScript artifact profiles
   remain discoverable through explicit artifact commands and fail closed in
   package resolution
+- Deployable CKB Lock Scripts may attach the versioned
+  `cellscript-registry-ls-idl-interface-v1` profile. Registry admission binds
+  `SHA-256` of the exact IDL bytes to the executable's final 32 bytes, and
+  public reads resolve those bytes by chain-verified Script identity. This is
+  an interface-identity check, not proof of implementation correctness or a
+  security audit. See the
+  [LS-IDL Registry profile](docs/CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md).
 - Git dependencies are explicit remote source fetches; treat them as
   review-required inputs, not the registry production path
 
@@ -951,6 +960,7 @@ the manual, CI, recovery, and external-wallet path.
 | `cellc opt-report` | Compare O0..O3 artifact size and constraints status |
 | `cellc receipt` / `sign-receipt` / `verify-receipt` | Emit, sign, and verify compile receipts over metadata/artifact hashes |
 | `cellc verify-artifact` | Independently check an ELF, metadata, lowering record, and source map; report VM/chain evidence separately; optionally bind a receipt |
+| `cellc artifact ls-idl validate\|bind\|fetch\|bundle` | Validate byte-exact LS-IDL, bind its SHA-256 to a CKB executable, resolve it by deployed Script identity, or scaffold a publish-ready Registry bundle |
 | `cellc test --backend simulator\|ckb-vm\|all` | Execute fail-closed package scenarios with exact outcomes and evidence tiers (`--no-run` is compile-only) |
 | `cellc doc` | Generate API and audit documentation |
 | `cellc fmt` | Format `.cell` sources or check formatting |

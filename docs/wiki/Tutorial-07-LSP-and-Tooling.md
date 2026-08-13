@@ -147,6 +147,7 @@ Useful settings:
 | `cellscript.builderOutputDir` | Output directory for generated TypeScript action-builder packages. Relative paths resolve from the nearest package `Cell.toml`. |
 | `cellscript.ckbRpcUrl` | Optional CKB RPC URL for live registry verification. |
 | `cellscript.deploymentNetwork` | Optional network filter for live registry verification and generated builder deployment binding. |
+| `cellscript.registryApiUrl` | Optional Registry API base URL for LS-IDL fetch. |
 | `cellscript.registryRequirePublisherSignature` | Add `--require-publisher-signature` to registry verification commands. This is a metadata-presence gate, not cryptographic signature verification. |
 | `cellscript.registryRequireAuditReport` | Add `--require-audit-report` to registry verification commands. |
 
@@ -169,6 +170,15 @@ The extension contributes commands for the local compiler and builder loop:
 | `CellScript: Verify Registry` | `cellc registry verify --json` |
 | `CellScript: Verify Live Registry` | `cellc registry verify --live --json` |
 | `CellScript: Show Production Report` | compiler version + metadata + constraints + release-audit boundary |
+| `CellScript: Validate LS-IDL` | `cellc artifact ls-idl validate --idl <active-json>` |
+| `CellScript: Bind LS-IDL to CKB Executable` | `cellc artifact ls-idl bind --idl <active-json> --executable <file>` |
+| `CellScript: Fetch LS-IDL by CKB Script` | `cellc artifact ls-idl fetch --code-hash <hash> --output idl.json` |
+
+The LS-IDL commands preserve the interface's exact byte identity. Validation
+checks the supported schema, binding appends the raw IDL SHA-256 to a selected
+executable, and fetch writes the Registry response without JSON
+reserialisation. This proves schema and commitment identity, not that a Lock
+Script implements the interface correctly.
 
 Entry-witness commands report placement ABI
 `cellscript-witnessargs-input-type-v2` within the resolved compatibility profile:

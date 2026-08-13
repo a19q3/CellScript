@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Add first-class LS-IDL publication and discovery for CKB Lock Scripts.
+  `cellc artifact ls-idl` validates the bounded 0.1 schema, appends
+  `SHA-256(raw idl.json)` to an executable, generates a publish-ready bundle,
+  and fetches byte-exact IDL by deployed Script identity. Registry admission,
+  both verifier boundaries, immutable object storage, Postgres lookup,
+  canonical `/v1/ckb/scripts/:code_hash/interfaces/ls-idl` reads, and the
+  compatibility `/idl/:code_hash` route all enforce the same schema and
+  executable-suffix contract. Add curated compatibility vectors, a runnable
+  Rust example, website lookup/detail surfaces, and VS Code validate/bind/fetch
+  commands. Keep implementation correctness and security review outside this
+  byte-identity claim.
 - Ship the 0.24 package and Registry trust closure, informed by Sui Move's
   package-alt separation of resolution from compilation. Replace permissive
   custom version checks with standard SemVer; make `Cell.lock` v3 a

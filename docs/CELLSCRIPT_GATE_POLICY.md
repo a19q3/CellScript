@@ -38,6 +38,14 @@ running during locked builds. Registry API checks also validate the complete
 `cellscript-registry-profile-catalog-v1` and prove that only CellScript source
 profiles are dependency-resolving.
 
+The same Registry matrix covers
+`cellscript-registry-ls-idl-interface-v1`: raw ABI schema and size budgets,
+SHA-256 binding, executable suffix placement, publish-time rejection cases,
+SQL/in-memory Script lookup, byte-preserving canonical and compatibility
+responses, ambiguous type-hash rejection, CLI validate/bind/fetch/bundle, and
+both compiler-backed and least-privilege verifier outputs. Passing this matrix
+does not assert that a Lock Script semantically implements its IDL.
+
 `dev` and `ci` run `cellc fmt --check` against
 `examples/language/canonical_style.cell`. The formatter's comma-terminated
 field form is the canonical checked-in surface; the parser may continue to

@@ -48,6 +48,9 @@ After that, the wiki continues outward:
 - v0.24 makes `cellc test` run explicit simulator or CKB-VM scenarios with
   exact runtime errors, backend-labelled evidence, local multi-step Cell
   replacement, and conservative source-linked coverage;
+- v0.24 publishes byte-exact LS-IDL for deployed Lock Scripts, binds the raw
+  IDL SHA-256 to the executable suffix, and resolves it through the Registry
+  without upgrading that identity check into an implementation or audit claim;
 - production evidence proves more than compiler success;
 - editor tooling shortens the local loop;
 - bundled examples show the style in real contracts.
@@ -74,6 +77,8 @@ If you already know what you need, jump directly:
   [Spore and RGB++ Interoperability Boundaries](Spore-and-RGBPP-Interop-Boundaries.md).
 - spawning a pinned BIP340 verifier: read the
   [verifier CellDep ABI](../CELLSCRIPT_SIGNATURE_VERIFIER_ABI.md).
+- publishing or resolving a Lock Script interface: read the
+  [LS-IDL Registry profile](../CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md).
 
 ## Tutorial Path
 

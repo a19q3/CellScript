@@ -70,6 +70,14 @@ applies a profile-specific object contract:
 - `copy_material`: hash-bind a `cellscript-template-file-map-v1` source and
   never treat it as a dependency.
 
+A deployable `ckb_executable` Lock Script may additionally carry the closed
+`cellscript-registry-ls-idl-interface-v1` contract. Admission requires exactly
+one ABI object, validates the bounded LS-IDL 0.1 document, hashes the original
+ABI bytes with SHA-256, and checks that digest against both the interface
+contract and the executable's final 32 bytes. The response path returns those
+stored bytes directly; it does not parse and reserialise JSON. See
+[`docs/CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md`](../../docs/CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md).
+
 Release state is split across:
 
 ```text
@@ -134,6 +142,8 @@ GET  /v1/artifacts
 GET  /v1/artifacts/:namespace/:name
 GET  /v1/artifacts/:namespace/:name/releases/:release/evidence
 GET  /v1/artifacts/:namespace/:name/releases/:release/commitment
+GET  /v1/ckb/scripts/:code_hash/interfaces/ls-idl?network=:network&hash_type=:hash_type[&data_hash=:data_hash]
+GET  /idl/:code_hash
 POST /v1/artifacts/:namespace/:name/releases
 POST /v1/artifacts/:namespace/:name/releases/:release/deployments
 POST /v1/artifacts/:namespace/:name/releases/:release/availability
@@ -159,6 +169,12 @@ POST /v1/admin/artifacts/:namespace/:name/releases/:release/promote
 List filters are `q`, `namespace`, `kind`, `verification`, `deployment`,
 `availability`, `limit`, and `offset`. Quarantined releases are absent from
 public detail and evidence reads.
+
+The canonical LS-IDL lookup returns
+`application/vnd.ckb.ls-idl+json` plus digest, coordinate, commitment, and
+verification headers. `data_hash` is required for `hash_type=type`; ambiguous
+matches return `409`. `/idl/:code_hash` is a compatibility route for existing
+clients and returns the same exact raw bytes.
 
 ## Publisher Authorisation
 
@@ -289,6 +305,12 @@ Generic artifact profile contracts are closed and hash-bound. In particular,
 an `audited` security declaration requires an immutable `audit_report` bundle
 object bound by `security.audit_report_hash`; the isolated verifier recomputes
 that hash before it emits evidence.
+
+An LS-IDL profile also requires `artifact.kind = deployable_contract`,
+`artifact.profile = ckb_executable`, `consumption_mode = deployment`, and
+`profile_contract.ckb.script_role = lock`. Both the compiler-backed worker and
+the artifact-only verifier recompute the raw ABI SHA-256 and executable suffix;
+neither accepts a detached or JSON-equivalent-but-byte-different interface.
 
 The database transaction stores the release, job, capability use, audit event,
 nonce, and completed idempotency record. The verifier job is created in the
@@ -500,6 +522,10 @@ hash-integrity evidence from semantic verification with `hash_bound`; and
 renames historical chain evidence, adds the current-commitment pointer and
 status projection constraints, and deliberately demotes legacy current claims
 until the mainnet indexer re-observes a sufficiently confirmed live Cell.
+`0008` adds isolated sandbox retention, `0009` adds wallet-authorisation
+sessions, and `0010` adds the bounded partial lookup index used to resolve
+LS-IDL from active public chain-verified deployment evidence. Apply `0010`
+before enabling either LS-IDL read route.
 
 `GET /health` is process liveness and is the Compose container healthcheck.
 `GET /ready` is the traffic and operator gate: it checks store/object access,

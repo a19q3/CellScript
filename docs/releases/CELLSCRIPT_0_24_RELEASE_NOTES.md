@@ -25,6 +25,9 @@ The 0.24 line closes two trust gaps without adding a new language edition:
    manifest-bound dependency graph, exact source identities, feature/test and
    CKB-environment roots, while ordinary builds never perform mutable version
    selection.
+4. Deployable CKB Lock Scripts can publish LS-IDL as a byte-exact Registry
+   interface, with the raw IDL SHA-256 committed in the executable suffix and
+   resolvable by deployed Script identity.
 
 The Registry can now admit artifact-only CKB bundles through a least-privilege
 worker that depends on the standalone checker, not the CellScript compiler.
@@ -80,6 +83,48 @@ Native `cellc run` now includes the VM runner by default. It executes only a
 no-argument standalone ELF and fails closed for parameter or transaction/
 syscall context. Development interpretation requires explicit `--simulate`;
 there is no silent evidence-tier fallback.
+
+## LS-IDL Lock Script Interfaces
+
+0.24 adds an end-to-end LS-IDL path without inventing a second ABI format.
+`cellc artifact ls-idl` can validate the bounded upstream 0.1 document, append
+`SHA-256(raw idl.json bytes)` to a CKB executable, generate a publish-ready
+artifact bundle, and fetch the original bytes by deployed Script identity.
+
+Registry admission accepts the interface only for a deployable
+`ckb_executable` Lock Script. The compiler-backed worker and least-privilege
+artifact verifier independently check the IDL schema, raw ABI digest, and
+executable's final 32 bytes. The API returns the stored bytes directly through
+the canonical Script-identity route and the existing-client `/idl/:code_hash`
+compatibility route; it never parses and reserialises the committed JSON.
+
+The website now has a standalone Script-identity lookup and a dedicated
+interface section on matching artifact pages. The VS Code extension exposes
+validate, bind, and fetch commands. The runnable `examples/registry_ls_idl`
+bundle records the supported wire types, normal and negative vectors, upstream
+commit pins, and the complete upstream vector hash.
+
+This is deliberately a narrow trust claim. Schema and suffix binding prove
+which bytes were published and committed. They do not prove that a Lock Script
+implements the described decoder correctly, and they are not a security audit.
+The full profile and operator boundary are documented in the
+[LS-IDL Registry profile](../CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md).
+
+## Playground Experience Upgrade
+
+The browser Playground is now a recoverable Cell-oriented workbench rather
+than a one-shot compiler demo. Local workspace snapshots retain source files,
+entry selection, active panels, and saved/dirty state across refreshes. A
+failed compile keeps the previous successful output visible but explicitly
+marks it stale, and a failed compiler Worker can restart without a page reload.
+
+The new Cell Flow view derives actions and type transitions from compiler
+metadata, with source-linked selection and a contextual Inspector. A short,
+optional guide helps first-time users through the workbench while raw actions,
+types, diagnostics, and metadata remain directly accessible. Focus mode keeps
+the same workbench but expands it to the viewport; mobile retains a compact
+panel switcher. The WASM boundary remains metadata-only: the Playground does
+not claim to emit or execute a production ELF.
 
 ## Integration Status
 
@@ -236,6 +281,7 @@ clone can reconstruct the exact evidence tree that passed `backend`.
 
 - [Verified artifact boundary](../CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md)
 - [Executable test scenarios](../CELLSCRIPT_EXECUTABLE_TEST_SCENARIOS.md)
+- [LS-IDL Registry profile](../CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md)
 - [Myelin handoff](../CELLSCRIPT_MYELIN_0_24_HANDOFF.md)
 - [Gate policy](../CELLSCRIPT_GATE_POLICY.md)
 - [0.24 roadmap](../../roadmap/CELLSCRIPT_0_24_ROADMAP.md)

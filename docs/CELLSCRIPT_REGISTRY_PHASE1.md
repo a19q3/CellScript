@@ -254,6 +254,20 @@ build is marked `evidence_required` until
 appropriate build evidence exists; merely uploading output bytes does not prove
 reproducibility.
 
+### LS-IDL Lock Script interface
+
+A deployable `ckb_executable` with `ckb.script_role = "lock"` may add a
+`cellscript-registry-ls-idl-interface-v1` contract. The ABI object is the exact
+LS-IDL JSON byte sequence; its SHA-256 must match the contract and the
+executable's final 32 bytes. Use `cellc artifact ls-idl validate`, `bind`, and
+`bundle` to construct this relationship. The normal and least-privilege
+verifiers independently enforce it.
+
+This adds a discoverable interface identity, not a semantic implementation or
+security claim. The full schema, supported field encodings, compatibility
+vectors, and operator boundary are in
+[`CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md`](CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md).
+
 ## Accepting Reproduction Evidence
 
 The Registry never executes an arbitrary publisher build recipe in its API
@@ -422,6 +436,8 @@ GET  /v1/artifacts
 GET  /v1/artifacts/:namespace/:name
 GET  /v1/artifacts/:namespace/:name/releases/:release/evidence
 GET  /v1/artifacts/:namespace/:name/releases/:release/commitment
+GET  /v1/ckb/scripts/:code_hash/interfaces/ls-idl?network=:network&hash_type=:hash_type[&data_hash=:data_hash]
+GET  /idl/:code_hash
 GET  /artifacts/:namespace/:name/releases/:release.json
 POST /v1/artifacts/:namespace/:name/releases
 POST /v1/artifacts/:namespace/:name/releases/:release/deployments
@@ -454,6 +470,9 @@ that every artifact is installable.
 ## Fail-Closed Rules
 
 - Unknown kinds, profiles, languages, object roles, and state values fail.
+- LS-IDL lookup returns only an active, public, chain-verified deployable Lock
+  Script with a schema-valid, raw-byte SHA-256/suffix-bound interface; type-hash
+  lookup requires `data_hash`, and ambiguous candidates fail.
 - Identifiers are 1–64 lowercase letters or digits; `_` and `-` are allowed
   only between characters.
 - A source dependency resolver rejects every non-CellScript profile.

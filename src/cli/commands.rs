@@ -5609,6 +5609,8 @@ fn publish_declared_artifact(args: PublishArgs, manifest_path: &Path) -> Result<
     let source_hash = hex::encode(crate::ckb_blake2b256(&source));
     let mut artifact_hash = None;
     let mut abi_hash = None;
+    let mut abi_sha256 = None;
+    let mut executable_ls_idl_bound = None;
     let mut build_recipe_hash = None;
     let audit_report_hash = if manifest_json.pointer("/security/audit_report_hash").is_some() {
         Some(hex::encode(crate::ckb_blake2b256(&declared_bundle_object(&bundle, "audit_report")?)))
@@ -5616,8 +5618,17 @@ fn publish_declared_artifact(args: PublishArgs, manifest_path: &Path) -> Result<
         None
     };
     if artifact.profile == "ckb_executable" {
-        artifact_hash = Some(hex::encode(crate::ckb_blake2b256(&declared_bundle_object(&bundle, "executable")?)));
-        abi_hash = Some(hex::encode(crate::ckb_blake2b256(&declared_bundle_object(&bundle, "abi")?)));
+        let executable = declared_bundle_object(&bundle, "executable")?;
+        let abi = declared_bundle_object(&bundle, "abi")?;
+        artifact_hash = Some(hex::encode(crate::ckb_blake2b256(&executable)));
+        abi_hash = Some(hex::encode(crate::ckb_blake2b256(&abi)));
+        if manifest_json.get("interface").is_some() {
+            use sha2::Digest as _;
+            crate::package::registry::validate_ls_idl_document(&abi).map_err(crate::error::CompileError::without_span)?;
+            let digest = sha2::Sha256::digest(&abi);
+            abi_sha256 = Some(hex::encode(digest));
+            executable_ls_idl_bound = Some(executable.ends_with(digest.as_slice()));
+        }
         if manifest_json.pointer("/build/reproducible").and_then(serde_json::Value::as_bool) == Some(true) {
             build_recipe_hash = Some(hex::encode(crate::ckb_blake2b256(&declared_bundle_object(&bundle, "build_recipe")?)));
         }
@@ -5632,6 +5643,8 @@ fn publish_declared_artifact(args: PublishArgs, manifest_path: &Path) -> Result<
         crate::package::registry::ArtifactContractHashes {
             artifact_hash: artifact_hash.as_deref(),
             abi_hash: abi_hash.as_deref(),
+            abi_sha256: abi_sha256.as_deref(),
+            executable_ls_idl_bound,
             build_recipe_hash: build_recipe_hash.as_deref(),
             audit_report_hash: audit_report_hash.as_deref(),
         },
@@ -14535,6 +14548,100 @@ impl CliParser {
                     .subcommand_required(true)
                     .arg_required_else_help(true)
                     .subcommand(
+                        ClapCommand::new("ls-idl")
+                            .about("Validate, bind, or fetch an exact-byte LS-IDL lock-script interface")
+                            .subcommand_required(true)
+                            .arg_required_else_help(true)
+                            .subcommand(
+                                ClapCommand::new("validate")
+                                    .about("Validate an LS-IDL 0.1 document and optionally verify its executable suffix")
+                                    .arg(Arg::new("idl").long("idl").value_name("FILE").required(true))
+                                    .arg(Arg::new("executable").long("executable").value_name("CKB_ELF")),
+                            )
+                            .subcommand(
+                                ClapCommand::new("bind")
+                                    .about("Append SHA-256(raw idl.json bytes) to a CKB executable")
+                                    .arg(Arg::new("idl").long("idl").value_name("FILE").required(true))
+                                    .arg(Arg::new("executable").long("executable").value_name("CKB_ELF").required(true))
+                                    .arg(Arg::new("output").long("output").short('o').value_name("CKB_ELF").required(true))
+                                    .arg(Arg::new("force").long("force").action(ArgAction::SetTrue)),
+                            )
+                            .subcommand(
+                                ClapCommand::new("fetch")
+                                    .about("Fetch exact LS-IDL bytes by a chain-verified CKB script identity")
+                                    .arg(Arg::new("code-hash").long("code-hash").value_name("HASH").required(true))
+                                    .arg(
+                                        Arg::new("hash-type")
+                                            .long("hash-type")
+                                            .value_name("TYPE")
+                                            .value_parser(["data", "data1", "data2", "type"]),
+                                    )
+                                    .arg(Arg::new("data-hash").long("data-hash").value_name("HASH"))
+                                    .arg(
+                                        Arg::new("network")
+                                            .long("network")
+                                            .value_name("NETWORK")
+                                            .value_parser(["mainnet", "testnet"])
+                                            .default_value("mainnet"),
+                                    )
+                                    .arg(Arg::new("output").long("output").short('o').value_name("FILE").required(true))
+                                    .arg(Arg::new("api-url").long("api-url").value_name("URL"))
+                                    .arg(Arg::new("force").long("force").action(ArgAction::SetTrue)),
+                            )
+                            .subcommand(
+                                ClapCommand::new("bundle")
+                                    .about("Create a publish-ready LS-IDL Registry bundle and Artifact.toml")
+                                    .arg(Arg::new("idl").long("idl").value_name("FILE").required(true))
+                                    .arg(Arg::new("executable").long("executable").value_name("CKB_ELF").required(true))
+                                    .arg(Arg::new("source").long("source").value_name("FILE").required(true))
+                                    .arg(Arg::new("namespace").long("namespace").value_name("NAME").required(true))
+                                    .arg(Arg::new("name").long("name").value_name("NAME").required(true))
+                                    .arg(Arg::new("release").long("release").value_name("VERSION").required(true))
+                                    .arg(
+                                        Arg::new("language")
+                                            .long("language")
+                                            .value_name("LANGUAGE")
+                                            .value_parser(["cellscript", "rust", "c", "javascript", "other"])
+                                            .required(true),
+                                    )
+                                    .arg(
+                                        Arg::new("hash-type")
+                                            .long("hash-type")
+                                            .value_name("TYPE")
+                                            .value_parser(["data", "data1", "data2", "type"])
+                                            .default_value("data1"),
+                                    )
+                                    .arg(
+                                        Arg::new("dep-type")
+                                            .long("dep-type")
+                                            .value_name("TYPE")
+                                            .value_parser(["code", "dep_group"])
+                                            .default_value("code"),
+                                    )
+                                    .arg(Arg::new("toolchain").long("toolchain").value_name("IDENTITY").required(true))
+                                    .arg(
+                                        Arg::new("source-revision")
+                                            .long("source-revision")
+                                            .value_name("REVISION")
+                                            .required(true),
+                                    )
+                                    .arg(
+                                        Arg::new("output")
+                                            .long("output")
+                                            .short('o')
+                                            .value_name("BUNDLE_JSON")
+                                            .default_value("bundle.json"),
+                                    )
+                                    .arg(
+                                        Arg::new("artifact-manifest-output")
+                                            .long("artifact-manifest-output")
+                                            .value_name("ARTIFACT_TOML")
+                                            .default_value("Artifact.toml"),
+                                    )
+                                    .arg(Arg::new("force").long("force").action(ArgAction::SetTrue)),
+                            ),
+                    )
+                    .subcommand(
                         ClapCommand::new("fetch")
                             .about("Download an immutable artifact bundle and write an authenticated receipt")
                             .arg(Arg::new("coordinate").value_name("NAMESPACE/NAME@RELEASE").required(true))
@@ -15681,6 +15788,51 @@ impl CliParser {
             }),
             Some(("artifact", m)) => Command::Artifact(ArtifactArgs {
                 operation: match m.subcommand() {
+                    Some(("ls-idl", action)) => match action.subcommand() {
+                        Some(("validate", command)) => ArtifactOperation::LsIdlValidate {
+                            idl: command.get_one::<String>("idl").map(PathBuf::from).expect("required IDL"),
+                            executable: command.get_one::<String>("executable").map(PathBuf::from),
+                            json: json_output(command),
+                        },
+                        Some(("bind", command)) => ArtifactOperation::LsIdlBind {
+                            idl: command.get_one::<String>("idl").map(PathBuf::from).expect("required IDL"),
+                            executable: command.get_one::<String>("executable").map(PathBuf::from).expect("required executable"),
+                            output: command.get_one::<String>("output").map(PathBuf::from).expect("required output"),
+                            force: command.get_flag("force"),
+                            json: json_output(command),
+                        },
+                        Some(("fetch", command)) => ArtifactOperation::LsIdlFetch {
+                            code_hash: command.get_one::<String>("code-hash").cloned().expect("required code hash"),
+                            hash_type: command.get_one::<String>("hash-type").cloned(),
+                            data_hash: command.get_one::<String>("data-hash").cloned(),
+                            network: command.get_one::<String>("network").cloned().expect("defaulted network"),
+                            output: command.get_one::<String>("output").map(PathBuf::from).expect("required output"),
+                            api_url: command.get_one::<String>("api-url").cloned(),
+                            force: command.get_flag("force"),
+                            json: json_output(command),
+                        },
+                        Some(("bundle", command)) => ArtifactOperation::LsIdlBundle {
+                            idl: command.get_one::<String>("idl").map(PathBuf::from).expect("required IDL"),
+                            executable: command.get_one::<String>("executable").map(PathBuf::from).expect("required executable"),
+                            source: command.get_one::<String>("source").map(PathBuf::from).expect("required source"),
+                            namespace: command.get_one::<String>("namespace").cloned().expect("required namespace"),
+                            name: command.get_one::<String>("name").cloned().expect("required name"),
+                            release: command.get_one::<String>("release").cloned().expect("required release"),
+                            language: command.get_one::<String>("language").cloned().expect("required language"),
+                            hash_type: command.get_one::<String>("hash-type").cloned().expect("defaulted hash type"),
+                            dep_type: command.get_one::<String>("dep-type").cloned().expect("defaulted dep type"),
+                            toolchain: command.get_one::<String>("toolchain").cloned().expect("required toolchain"),
+                            source_revision: command.get_one::<String>("source-revision").cloned().expect("required source revision"),
+                            output: command.get_one::<String>("output").map(PathBuf::from).expect("defaulted output"),
+                            artifact_manifest_output: command
+                                .get_one::<String>("artifact-manifest-output")
+                                .map(PathBuf::from)
+                                .expect("defaulted artifact manifest output"),
+                            force: command.get_flag("force"),
+                            json: json_output(command),
+                        },
+                        _ => unreachable!(),
+                    },
                     Some(("fetch", action)) => ArtifactOperation::Fetch {
                         coordinate: action.get_one::<String>("coordinate").cloned().expect("required coordinate"),
                         output: action.get_one::<String>("output").map(PathBuf::from).expect("required output"),

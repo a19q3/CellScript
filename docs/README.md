@@ -72,6 +72,9 @@ High-value active references include:
 - `CELLSCRIPT_REGISTRY_PRODUCTION_BOUNDARY_ADR.md` for the accepted production
   boundary of the wallet-rooted public registry write/read architecture and
   isolated Pudge testnet sandbox
+- `CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md` for byte-exact LS-IDL admission,
+  executable suffix commitment, Script-identity lookup, tooling, and operator
+  boundaries
 - `../services/registry-api/README.md` for the Cloudflare Workers + R2 + Neon
   write API implementation and deployment checklist
 - `CELLSCRIPT_COLLECTIONS_SUPPORT_MATRIX.md`
@@ -131,6 +134,8 @@ to current branch-specific evidence or forward design:
   governance scope
 - `CELLSCRIPT_REGISTRY_PHASE1.md` for the current artifact, verification,
   deployment-evidence, and public API contract
+- `CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md` for the 0.24 Lock Script interface
+  profile and compatibility evidence
 - `archive/0.20/CELLSCRIPT_0_20_ROADMAP.md` for generated TypeScript action builders,
   live-chain registry verification, stateful flow evidence, and the bounded
   CellFabric JSON bridge

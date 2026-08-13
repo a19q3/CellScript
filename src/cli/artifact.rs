@@ -20,6 +20,45 @@ pub struct ArtifactArgs {
 
 #[derive(Debug)]
 pub enum ArtifactOperation {
+    LsIdlValidate {
+        idl: PathBuf,
+        executable: Option<PathBuf>,
+        json: bool,
+    },
+    LsIdlBind {
+        idl: PathBuf,
+        executable: PathBuf,
+        output: PathBuf,
+        force: bool,
+        json: bool,
+    },
+    LsIdlFetch {
+        code_hash: String,
+        hash_type: Option<String>,
+        data_hash: Option<String>,
+        network: String,
+        output: PathBuf,
+        api_url: Option<String>,
+        force: bool,
+        json: bool,
+    },
+    LsIdlBundle {
+        idl: PathBuf,
+        executable: PathBuf,
+        source: PathBuf,
+        namespace: String,
+        name: String,
+        release: String,
+        language: String,
+        hash_type: String,
+        dep_type: String,
+        toolchain: String,
+        source_revision: String,
+        output: PathBuf,
+        artifact_manifest_output: PathBuf,
+        force: bool,
+        json: bool,
+    },
     Fetch {
         coordinate: String,
         output: PathBuf,
@@ -203,6 +242,92 @@ struct VerifiedBundle {
 
 pub fn execute(args: ArtifactArgs) -> Result<()> {
     match args.operation {
+        ArtifactOperation::LsIdlValidate { idl, executable, json } => {
+            let idl_bytes = read_limited(&idl, crate::package::registry::MAX_LS_IDL_BYTES, "LS-IDL document")?;
+            crate::package::registry::validate_ls_idl_document(&idl_bytes).map_err(error)?;
+            let digest = hex::encode(Sha256::digest(&idl_bytes));
+            let executable_bound = if let Some(path) = executable.as_ref() {
+                let executable_bytes = read_limited(path, MAX_BUNDLE_BYTES, "CKB executable")?;
+                let expected: [u8; 32] = Sha256::digest(&idl_bytes).into();
+                if !executable_bytes.ends_with(&expected) {
+                    return Err(error("CKB executable does not end with the exact SHA-256 digest of the LS-IDL bytes"));
+                }
+                true
+            } else {
+                false
+            };
+            emit(
+                json,
+                json!({
+                    "status": "valid",
+                    "format": "ls-idl",
+                    "format_version": "0.1",
+                    "idl": idl,
+                    "sha256": digest,
+                    "executable_suffix_bound": executable_bound,
+                }),
+                format!("Validated LS-IDL 0.1 (sha256:{digest})"),
+            )
+        }
+        ArtifactOperation::LsIdlBind { idl, executable, output, force, json } => {
+            let idl_bytes = read_limited(&idl, crate::package::registry::MAX_LS_IDL_BYTES, "LS-IDL document")?;
+            crate::package::registry::validate_ls_idl_document(&idl_bytes).map_err(error)?;
+            let mut executable_bytes = read_limited(&executable, MAX_BUNDLE_BYTES - 32, "CKB executable")?;
+            let digest: [u8; 32] = Sha256::digest(&idl_bytes).into();
+            if !executable_bytes.ends_with(&digest) {
+                executable_bytes.extend_from_slice(&digest);
+            }
+            write_bytes(&output, &executable_bytes, force)?;
+            let digest_hex = hex::encode(digest);
+            emit(
+                json,
+                json!({
+                    "status": "bound",
+                    "format": "ls-idl",
+                    "format_version": "0.1",
+                    "idl_sha256": digest_hex,
+                    "output": output,
+                    "artifact_hash": format!("0x{}", hex::encode(crate::ckb_blake2b256(&executable_bytes))),
+                }),
+                format!("Bound LS-IDL sha256:{digest_hex} to {}", output.display()),
+            )
+        }
+        ArtifactOperation::LsIdlFetch { code_hash, hash_type, data_hash, network, output, api_url, force, json } => {
+            fetch_ls_idl(&code_hash, hash_type.as_deref(), data_hash.as_deref(), &network, &output, api_url.as_deref(), force, json)
+        }
+        ArtifactOperation::LsIdlBundle {
+            idl,
+            executable,
+            source,
+            namespace,
+            name,
+            release,
+            language,
+            hash_type,
+            dep_type,
+            toolchain,
+            source_revision,
+            output,
+            artifact_manifest_output,
+            force,
+            json,
+        } => build_ls_idl_bundle(
+            &idl,
+            &executable,
+            &source,
+            &namespace,
+            &name,
+            &release,
+            &language,
+            &hash_type,
+            &dep_type,
+            &toolchain,
+            &source_revision,
+            &output,
+            &artifact_manifest_output,
+            force,
+            json,
+        ),
         ArtifactOperation::Fetch { coordinate, output, receipt, api_url, force, json } => {
             let fetched = fetch(&coordinate, api_url.as_deref())?;
             let verified = verify_fetched(&fetched)?;
@@ -475,6 +600,264 @@ pub fn execute(args: ArtifactArgs) -> Result<()> {
             )
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fetch_ls_idl(
+    code_hash: &str,
+    hash_type: Option<&str>,
+    data_hash: Option<&str>,
+    network: &str,
+    output: &Path,
+    api_url: Option<&str>,
+    force: bool,
+    json_output: bool,
+) -> Result<()> {
+    require_hash_shape(code_hash, "code hash")?;
+    if let Some(value) = data_hash {
+        require_hash_shape(value, "data hash")?;
+    }
+    if !matches!(network, "mainnet" | "testnet") {
+        return Err(error("LS-IDL network must be mainnet or testnet"));
+    }
+    if let Some(value) = hash_type
+        && !matches!(value, "data" | "data1" | "data2" | "type")
+    {
+        return Err(error("LS-IDL hash type must be data, data1, data2, or type"));
+    }
+    if hash_type == Some("type") && data_hash.is_none() {
+        return Err(error("Type-hash LS-IDL lookup requires --data-hash to select the current code Cell bytes"));
+    }
+    let registry_origin = super::commands::resolve_registry_api_base(api_url.map(str::to_string))?;
+    let code_hash = code_hash.trim_start_matches("0x").to_ascii_lowercase();
+    let mut url =
+        reqwest::Url::parse(&format!("{}/v1/ckb/scripts/{code_hash}/interfaces/ls-idl", registry_origin.trim_end_matches('/')))
+            .map_err(|err| error(format!("LS-IDL Registry URL is invalid: {err}")))?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("network", network);
+        if let Some(value) = hash_type {
+            query.append_pair("hash_type", value);
+        }
+        if let Some(value) = data_hash {
+            query.append_pair("data_hash", value);
+        }
+    }
+    let mut response = super::commands::registry_http_client()?
+        .get(url.clone())
+        .header(reqwest::header::ACCEPT, crate::package::registry::LS_IDL_CONTENT_TYPE)
+        .header(reqwest::header::USER_AGENT, format!("cellc/{}", env!("CARGO_PKG_VERSION")))
+        .send()
+        .map_err(|err| error(format!("LS-IDL Registry request '{url}' failed: {err}")))?;
+    let status = response.status();
+    if !status.is_success() {
+        let mut body = Vec::new();
+        let _ = response.by_ref().take(64 * 1024).read_to_end(&mut body);
+        let body = String::from_utf8_lossy(&body);
+        return Err(error(format!("LS-IDL Registry request returned HTTP {status}: {}", body.trim())));
+    }
+    if response.content_length().is_some_and(|length| length > crate::package::registry::MAX_LS_IDL_BYTES as u64) {
+        return Err(error("LS-IDL Registry response exceeds the 256 KiB profile limit"));
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if content_type != crate::package::registry::LS_IDL_CONTENT_TYPE {
+        return Err(error("LS-IDL Registry response has an unexpected content type"));
+    }
+    let declared_digest = response
+        .headers()
+        .get("x-ls-idl-sha256")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| error("LS-IDL Registry response is missing the digest header"))?;
+    if response.headers().get("x-ls-idl-verification").and_then(|value| value.to_str().ok()) != Some("schema-and-suffix-bound") {
+        return Err(error("LS-IDL Registry response is missing the schema-and-suffix verification contract"));
+    }
+    let coordinate = response.headers().get("x-ls-idl-coordinate").and_then(|value| value.to_str().ok()).map(str::to_string);
+    let mut bytes = Vec::new();
+    response
+        .take(crate::package::registry::MAX_LS_IDL_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| error(format!("failed to read LS-IDL response: {err}")))?;
+    if bytes.len() > crate::package::registry::MAX_LS_IDL_BYTES {
+        return Err(error("LS-IDL Registry response exceeds the 256 KiB profile limit"));
+    }
+    crate::package::registry::validate_ls_idl_document(&bytes).map_err(error)?;
+    let digest = hex::encode(Sha256::digest(&bytes));
+    if !digest.eq_ignore_ascii_case(declared_digest.trim_start_matches("0x")) {
+        return Err(error("LS-IDL response bytes do not match the Registry digest header"));
+    }
+    write_bytes(output, &bytes, force)?;
+    emit(
+        json_output,
+        json!({
+            "status": "fetched_and_verified",
+            "format": "ls-idl",
+            "format_version": "0.1",
+            "code_hash": format!("0x{code_hash}"),
+            "sha256": digest,
+            "coordinate": coordinate,
+            "output": output,
+        }),
+        format!("Fetched and verified LS-IDL sha256:{digest} at {}", output.display()),
+    )
+}
+
+#[derive(Serialize)]
+struct LsIdlArtifactManifest<'a> {
+    schema: &'static str,
+    namespace: &'a str,
+    name: &'a str,
+    release: &'a str,
+    kind: &'static str,
+    language: &'a str,
+    bundle: String,
+    description: String,
+    keywords: Vec<&'static str>,
+    categories: Vec<&'static str>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_ls_idl_bundle(
+    idl_path: &Path,
+    executable_path: &Path,
+    source_path: &Path,
+    namespace: &str,
+    name: &str,
+    release: &str,
+    language: &str,
+    hash_type: &str,
+    dep_type: &str,
+    toolchain: &str,
+    source_revision: &str,
+    output: &Path,
+    artifact_manifest_output: &Path,
+    force: bool,
+    json_output: bool,
+) -> Result<()> {
+    parse_coordinate(&format!("{namespace}/{name}@{release}"))?;
+    if !matches!(language, "cellscript" | "rust" | "c" | "javascript" | "other") {
+        return Err(error("LS-IDL artifact language must be cellscript, rust, c, javascript, or other"));
+    }
+    if !matches!(hash_type, "data" | "data1" | "data2" | "type") {
+        return Err(error("LS-IDL hash type must be data, data1, data2, or type"));
+    }
+    if !matches!(dep_type, "code" | "dep_group") {
+        return Err(error("LS-IDL dep type must be code or dep_group"));
+    }
+    if toolchain.trim().is_empty() || toolchain.len() > 1024 {
+        return Err(error("LS-IDL bundle requires a non-empty toolchain identity no longer than 1024 bytes"));
+    }
+    if !matches!(source_revision.len(), 40 | 64) || !source_revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(error("LS-IDL source revision must be an immutable 40- or 64-hex identity"));
+    }
+    if !force && (output.exists() || artifact_manifest_output.exists()) {
+        return Err(error("refusing to overwrite LS-IDL bundle outputs; pass --force explicitly"));
+    }
+    let idl = read_limited(idl_path, crate::package::registry::MAX_LS_IDL_BYTES, "LS-IDL document")?;
+    crate::package::registry::validate_ls_idl_document(&idl).map_err(error)?;
+    let executable = read_limited(executable_path, MAX_BUNDLE_BYTES, "CKB executable")?;
+    let digest: [u8; 32] = Sha256::digest(&idl).into();
+    if !executable.ends_with(&digest) {
+        return Err(error("CKB executable does not carry the exact LS-IDL digest suffix; run 'cellc artifact ls-idl bind' first"));
+    }
+    let source = read_limited(source_path, MAX_BUNDLE_BYTES, "lock-script source")?;
+    let abi_hash = hex::encode(crate::ckb_blake2b256(&idl));
+    let artifact_hash = hex::encode(crate::ckb_blake2b256(&executable));
+    let source_hash = hex::encode(crate::ckb_blake2b256(&source));
+    let digest_hex = hex::encode(digest);
+    let contract = json!({
+        "schema": crate::package::registry::ARTIFACT_PROFILE_CONTRACT_SCHEMA,
+        "artifact_kind": "deployable_contract",
+        "profile": "ckb_executable",
+        "build": {
+            "target": "riscv64imac-unknown-none-elf",
+            "toolchain": toolchain,
+            "profile": "release",
+            "source_revision": source_revision,
+            "reproducible": false,
+        },
+        "security": { "status": "review_required" },
+        "ckb": {
+            "vm_version": "2",
+            "script_role": "lock",
+            "hash_type": hash_type,
+            "dep_type": dep_type,
+            "abi_hash": abi_hash,
+        },
+        "interface": {
+            "schema": crate::package::registry::LS_IDL_INTERFACE_SCHEMA,
+            "format": "ls-idl",
+            "format_version": crate::package::registry::LS_IDL_FORMAT_VERSION,
+            "object_role": "abi",
+            "content_type": crate::package::registry::LS_IDL_CONTENT_TYPE,
+            "encoding": "linear-le-v0",
+            "commitment": {
+                "algorithm": "sha256",
+                "placement": "code-cell-data-suffix-32",
+                "digest": digest_hex,
+            },
+        },
+    });
+    let manifest_json = crate::package::registry::canonical_artifact_contract_json(&contract).map_err(error)?;
+    let bundle = json!({
+        "schema": "cellscript-registry-bundle",
+        "namespace": namespace,
+        "name": name,
+        "release": release,
+        "profile": "ckb_executable",
+        "manifest_json": manifest_json,
+        "objects": [
+            { "role": "source", "content_base64": base64::engine::general_purpose::STANDARD.encode(&source) },
+            { "role": "executable", "content_base64": base64::engine::general_purpose::STANDARD.encode(&executable) },
+            { "role": "abi", "content_base64": base64::engine::general_purpose::STANDARD.encode(&idl) },
+        ],
+    });
+    let bundle_reference = if output.parent() == artifact_manifest_output.parent() {
+        output.file_name().map(PathBuf::from).unwrap_or_else(|| output.to_path_buf())
+    } else if output.is_absolute() {
+        output.to_path_buf()
+    } else {
+        std::env::current_dir().map_err(|err| error(format!("failed to resolve LS-IDL bundle path: {err}")))?.join(output)
+    };
+    let manifest = LsIdlArtifactManifest {
+        schema: "cellscript-registry-artifact",
+        namespace,
+        name,
+        release,
+        kind: "deployable_contract",
+        language,
+        bundle: bundle_reference.to_string_lossy().into_owned(),
+        description: format!("LS-IDL 0.1 interface for {namespace}/{name}"),
+        keywords: vec!["ckb", "lock-script", "ls-idl"],
+        categories: vec!["interface", "deployment"],
+    };
+    let manifest_toml =
+        toml::to_string_pretty(&manifest).map_err(|err| error(format!("failed to serialize LS-IDL Artifact.toml: {err}")))?;
+    write_json(output, &bundle, force)?;
+    write_bytes(artifact_manifest_output, manifest_toml.as_bytes(), force)?;
+    emit(
+        json_output,
+        json!({
+            "status": "bundle_created",
+            "coordinate": format!("{namespace}/{name}@{release}"),
+            "bundle": output,
+            "artifact_manifest": artifact_manifest_output,
+            "source_hash": source_hash,
+            "artifact_hash": artifact_hash,
+            "abi_hash": abi_hash,
+            "idl_sha256": digest_hex,
+        }),
+        format!("Created LS-IDL Registry bundle {} and manifest {}", output.display(), artifact_manifest_output.display()),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1099,6 +1482,16 @@ fn verify_fetched(fetched: &FetchedArtifact) -> Result<VerifiedBundle> {
     )?;
     let artifact_hash = objects.get("executable").map(|bytes| hex::encode(crate::ckb_blake2b256(bytes)));
     let abi_hash = objects.get("abi").map(|bytes| hex::encode(crate::ckb_blake2b256(bytes)));
+    let (abi_sha256, executable_ls_idl_bound) = if contract.get("interface").is_some() {
+        let abi = objects.get("abi").ok_or_else(|| error("LS-IDL profile requires an abi object"))?;
+        crate::package::registry::validate_ls_idl_document(abi).map_err(error)?;
+        let digest = Sha256::digest(abi);
+        let executable = objects.get("executable").ok_or_else(|| error("LS-IDL profile requires an executable object"))?;
+        let digest: [u8; 32] = digest.into();
+        (Some(hex::encode(digest)), Some(executable.ends_with(&digest)))
+    } else {
+        (None, None)
+    };
     let build_recipe_hash = objects.get("build_recipe").map(|bytes| hex::encode(crate::ckb_blake2b256(bytes)));
     let audit_report_hash = objects.get("audit_report").map(|bytes| hex::encode(crate::ckb_blake2b256(bytes)));
     if let Some(actual) = artifact_hash.as_deref() {
@@ -1117,6 +1510,8 @@ fn verify_fetched(fetched: &FetchedArtifact) -> Result<VerifiedBundle> {
         crate::package::registry::ArtifactContractHashes {
             artifact_hash: artifact_hash.as_deref(),
             abi_hash: abi_hash.as_deref(),
+            abi_sha256: abi_sha256.as_deref(),
+            executable_ls_idl_bound,
             build_recipe_hash: build_recipe_hash.as_deref(),
             audit_report_hash: audit_report_hash.as_deref(),
         },
