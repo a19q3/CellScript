@@ -179,10 +179,10 @@ impl ModuleResolver {
                 return Some(ty.clone());
             }
 
-            if let Some(full_path) = table.imported.get(name) {
-                if let Some((target_module, symbol)) = full_path.rsplit_once("::") {
-                    return self.symbol_tables.get(target_module).and_then(|target_table| target_table.types.get(symbol).cloned());
-                }
+            if let Some(full_path) = table.imported.get(name)
+                && let Some((target_module, symbol)) = full_path.rsplit_once("::")
+            {
+                return self.symbol_tables.get(target_module).and_then(|target_table| target_table.types.get(symbol).cloned());
             }
         }
 
@@ -206,12 +206,11 @@ impl ModuleResolver {
                 return Some((module.to_string(), func.clone()));
             }
 
-            if let Some(full_path) = table.imported.get(name) {
-                if let Some((target_module, symbol)) = full_path.rsplit_once("::") {
-                    if let Some(target_table) = self.symbol_tables.get(target_module) {
-                        return target_table.functions.get(symbol).cloned().map(|function| (target_module.to_string(), function));
-                    }
-                }
+            if let Some(full_path) = table.imported.get(name)
+                && let Some((target_module, symbol)) = full_path.rsplit_once("::")
+                && let Some(target_table) = self.symbol_tables.get(target_module)
+            {
+                return target_table.functions.get(symbol).cloned().map(|function| (target_module.to_string(), function));
             }
         }
 
@@ -235,12 +234,11 @@ impl ModuleResolver {
                 return Some((module.to_string(), constant.clone()));
             }
 
-            if let Some(full_path) = table.imported.get(name) {
-                if let Some((target_module, symbol)) = full_path.rsplit_once("::") {
-                    if let Some(target_table) = self.symbol_tables.get(target_module) {
-                        return target_table.constants.get(symbol).cloned().map(|constant| (target_module.to_string(), constant));
-                    }
-                }
+            if let Some(full_path) = table.imported.get(name)
+                && let Some((target_module, symbol)) = full_path.rsplit_once("::")
+                && let Some(target_table) = self.symbol_tables.get(target_module)
+            {
+                return target_table.constants.get(symbol).cloned().map(|constant| (target_module.to_string(), constant));
             }
         }
 

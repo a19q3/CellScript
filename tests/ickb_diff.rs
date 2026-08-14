@@ -3078,8 +3078,6 @@ fn cellscript_ckb_script_executes_pass_with_syscall_and_fails_with_reject() {
         Bytes::default(), // empty script args
         1,                // one input cell
         1,                // one output cell (gets type script under test)
-        true,             // expected pass
-        None,             // no failure mode
     );
     let pass_result = execute_cellscript_script(&pass_elf, &pass_fixture);
     assert_eq!(
@@ -3096,8 +3094,6 @@ fn cellscript_ckb_script_executes_pass_with_syscall_and_fails_with_reject() {
         Bytes::default(), // empty script args
         1,                // one input cell
         1,                // one output cell
-        false,            // expected fail
-        Some("always_reject".to_string()),
     );
     let fail_result = execute_cellscript_script(&fail_elf, &fail_fixture);
     assert_eq!(
@@ -3169,8 +3165,6 @@ fn cellscript_dao_accumulated_rate_passes_with_valid_header() {
         10000,            // accumulated rate in the header DAO field
         1,                // one input cell (linked to the header)
         1,                // one output cell
-        true,             // expected pass
-        None,             // no failure mode
     );
     let result = execute_cellscript_script(&elf, &fixture);
     assert_eq!(
@@ -3193,8 +3187,6 @@ fn cellscript_dao_accumulated_rate_fails_without_header_dep() {
         Bytes::default(), // empty script args
         1,                // one input cell
         1,                // one output cell
-        false,            // expected fail
-        Some("dao_missing_header_dep".to_string()),
     );
     let result = execute_cellscript_script(&elf, &fixture);
     assert_ne!(
@@ -3231,8 +3223,6 @@ fn cellscript_dao_is_deposit_data_passes_with_deposit_cell() {
         Bytes::default(),   // empty script args
         vec![deposit_data], // one input with deposit data
         1,                  // one output cell
-        true,               // expected pass
-        None,               // no failure mode
     );
     let result = execute_cellscript_script(&elf, &fixture);
     assert_eq!(
@@ -3256,8 +3246,6 @@ fn cellscript_dao_is_withdrawal_request_data_passes_with_withdrawal_cell() {
         Bytes::default(),      // empty script args
         vec![withdrawal_data], // one input with withdrawal data
         1,                     // one output cell
-        true,                  // expected pass
-        None,                  // no failure mode
     );
     let result = execute_cellscript_script(&elf, &fixture);
     assert_eq!(
@@ -3278,8 +3266,6 @@ fn cellscript_cell_capacity_passes_with_nonzero_capacity() {
         Bytes::default(),       // empty script args
         vec![Bytes::default()], // one input with empty data (capacity is set by fixture)
         1,                      // one output cell
-        true,                   // expected pass
-        None,                   // no failure mode
     );
     let result = execute_cellscript_script(&elf, &fixture);
     assert_eq!(
@@ -3301,8 +3287,6 @@ fn cellscript_dao_has_dao_type_returns_false_for_non_dao_cell() {
         Bytes::default(),       // empty script args
         vec![Bytes::default()], // one input with empty data and no type script
         1,                      // one output cell
-        true,                   // expected pass (has_dao_type returns false, script returns 0)
-        None,                   // no failure mode
     );
     let result = execute_cellscript_script(&elf, &fixture);
     assert_eq!(
@@ -3334,8 +3318,6 @@ fn cellscript_cell_occupied_capacity_passes_with_lock_script() {
         Bytes::default(),       // empty script args
         vec![Bytes::default()], // one input with empty data
         1,                      // one output cell
-        true,                   // expected pass
-        None,                   // no failure mode
     );
     let result = execute_cellscript_script(&elf, &fixture);
     assert_eq!(
@@ -3357,8 +3339,6 @@ fn cellscript_cell_data_size_passes_with_data() {
         Bytes::default(), // empty script args
         vec![data],       // one input with 8 bytes of data
         1,                // one output cell
-        true,             // expected pass
-        None,             // no failure mode
     );
     let result = execute_cellscript_script(&elf, &fixture);
     assert_eq!(
@@ -3378,15 +3358,8 @@ fn cellscript_cell_dep_data_size_passes_with_fixture_cell_dep() {
         Bytes::default(), // empty script args
         1,                // one input cell
         1,                // one output cell
-        true,             // expected pass
-        None,             // no failure mode
     );
-    fixture.cell_deps.push(FixtureCell {
-        capacity: 0,
-        lock: packed::Script::default(),
-        type_script: None,
-        data: Bytes::from(vec![1, 2, 3, 4]),
-    });
+    fixture.cell_deps.push(FixtureCell { capacity: 0, type_script: None, data: Bytes::from(vec![1, 2, 3, 4]) });
 
     let result = execute_cellscript_script(&elf, &fixture);
     assert_eq!(
@@ -3401,7 +3374,7 @@ fn cellscript_cell_dep_data_size_passes_with_fixture_cell_dep() {
 fn cellscript_witness_args_empty_lock_passes_in_ckb_vm() {
     let elf = compile_cellscript_source_to_elf(VM_HARNESS_WITNESS_ARGS_PROGRAM, VM_HARNESS_WITNESS_ARGS_ACTION, None);
 
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.witnesses = vec![molecule_witness_args(None, None, None)];
 
     let result = execute_cellscript_script(&elf, &fixture);
@@ -3418,7 +3391,7 @@ fn cellscript_require_witness_size_at_least_rejects_too_small_in_ckb_vm() {
     let elf =
         compile_cellscript_source_to_elf(VM_HARNESS_WITNESS_SIZE_TOO_SMALL_PROGRAM, VM_HARNESS_WITNESS_SIZE_TOO_SMALL_ACTION, None);
 
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, false, Some("witness_size_too_small".to_string()));
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.witnesses = vec![molecule_witness_args(None, None, None)];
 
     let result = execute_cellscript_script(&elf, &fixture);
@@ -3435,7 +3408,7 @@ fn cellscript_require_witness_size_at_least_rejects_too_small_in_ckb_vm() {
 fn cellscript_witness_args_short_lock_is_zero_padded_in_ckb_vm() {
     let elf = compile_cellscript_source_to_elf(VM_HARNESS_WITNESS_SHORT_LOCK_PROGRAM, VM_HARNESS_WITNESS_SHORT_LOCK_ACTION, None);
 
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.witnesses = vec![molecule_witness_args(Some(&[0u8][..]), None, None)];
 
     let result = execute_cellscript_script(&elf, &fixture);
@@ -3454,7 +3427,7 @@ fn cellscript_witness_args_lock_input_type_output_type_are_isolated_in_ckb_vm() 
     let lock = [0x11u8; 32];
     let input_type = [0x22u8; 32];
     let output_type = [0x33u8; 32];
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.witnesses = vec![ckb_packed_witness_args(Some(&lock), Some(&input_type), Some(&output_type))];
 
     let result = execute_cellscript_script(&elf, &fixture);
@@ -3470,7 +3443,7 @@ fn cellscript_witness_args_lock_input_type_output_type_are_isolated_in_ckb_vm() 
 fn cellscript_witness_args_total_size_mismatch_rejects_in_ckb_vm() {
     let elf = compile_cellscript_source_to_elf(VM_HARNESS_WITNESS_MALFORMED_PROGRAM, VM_HARNESS_WITNESS_MALFORMED_ACTION, None);
 
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, false, Some("witness_total_size_mismatch".to_string()));
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.witnesses = vec![molecule_witness_args_with_header(17, [16, 16, 16], &[])];
 
     let result = execute_cellscript_script(&elf, &fixture);
@@ -3487,7 +3460,7 @@ fn cellscript_witness_args_total_size_mismatch_rejects_in_ckb_vm() {
 fn cellscript_witness_args_reordered_offsets_reject_in_ckb_vm() {
     let elf = compile_cellscript_source_to_elf(VM_HARNESS_WITNESS_MALFORMED_PROGRAM, VM_HARNESS_WITNESS_MALFORMED_ACTION, None);
 
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, false, Some("witness_reordered_offsets".to_string()));
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.witnesses = vec![molecule_witness_args_with_header(16, [16, 12, 16], &[])];
 
     let result = execute_cellscript_script(&elf, &fixture);
@@ -3504,7 +3477,7 @@ fn cellscript_witness_args_reordered_offsets_reject_in_ckb_vm() {
 fn cellscript_witness_args_truncated_offsets_reject_in_ckb_vm() {
     let elf = compile_cellscript_source_to_elf(VM_HARNESS_WITNESS_MALFORMED_PROGRAM, VM_HARNESS_WITNESS_MALFORMED_ACTION, None);
 
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, false, Some("witness_truncated_offsets".to_string()));
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.witnesses = vec![molecule_witness_args_with_header(16, [16, 16, 17], &[])];
 
     let result = execute_cellscript_script(&elf, &fixture);
@@ -3603,8 +3576,6 @@ fn cellscript_ickb_deposit_verification_passes_with_valid_dao_deposit() {
         10000,            // accumulated rate
         1,                // one input cell
         1,                // one output cell
-        true,             // expected pass
-        None,             // no failure mode
     );
     // Set the input cell data to 8 zero bytes (DAO deposit marker).
     // The build_dao_fixture creates empty data, so we need to set deposit data.

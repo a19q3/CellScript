@@ -536,10 +536,10 @@ fn validate_payload_array_items(
         if !concrete_fields.iter().any(|field| item_object.get(*field).is_some_and(non_empty_evidence_payload)) {
             mismatches.push(format!("{label} item {position} must include one of {}", concrete_fields.join(", ")));
         }
-        if let Some(required) = required_string_field {
-            if item_object.get(required).and_then(Value::as_str).is_none_or(|value| value.is_empty()) {
-                mismatches.push(format!("{label} item {position} must include non-empty {required}"));
-            }
+        if let Some(required) = required_string_field
+            && item_object.get(required).and_then(Value::as_str).is_none_or(|value| value.is_empty())
+        {
+            mismatches.push(format!("{label} item {position} must include non-empty {required}"));
         }
         match item_object.get("index").and_then(Value::as_u64) {
             Some(index) => {

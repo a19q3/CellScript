@@ -1108,11 +1108,11 @@ fn reads_for_source(source: &str) -> &'static [&'static str] {
 
 fn reads_for_obligation(obligation: &VerifierObligationMetadata, body_reads: &[String]) -> Vec<String> {
     let mut reads = body_reads.to_vec();
-    if obligation.category == "cell-access" {
-        if let Some(source) = obligation.feature.split(':').nth(1).and_then(|source| source.split('#').next()) {
-            for read in reads_for_source(source) {
-                reads.push(read.to_string());
-            }
+    if obligation.category == "cell-access"
+        && let Some(source) = obligation.feature.split(':').nth(1).and_then(|source| source.split('#').next())
+    {
+        for read in reads_for_source(source) {
+            reads.push(read.to_string());
         }
     }
     if obligation.detail.contains("witness") || obligation.feature.contains("witness") {

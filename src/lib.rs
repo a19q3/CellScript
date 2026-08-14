@@ -1,11 +1,6 @@
 //! CellScript - Domain-specific language compiler for CKB blockchain
 //! Currently the backend can output RISC-V assembly or ELF artifacts.
 
-// Rust 2024 makes let-chains available, so Clippy 1.97 newly proposes folding
-// a large legacy control-flow surface. Keep that mechanical rewrite separate
-// from the edition rollout so each semantic branch remains reviewable.
-#![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::ptr_arg, clippy::too_many_arguments)]
-
 pub(crate) mod aggregate_lowering;
 pub mod assumptions;
 pub mod ast;
@@ -4045,13 +4040,13 @@ fn validate_template_layout_metadata(metadata: &CompileMetadata) -> Result<()> {
                 layout.type_name
             )));
         }
-        if let Some(root_hash) = layout.root_hash.as_deref() {
-            if !is_canonical_hash_hex(root_hash) {
-                return Err(CompileError::without_span(format!(
-                    "metadata template_layout '{}' root_hash '{}' is not a canonical 32-byte lowercase hex hash",
-                    layout.type_name, root_hash
-                )));
-            }
+        if let Some(root_hash) = layout.root_hash.as_deref()
+            && !is_canonical_hash_hex(root_hash)
+        {
+            return Err(CompileError::without_span(format!(
+                "metadata template_layout '{}' root_hash '{}' is not a canonical 32-byte lowercase hex hash",
+                layout.type_name, root_hash
+            )));
         }
         if !is_canonical_hash_hex(&layout.template_layout_hash) {
             return Err(CompileError::without_span(format!(
@@ -4482,12 +4477,10 @@ impl ActionMetadata {
     pub fn scheduler_witness_bytes(&self) -> Result<Vec<u8>> {
         let scheduler_witness_hex = non_empty_metadata_field(&self.scheduler_witness_hex);
         let scheduler_witness_molecule_hex = non_empty_metadata_field(&self.scheduler_witness_molecule_hex);
-        if let (Some(primary), Some(alias)) = (scheduler_witness_hex, scheduler_witness_molecule_hex) {
-            if primary != alias {
-                return Err(CompileError::without_span(
-                    "conflicting scheduler_witness_hex and scheduler_witness_molecule_hex metadata",
-                ));
-            }
+        if let (Some(primary), Some(alias)) = (scheduler_witness_hex, scheduler_witness_molecule_hex)
+            && primary != alias
+        {
+            return Err(CompileError::without_span("conflicting scheduler_witness_hex and scheduler_witness_molecule_hex metadata"));
         }
         if let Some(scheduler_witness_hex) = scheduler_witness_hex {
             if self.scheduler_witness_abi != SCHEDULER_WITNESS_ABI_MOLECULE {
@@ -5820,10 +5813,10 @@ fn project_frontend_diagnostics(project: &LoadedProject, options: &CompileOption
         }
         let module_error_start = diagnostics.len();
 
-        if options.is_primitive_strict_015() {
-            if let Err(error) = check_primitive_strict_015(&module.ast) {
-                diagnostics.push(attach_file_if_missing(error, &module.path));
-            }
+        if options.is_primitive_strict_015()
+            && let Err(error) = check_primitive_strict_015(&module.ast)
+        {
+            diagnostics.push(attach_file_if_missing(error, &module.path));
         }
 
         diagnostics.extend(attach_default_file(
@@ -5834,10 +5827,10 @@ fn project_frontend_diagnostics(project: &LoadedProject, options: &CompileOption
 
         let module_has_errors =
             diagnostics[module_error_start..].iter().any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error);
-        if !module_has_errors {
-            if let Err(errors) = ir::generate_with_resolver_diagnostics(&module.ast, &project.resolver, &module.ast.name) {
-                diagnostics.extend(attach_default_file(errors, &module.path));
-            }
+        if !module_has_errors
+            && let Err(errors) = ir::generate_with_resolver_diagnostics(&module.ast, &project.resolver, &module.ast.name)
+        {
+            diagnostics.extend(attach_default_file(errors, &module.path));
         }
     }
     diagnostics
@@ -6248,10 +6241,10 @@ fn compile_file_with_entry_scope<P: AsRef<Utf8Path>>(
 
     // Incremental compilation: skip recompilation if cache hit and source unchanged.
     // Cache is only used for default entry scope (no --entry-action / --entry-lock).
-    if entry_scope.is_none() {
-        if let Some(cached) = incremental_cache_hit(&path, &cache_units, &options) {
-            return Ok(cached);
-        }
+    if entry_scope.is_none()
+        && let Some(cached) = incremental_cache_hit(&path, &cache_units, &options)
+    {
+        return Ok(cached);
     }
 
     let project = load_project_for_entry(&path, None)?;
@@ -6371,15 +6364,15 @@ fn incremental_cache_store(path: &Utf8Path, cache_units: &[SourceUnitMetadata], 
     let _ = std::fs::write(entry_dir.join("artifact"), &result.artifact_bytes);
     let metadata_json = serde_json::to_string_pretty(&result.metadata).unwrap_or_default();
     let _ = std::fs::write(entry_dir.join("metadata.json"), metadata_json);
-    if let Some(record) = &result.verified_lowering_record {
-        if let Ok(bytes) = cellscript_artifact_checker::canonical_bytes(record) {
-            let _ = std::fs::write(entry_dir.join("lowering.json"), bytes);
-        }
+    if let Some(record) = &result.verified_lowering_record
+        && let Ok(bytes) = cellscript_artifact_checker::canonical_bytes(record)
+    {
+        let _ = std::fs::write(entry_dir.join("lowering.json"), bytes);
     }
-    if let Some(source_map) = &result.source_artifact_map {
-        if let Ok(bytes) = cellscript_artifact_checker::canonical_bytes(source_map) {
-            let _ = std::fs::write(entry_dir.join("sourcemap.json"), bytes);
-        }
+    if let Some(source_map) = &result.source_artifact_map
+        && let Ok(bytes) = cellscript_artifact_checker::canonical_bytes(source_map)
+    {
+        let _ = std::fs::write(entry_dir.join("sourcemap.json"), bytes);
     }
     let source_hash = source_set_hash(cache_units);
     let _ = std::fs::write(entry_dir.join("source_hash"), &source_hash);
@@ -9446,10 +9439,10 @@ fn body_transaction_resource_obligations(
         }
     }
     for pattern in &body.create_set {
-        if matches!(pattern.operation.as_str(), "transfer" | "claim" | "settle") {
-            if let Some(check) = create_output_verification_obligation(pattern, type_layouts, &availability) {
-                checks.push(check);
-            }
+        if matches!(pattern.operation.as_str(), "transfer" | "claim" | "settle")
+            && let Some(check) = create_output_verification_obligation(pattern, type_layouts, &availability)
+        {
+            checks.push(check);
         }
     }
     checks.extend(read_ref_cell_dep_data_obligations(body));
@@ -12323,10 +12316,8 @@ fn launch_distribution_sum_coupling_is_checked(
                         u64_sources.insert(dest.id, sources);
                     }
                 }
-                ir::IrInstruction::LoadVar { dest, name } if dest.ty == ir::IrType::Bool => {
-                    if named_bool_sources.contains(name) {
-                        checked_bool_vars.insert(dest.id);
-                    }
+                ir::IrInstruction::LoadVar { dest, name } if dest.ty == ir::IrType::Bool && named_bool_sources.contains(name) => {
+                    checked_bool_vars.insert(dest.id);
                 }
                 _ => {}
             }
@@ -13650,10 +13641,10 @@ fn body_consumed_named_types(body: &ir::IrBody) -> BTreeSet<String> {
                 ir::IrInstruction::Claim { receipt, .. } => Some(receipt),
                 _ => None,
             };
-            if let Some(ir::IrOperand::Var(var)) = operand {
-                if let Some(type_name) = named_type_name(&var.ty) {
-                    types.insert(type_name.to_string());
-                }
+            if let Some(ir::IrOperand::Var(var)) = operand
+                && let Some(type_name) = named_type_name(&var.ty)
+            {
+                types.insert(type_name.to_string());
             }
         }
     }
@@ -13998,10 +13989,10 @@ fn body_fail_closed_runtime_features(
                         features.insert("claim-expression".to_string());
                     }
                 }
-                ir::IrInstruction::Settle { dest, .. } => {
-                    if !metadata_output_operation_is_verifier_covered(body, "settle", dest, type_layouts, &prelude_availability) {
-                        features.insert("settle-expression".to_string());
-                    }
+                ir::IrInstruction::Settle { dest, .. }
+                    if !metadata_output_operation_is_verifier_covered(body, "settle", dest, type_layouts, &prelude_availability) =>
+                {
+                    features.insert("settle-expression".to_string());
                 }
                 _ => {}
             }
@@ -14180,14 +14171,14 @@ fn metadata_prelude_availability(
                             loaded_constructed_vector_names.insert(dest.id, name.clone());
                         }
                     }
-                    if let Some(source_id) = named_constructed_vectors.get(name).copied() {
-                        if let Some(byte_count) = availability.constructed_byte_vector_vars.get(&source_id).copied() {
-                            availability.constructed_byte_vector_vars.insert(dest.id, byte_count);
-                            if let Some(root_id) = availability.constructed_byte_vector_roots.get(&source_id).copied() {
-                                availability.constructed_byte_vector_roots.insert(dest.id, root_id);
-                            }
-                            loaded_constructed_vector_names.insert(dest.id, name.clone());
+                    if let Some(source_id) = named_constructed_vectors.get(name).copied()
+                        && let Some(byte_count) = availability.constructed_byte_vector_vars.get(&source_id).copied()
+                    {
+                        availability.constructed_byte_vector_vars.insert(dest.id, byte_count);
+                        if let Some(root_id) = availability.constructed_byte_vector_roots.get(&source_id).copied() {
+                            availability.constructed_byte_vector_roots.insert(dest.id, root_id);
                         }
+                        loaded_constructed_vector_names.insert(dest.id, name.clone());
                     }
                     if named_fixed_vars.contains_key(name) {
                         availability.fixed_value_vars.insert(dest.id);
@@ -14520,16 +14511,15 @@ fn metadata_prelude_availability(
                         availability.scalar_vars.insert(dest.id);
                         availability.fixed_value_vars.insert(dest.id);
                     }
-                    if let Some(width) = metadata_ir_type_fixed_width(&dest.ty, type_layouts) {
-                        if metadata_fixed_value_available_with_layout_width(src, &availability, width, type_layouts) {
-                            availability.fixed_value_vars.insert(dest.id);
-                            if width > 8
-                                || named_type_name(&dest.ty).is_some_and(|name| type_layouts.enum_fixed_sizes.contains_key(name))
-                            {
-                                availability
-                                    .aggregate_pointer_vars
-                                    .insert(dest.id, MetadataAggregatePointerSource { ty: dest.ty.clone() });
-                            }
+                    if let Some(width) = metadata_ir_type_fixed_width(&dest.ty, type_layouts)
+                        && metadata_fixed_value_available_with_layout_width(src, &availability, width, type_layouts)
+                    {
+                        availability.fixed_value_vars.insert(dest.id);
+                        if width > 8 || named_type_name(&dest.ty).is_some_and(|name| type_layouts.enum_fixed_sizes.contains_key(name))
+                        {
+                            availability
+                                .aggregate_pointer_vars
+                                .insert(dest.id, MetadataAggregatePointerSource { ty: dest.ty.clone() });
                         }
                     }
                     if dest.ty == ir::IrType::U64 && metadata_u64_value_available(src, &availability) {
@@ -14830,10 +14820,10 @@ fn metadata_fixed_value_available_with_width(
     availability: &MetadataPreludeAvailability,
     expected_width: usize,
 ) -> bool {
-    if let ir::IrOperand::Const(value) = operand {
-        if metadata_fixed_scalar_const_value(value).is_some() {
-            return metadata_scalar_const_fits_width(value, expected_width);
-        }
+    if let ir::IrOperand::Const(value) = operand
+        && metadata_fixed_scalar_const_value(value).is_some()
+    {
+        return metadata_scalar_const_fits_width(value, expected_width);
     }
     if expected_width <= 8 && matches!(operand, ir::IrOperand::Var(_)) && metadata_scalar_available(operand, availability) {
         return true;
@@ -14848,10 +14838,10 @@ fn metadata_fixed_value_available_with_layout_width(
     expected_width: usize,
     type_layouts: &MetadataTypeLayouts,
 ) -> bool {
-    if let ir::IrOperand::Const(value) = operand {
-        if metadata_fixed_scalar_const_value(value).is_some() {
-            return metadata_scalar_const_fits_width(value, expected_width);
-        }
+    if let ir::IrOperand::Const(value) = operand
+        && metadata_fixed_scalar_const_value(value).is_some()
+    {
+        return metadata_scalar_const_fits_width(value, expected_width);
     }
     if expected_width <= 8 && matches!(operand, ir::IrOperand::Var(_)) && metadata_scalar_available(operand, availability) {
         return true;
@@ -17744,10 +17734,10 @@ fn param_type_hash_param_ids(body: &ir::IrBody) -> BTreeSet<usize> {
     let mut ids = BTreeSet::new();
     for block in &body.blocks {
         for instruction in &block.instructions {
-            if let ir::IrInstruction::TypeHash { operand: ir::IrOperand::Var(var), .. } = instruction {
-                if named_type_name(&var.ty).is_some() {
-                    ids.insert(var.id);
-                }
+            if let ir::IrInstruction::TypeHash { operand: ir::IrOperand::Var(var), .. } = instruction
+                && named_type_name(&var.ty).is_some()
+            {
+                ids.insert(var.id);
             }
         }
     }
@@ -18176,10 +18166,10 @@ fn collect_package_cell_files(package_root: &Utf8Path) -> Result<Vec<Utf8PathBuf
         }
     }
 
-    if let Some(entry_path) = explicit_entry {
-        if seen_files.insert(entry_path.clone()) {
-            files.push(entry_path);
-        }
+    if let Some(entry_path) = explicit_entry
+        && seen_files.insert(entry_path.clone())
+    {
+        files.push(entry_path);
     }
 
     files.sort();

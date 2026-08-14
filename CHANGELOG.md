@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Remove the unreachable external RISC-V toolchain fallback and make the
+  audited internal assembler the sole ELF-emission path. Reassign `E2400` to
+  the verified lowering/source-map boundary that already uses it, so the
+  compiler error registry now matches live diagnostics.
+- Split the code generator into its documented ABI, assembler, call,
+  collection, expression, frame, runtime, schema, and Cell-operation modules;
+  remove crate-wide Clippy exemptions; and replace long positional helper
+  signatures with named context records.
+- Remove the CKB adapter's deprecated, permanently fail-closed automatic
+  deployment methods. Callers must build a verified unsigned deployment
+  transaction and hand signing to an external wallet.
+- Replace the deprecated `serde_yaml` crate with the maintained
+  `serde_yaml_ng` continuation in the Fiber configuration renderer.
+- Remove tracked browser-session traces and unused design captures, ignore
+  local Codex state, and make the native source-policy check reject future
+  `.playwright-mcp` artifacts.
 - Keep the production and Pudge Testnet Registry websites on one UI contract.
   The website gate now builds both environments from the same source, verifies
   six shared Registry routes, and requires every generated CSS/JavaScript asset

@@ -18,7 +18,7 @@ non-overlapping `E2xxx` range.
 | `E2201` | `assembly-layout` | Generated assembly could not form a valid machine layout. | Check sections, labels, branches, and block ordering. |
 | `E2202` | `instruction-encoding` | A RISC-V instruction or immediate could not be encoded. | Check the mnemonic, operands, registers, and immediate range. |
 | `E2300` | `elf-emission` | A valid RISC-V ELF artifact could not be constructed. | Check entrypoint, section layout, offsets, and size constraints. |
-| `E2400` | `external-toolchain` | An explicitly configured RISC-V toolchain failed. | Check the toolchain environment variables, executable paths, and stderr. |
+| `E2400` | `verified-artifact-boundary` | The verified lowering/source-map boundary for an ELF artifact could not be constructed or persisted. | Inspect the verified lowering record, source artifact map, and canonical sidecar diagnostic. |
 | `E2900` | `backend-invariant` | An internal backend invariant failed after semantic checking. | Retain the source and compiler version and report a compiler defect. |
 
 The CLI exposes these codes in human diagnostics and in the `diagnostics[].code`

@@ -218,11 +218,11 @@ impl Formatter {
         validity: Option<&ValidityBlock>,
     ) -> Result<()> {
         let mut header = format!("{} {}", keyword, name);
-        if let Some(capabilities) = capabilities {
-            if !capabilities.is_empty() {
-                let rendered = capabilities.iter().map(format_capability).collect::<Vec<_>>().join(", ");
-                header.push_str(&format!(" has {}", rendered));
-            }
+        if let Some(capabilities) = capabilities
+            && !capabilities.is_empty()
+        {
+            let rendered = capabilities.iter().map(format_capability).collect::<Vec<_>>().join(", ");
+            header.push_str(&format!(" has {}", rendered));
         }
         if has_type_policy(identity, default_hash_type, capacity_floor) {
             self.push_line(&header);
@@ -292,10 +292,10 @@ impl Formatter {
         if let Some(capacity_floor) = capacity_floor {
             self.push_line(&format!("with_capacity_floor({})", capacity_floor.shannons));
         }
-        if let Some(identity) = identity {
-            if !matches!(identity, IdentityPolicy::None) {
-                self.push_line(&format!("identity({})", format_identity_policy(identity)));
-            }
+        if let Some(identity) = identity
+            && !matches!(identity, IdentityPolicy::None)
+        {
+            self.push_line(&format!("identity({})", format_identity_policy(identity)));
         }
     }
 

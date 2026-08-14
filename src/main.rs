@@ -1,6 +1,3 @@
-// Keep the Edition 2024 let-chain cleanup separate from the toolchain migration.
-#![allow(clippy::collapsible_if)]
-
 use camino::Utf8Path;
 use cellscript::error::{CompileError, CompileErrorCategory};
 use clap::{Parser, ValueEnum};
@@ -678,10 +675,10 @@ fn diagnostic_source(
     }
 
     let file = error.file.as_deref().or(fallback_file)?;
-    if Some(file) == fallback_file {
-        if let Some(source) = fallback_source {
-            return Some((file.to_string(), source.to_string()));
-        }
+    if Some(file) == fallback_file
+        && let Some(source) = fallback_source
+    {
+        return Some((file.to_string(), source.to_string()));
     }
 
     std::fs::read_to_string(file.as_std_path()).ok().map(|source| (file.to_string(), source))

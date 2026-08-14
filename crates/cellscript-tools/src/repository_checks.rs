@@ -34,7 +34,9 @@ fn forbidden_source_artifact(path: &Path) -> bool {
         .is_some_and(|extension| matches!(extension, "py" | "pyi" | "pyc" | "pyo"));
     forbidden_extension
         || path.file_name().and_then(|name| name.to_str()) == Some(".DS_Store")
-        || path.components().any(|component| matches!(component.as_os_str().to_str(), Some("__pycache__" | ".cap")))
+        || path
+            .components()
+            .any(|component| matches!(component.as_os_str().to_str(), Some("__pycache__" | ".cap" | ".playwright-mcp")))
 }
 
 fn active_tooling_source(path: &Path) -> bool {
@@ -427,6 +429,7 @@ mod tests {
         assert!(forbidden_source_artifact(Path::new("scripts/legacy.py")));
         assert!(forbidden_source_artifact(Path::new("src/__pycache__/legacy.pyc")));
         assert!(forbidden_source_artifact(Path::new(".cap/logs/run.log")));
+        assert!(forbidden_source_artifact(Path::new(".playwright-mcp/page.yml")));
         assert!(!forbidden_source_artifact(Path::new("src/main.rs")));
     }
 

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use cellscript_ckb_adapter::{place_entry_witness_payload_before_signing, EntryWitnessPlacementAbi};
 use ckb_sdk::{
     constants::MultisigScript,
@@ -22,6 +20,7 @@ use ckb_testtool::{
 use secp256k1::{PublicKey, SecretKey};
 
 #[path = "support/ckb_script_runner.rs"]
+#[allow(dead_code)]
 mod ckb_script_runner;
 
 use ckb_script_runner::{build_simple_fixture, compile_cellscript_source_to_elf, execute_cellscript_script};
@@ -74,7 +73,7 @@ fn raw_entry_payload(value: u64) -> Bytes {
 
 fn execute_on_second_group_input(witness: Bytes) -> ckb_script_runner::CkbScriptExecutionResult {
     let elf = compile_cellscript_source_to_elf(PARAMETERIZED_ENTRY, "verify", None);
-    let mut fixture = build_simple_fixture(Bytes::default(), 2, 1, true, None);
+    let mut fixture = build_simple_fixture(Bytes::default(), 2, 1);
     fixture.current_type_script_input_indices = vec![1];
     fixture.witnesses = vec![Bytes::from_static(b"unrelated-global-input-zero"), witness];
     execute_cellscript_script(&elf, &fixture)
@@ -82,7 +81,7 @@ fn execute_on_second_group_input(witness: Bytes) -> ckb_script_runner::CkbScript
 
 fn execute_on_output_only_group(witness: Bytes) -> ckb_script_runner::CkbScriptExecutionResult {
     let elf = compile_cellscript_source_to_elf(PARAMETERIZED_ENTRY, "verify", None);
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.current_type_script_input_indices.clear();
     fixture.witnesses = vec![witness];
     execute_cellscript_script(&elf, &fixture)

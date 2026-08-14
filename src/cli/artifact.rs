@@ -1662,10 +1662,10 @@ fn revalidate_deployment(evidence: &serde_json::Map<String, Value>, rpc_url: &st
                 .and_then(Value::as_str)
                 .ok_or_else(|| error("live DepGroup Cell has no output data"))?;
             let members = parse_dep_group_out_points(content)?;
-            if let Some(expected_size) = evidence.get("dep_group_size").and_then(Value::as_u64) {
-                if expected_size != members.len() as u64 {
-                    return Err(error("live DepGroup member count no longer matches Registry deployment evidence"));
-                }
+            if let Some(expected_size) = evidence.get("dep_group_size").and_then(Value::as_u64)
+                && expected_size != members.len() as u64
+            {
+                return Err(error("live DepGroup member count no longer matches Registry deployment evidence"));
             }
             let resolved = evidence
                 .get("resolved_code_out_point")

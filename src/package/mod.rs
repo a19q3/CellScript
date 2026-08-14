@@ -1086,20 +1086,20 @@ dist/
             .chain(manifest.dev_dependencies.iter())
             .chain(manifest.dependency_overrides.values().flat_map(|dependencies| dependencies.iter()));
         for (alias, dependency) in declared_dependencies {
-            if let Dependency::Detailed(detail) = dependency {
-                if let Some(resolver) = detail.resolver.as_deref() {
-                    if detail.path.is_some() || detail.git.is_some() {
-                        return Err(CompileError::without_span(format!(
-                            "dependency '{}' cannot combine resolver with path or git",
-                            alias
-                        )));
-                    }
-                    if !manifest.resolvers.contains_key(resolver) {
-                        return Err(CompileError::without_span(format!(
-                            "dependency '{}' selects undeclared resolver '{}'",
-                            alias, resolver
-                        )));
-                    }
+            if let Dependency::Detailed(detail) = dependency
+                && let Some(resolver) = detail.resolver.as_deref()
+            {
+                if detail.path.is_some() || detail.git.is_some() {
+                    return Err(CompileError::without_span(format!(
+                        "dependency '{}' cannot combine resolver with path or git",
+                        alias
+                    )));
+                }
+                if !manifest.resolvers.contains_key(resolver) {
+                    return Err(CompileError::without_span(format!(
+                        "dependency '{}' selects undeclared resolver '{}'",
+                        alias, resolver
+                    )));
                 }
             }
         }
@@ -2044,10 +2044,10 @@ impl DependencyGraph {
         let mut rec_stack = Vec::new();
 
         for node in &self.nodes {
-            if !visited.contains_key(node) {
-                if let Some(cycle) = self.dfs_find_cycle(node, &mut visited, &mut rec_stack) {
-                    return Some(cycle);
-                }
+            if !visited.contains_key(node)
+                && let Some(cycle) = self.dfs_find_cycle(node, &mut visited, &mut rec_stack)
+            {
+                return Some(cycle);
             }
         }
 
@@ -2871,13 +2871,13 @@ impl DeployedManifest {
                     deployment.network
                 )));
             }
-            if let Some(build) = &self.build {
-                if deployment.compatibility_profile_hash != build.compatibility_profile_hash {
-                    return Err(CompileError::without_span(format!(
-                        "Deployed.toml build/deployment compatibility profile mismatch for network '{}'",
-                        deployment.network
-                    )));
-                }
+            if let Some(build) = &self.build
+                && deployment.compatibility_profile_hash != build.compatibility_profile_hash
+            {
+                return Err(CompileError::without_span(format!(
+                    "Deployed.toml build/deployment compatibility profile mismatch for network '{}'",
+                    deployment.network
+                )));
             }
         }
         Ok(())

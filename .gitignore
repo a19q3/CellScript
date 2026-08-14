@@ -11,6 +11,7 @@ editors/vscode-cellscript/dist/
 .idea/
 .vscode/
 .cap/
+.codex/
 .zcode/
 .playwright-mcp/
 .wrangler/

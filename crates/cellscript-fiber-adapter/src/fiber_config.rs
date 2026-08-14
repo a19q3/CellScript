@@ -207,14 +207,14 @@ pub fn materialize_fiber_config(base_yaml: &str, configs: &[FiberUdtArgInfo]) ->
     for config in configs {
         config.validate()?;
     }
-    let mut document: serde_yaml::Value = serde_yaml::from_str(base_yaml)?;
+    let mut document: serde_yaml_ng::Value = serde_yaml_ng::from_str(base_yaml)?;
     let root = document.as_mapping_mut().ok_or_else(|| anyhow::anyhow!("Fiber config root must be a YAML mapping"))?;
     let ckb = root
-        .get_mut(serde_yaml::Value::String("ckb".to_string()))
-        .and_then(serde_yaml::Value::as_mapping_mut)
+        .get_mut(serde_yaml_ng::Value::String("ckb".to_string()))
+        .and_then(serde_yaml_ng::Value::as_mapping_mut)
         .ok_or_else(|| anyhow::anyhow!("Fiber config must contain a ckb mapping"))?;
-    ckb.insert(serde_yaml::Value::String("udt_whitelist".to_string()), serde_yaml::to_value(configs)?);
-    Ok(serde_yaml::to_string(&document)?)
+    ckb.insert(serde_yaml_ng::Value::String("udt_whitelist".to_string()), serde_yaml_ng::to_value(configs)?);
+    Ok(serde_yaml_ng::to_string(&document)?)
 }
 
 fn json_string(value: &str) -> anyhow::Result<String> {
@@ -307,7 +307,7 @@ mod tests {
         let (config, _) = build_fiber_udt_config("sample::Asset", &script, Some(42), vec![direct_dep()]).unwrap();
         let base = "fiber:\n  chain: dev.toml\nrpc:\n  listening_addr: 127.0.0.1:21714\nckb:\n  rpc_url: http://127.0.0.1:8114\n  udt_whitelist:\n    - name: stale\n";
         let rendered = materialize_fiber_config(base, &[config]).unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&rendered).unwrap();
+        let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&rendered).unwrap();
         assert_eq!(parsed["fiber"]["chain"].as_str(), Some("dev.toml"));
         assert_eq!(parsed["rpc"]["listening_addr"].as_str(), Some("127.0.0.1:21714"));
         assert_eq!(parsed["ckb"]["rpc_url"].as_str(), Some("http://127.0.0.1:8114"));
