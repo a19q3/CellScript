@@ -437,37 +437,6 @@ latest stable tag; the 0.24 nightly branch and these development release notes
 do not turn into a stable release merely because their website changes are
 deployed.
 
-### Website Material And Gestalt Closure
-
-The 0.24 website now uses one implemented visual-material contract instead of
-letting each route assemble near-black or near-white panels independently. The
-contract has five structural roles: canvas, broad functional field, ordinary
-surface, raised surface, and machine/code surface. Brand green identifies a
-ready or actionable path, blue identifies verification and compiler output,
-and amber identifies CKB substrate facts or the Pudge environment. Text remains
-mostly neutral; colour belongs to regions and state, not decorative emphasis.
-
-The resulting grouping follows the same CROP and Gestalt rules across routes:
-
-- the 1440 px site frame, Registry rail, Docs reading axis, and 1920 px
-  Playground studio remain the authoritative alignment tracks;
-- homepage sections use a small number of full-width fields, the compiler
-  workflow uses one continuous rail, and quickstart steps form one common
-  region instead of unrelated cards;
-- Docs places the hero, prose, code, pagination, navigation rail, and table of
-  contents inside one continuous reading field;
-- Playground keeps authoring, output, and evidence geometrically aligned while
-  giving each a stable functional surface; and
-- Browse, Submit, LS-IDL, API, package detail, and maintenance reuse one
-  Registry material hierarchy on mainnet and Testnet. Only environment colour
-  and network-derived content differ.
-
-Both themes define the complete material token set. The website build checks
-that the full-height canvas grain, section fields, Docs reading field,
-Playground input/output distinction, Registry route field, Testnet override,
-and common-region surfaces remain present. Production and Pudge builds still
-must expose the same six Registry routes and byte-identical CSS and JavaScript.
-
 ## Gate Integration
 
 ### `dev`

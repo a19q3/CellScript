@@ -2,18 +2,6 @@
 
 ## Unreleased
 
-- Replace the website's near-achromatic black/white surface stack with one
-  theme-bound mineral material system across the homepage, Docs, Playground,
-  and every Registry route. Broad brand, verification/output, and CKB
-  substrate fields now establish Gestalt grouping without turning every block
-  into a card; shared canvas, field, input, output, raised, and machine tokens
-  keep light and dark themes coherent. The homepage workflow gains a continuous
-  process rail, quickstart steps become one common region, Docs gains a stable
-  reading field, and Playground separates authoring, compiler output, and
-  evidence by function. Mainnet and Pudge retain byte-identical geometry and
-  assets while changing only their environment semantics. Extend the website
-  visual contract to reject missing material roles or a return to first-screen-
-  only ambience.
 - Remove the unreachable external RISC-V toolchain fallback and make the
   audited internal assembler the sole ELF-emission path. Reassign `E2400` to
   the verified lowering/source-map boundary that already uses it, so the
