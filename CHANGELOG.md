@@ -42,10 +42,15 @@
   compatibility `/idl/:code_hash` route all enforce the same schema and
   executable-suffix contract. Pin all 17 current upstream client vectors and
   seven derive/example IDLs, and add an opt-in test that runs the actual
-  upstream Rust client against Registry's compatibility handler. Add a runnable
-  Rust example, website lookup/detail surfaces, and VS Code validate/bind/fetch
-  commands. Name the website tab `LS-IDL` rather than the ambiguous
-  `Interface`, and align its lookup panel with the full-width Browse surface.
+  upstream Rust client against Registry's compatibility handler. Extend that
+  opt-in acceptance through the fixes merged upstream in `ckb_sudt_script`
+  PR #7, real RISC-V contract builds, LS-IDL-bound ELFs, and all 25 example
+  CKB-VM tests without a local compatibility overlay. Add a
+  runnable Rust example, website lookup/detail surfaces, and VS Code
+  validate/bind/fetch commands. Name the website tab `LS-IDL` rather than the
+  ambiguous `Interface`, give it the canonical `/registry/LS-IDL` route with a
+  permanent redirect from `/registry/interface`, and align its lookup panel
+  with the full-width Browse surface.
   Keep implementation correctness and security review outside this
   byte-identity claim.
 - Ship the 0.24 package and Registry trust closure, informed by Sui Move's

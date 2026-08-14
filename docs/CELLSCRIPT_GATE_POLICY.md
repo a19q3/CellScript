@@ -433,7 +433,8 @@ use:
   a sibling CKB checkout; see `docs/CELLSCRIPT_CKB_STD_COMPAT.md`.
 - `./scripts/cellscript_ls_idl_upstream_acceptance.sh` — exact-pinned LS-IDL
   derive, client, and example-script compatibility, including the actual
-  upstream Rust client calling the Registry compatibility handler; see
+  upstream Rust client calling the Registry compatibility handler, unmodified
+  upstream RISC-V builds, LS-IDL-bound ELFs, and example CKB-VM execution; see
   `docs/CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md`.
 - `./scripts/cellscript_cellfabric_bridge_smoke.sh` — CellFabric bridge smoke
   test; see `docs/CELLSCRIPT_CELLFABRIC_BRIDGE.md`.

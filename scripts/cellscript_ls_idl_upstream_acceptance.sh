@@ -9,7 +9,20 @@ SCRIPTS_REPO="${CKB_IDL_SCRIPTS_REPO:-$REPO_ROOT/../ckb_sudt_script}"
 
 DERIVE_COMMIT="e7ee35766b9084099e9d840ccd37d2b5d40074a1"
 CLIENT_COMMIT="7d883e0abccba56d423449b673567ee817747936"
-SCRIPTS_COMMIT="33bc56d84e8a181d855da5b82a87740825017f29"
+SCRIPTS_COMMIT="c20ce3f4813100b78076fd447a0234bb5ad46bbb"
+RUNTIME_RUST_TOOLCHAIN="1.97.1"
+RUNTIME_PARENT=""
+RUNTIME_REPO=""
+
+cleanup_runtime_worktree() {
+  if [[ -n "$RUNTIME_REPO" && -d "$RUNTIME_REPO" ]]; then
+    git -C "$SCRIPTS_REPO" worktree remove --force "$RUNTIME_REPO" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$RUNTIME_PARENT" && -d "$RUNTIME_PARENT" ]]; then
+    rmdir "$RUNTIME_PARENT" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_runtime_worktree EXIT
 
 usage() {
   cat <<'USAGE'
@@ -18,8 +31,10 @@ Usage: scripts/cellscript_ls_idl_upstream_acceptance.sh \
 
 Runs the opt-in LS-IDL compatibility check against clean, pinned upstream
 checkouts. It validates upstream IDL bytes, runs upstream schema/wire tests,
-and executes the actual ckb-idl-client Rust crate against CellScript Registry's
-/idl/:code_hash compatibility handler.
+executes the actual ckb-idl-client Rust crate against CellScript Registry's
+/idl/:code_hash compatibility handler, and builds the merged upstream runtime
+fixes in a disposable worktree before binding and running the example Lock
+Scripts in CKB-VM.
 
 This script is not part of any CellScript release gate.
 USAGE
@@ -63,7 +78,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for command in cargo git node npm sha256sum; do
+for command in cargo git make mktemp node npm sha256sum; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "missing required command: $command" >&2
     exit 127
@@ -145,5 +160,28 @@ CELLSCRIPT_CKB_IDL_CLIENT_REPO="$CLIENT_REPO" \
 CELLSCRIPT_LS_IDL_CARGO_TARGET_DIR="$REPO_ROOT/target/ls-idl-upstream-client" \
   npm --prefix "$REPO_ROOT/services/registry-api" test -- \
     test/registry-api.test.ts -t "interoperates with the pinned upstream Rust client"
+
+RUNTIME_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/cellscript-ls-idl-runtime.XXXXXX")"
+RUNTIME_REPO="$RUNTIME_PARENT/ckb_sudt_script"
+git -C "$SCRIPTS_REPO" worktree add --quiet --detach "$RUNTIME_REPO" "$SCRIPTS_COMMIT"
+
+RUSTUP_TOOLCHAIN="$RUNTIME_RUST_TOOLCHAIN" RUSTC_WRAPPER= \
+  make -C "$RUNTIME_REPO" build CARGO_ARGS=--locked
+
+BOUND_DIR="$RUNTIME_REPO/build/ls-idl-bound"
+mkdir -p "$BOUND_DIR"
+for script_name in simple-lock timelock-lock; do
+  idl_path="$RUNTIME_REPO/contracts/$script_name/idl.json"
+  executable_path="$RUNTIME_REPO/build/release/$script_name"
+  bound_path="$BOUND_DIR/$script_name"
+  cargo run --quiet --locked --manifest-path "$REPO_ROOT/Cargo.toml" -p cellscript --bin cellc -- \
+    artifact ls-idl bind --idl "$idl_path" --executable "$executable_path" --output "$bound_path"
+  cargo run --quiet --locked --manifest-path "$REPO_ROOT/Cargo.toml" -p cellscript --bin cellc -- \
+    artifact ls-idl validate --idl "$idl_path" --executable "$bound_path"
+  cp "$bound_path" "$executable_path"
+done
+
+RUSTUP_TOOLCHAIN="$RUNTIME_RUST_TOOLCHAIN" RUSTC_WRAPPER= \
+  cargo test --locked --manifest-path "$RUNTIME_REPO/Cargo.toml" -p tests -- --test-threads=1
 
 echo "Pinned LS-IDL upstream compatibility acceptance passed."

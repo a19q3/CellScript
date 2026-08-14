@@ -177,7 +177,9 @@ cellc artifact ls-idl fetch \
 
 The VS Code extension exposes the validate, bind, and fetch operations through
 the command palette. The Registry website exposes package-bound LS-IDL facts
-and a direct Script-identity lookup under an explicit `LS-IDL` tab.
+and a direct Script-identity lookup under an explicit `LS-IDL` tab at
+`https://cellscript.dev/registry/LS-IDL`. The retired
+`/registry/interface` route redirects permanently to that canonical address.
 
 ## Storage And Admission
 
@@ -203,7 +205,7 @@ proposal:
 - `ckb-idl-client` commit
   `7d883e0abccba56d423449b673567ee817747936`;
 - `ckb_sudt_script` commit
-  `33bc56d84e8a181d855da5b82a87740825017f29`; and
+  `c20ce3f4813100b78076fd447a0234bb5ad46bbb`; and
 - upstream `test-vectors.json` SHA-256
   `a9a6dca4fd0c5fcd2ca7aea6468784be7fdb29d6274049f07090cbab0ce9c1bb`.
 
@@ -226,15 +228,21 @@ The script requires clean checkouts at the pinned commits, checks every raw
 fixture hash, runs the derive and client library tests plus the example
 scripts' structural witness tests, validates all seven upstream IDLs with
 `cellc`, and runs the actual upstream Rust client against the Registry
-`/idl/:code_hash` handler. That final probe covers fetch, raw-byte SHA-256
-verification, cache use, and linear witness decoding.
+`/idl/:code_hash` handler. That probe covers fetch, raw-byte SHA-256
+verification, cache use, and linear witness decoding. It then creates a
+disposable worktree, builds all three example contracts from the unmodified
+merged upstream source with Rust 1.97.1, binds the simple and timelock ELF files
+to their exact IDL bytes, and runs all 25 upstream CKB-VM tests against the
+bound executables.
 
 This remains an opt-in compatibility tool rather than release-gate evidence.
 At the pinned client commit, the complete vector and library tests pass; the
 repository's separate property-test suite still contains Blake2b commitment
-fixtures even though production `verify` uses SHA-256. The full example-script
-VM suite also requires its RISC-V contracts to be built first. These upstream
-conditions are recorded rather than hidden or promoted into Registry claims.
+fixtures even though production `verify` uses SHA-256. [Upstream PR
+#7](https://github.com/OWK50GA/ckb_sudt_script/pull/7) merged CKB's
+`passes=lower-atomic` build setting and the explicit timelock `HeaderDep`
+loading path, so the acceptance pin now tests the unmodified upstream source
+without a CellScript compatibility overlay.
 
 The upstream mini Registry example parses and reserialises JSON, so it is not
 used as the byte-preserving production storage contract. CellScript follows

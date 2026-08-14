@@ -11,7 +11,7 @@ Pinned repositories:
 - [`OWK50GA/ckb-idl-client`](https://github.com/OWK50GA/ckb-idl-client) at
   `7d883e0abccba56d423449b673567ee817747936`; and
 - [`OWK50GA/ckb_sudt_script`](https://github.com/OWK50GA/ckb_sudt_script) at
-  `33bc56d84e8a181d855da5b82a87740825017f29`.
+  `c20ce3f4813100b78076fd447a0234bb5ad46bbb`.
 
 Raw-byte SHA-256 pins:
 
@@ -35,8 +35,19 @@ decodes them before hashing or validating them.
 one unknown-type vector still fails closed at Registry schema admission. The
 separate `scripts/cellscript_ls_idl_upstream_acceptance.sh` test uses clean
 checkouts at these commits and runs the actual upstream Rust client against
-the Registry compatibility handler.
+the Registry compatibility handler. It then creates a disposable worktree,
+builds all three example contracts from the unmodified merged upstream source,
+binds the two Lock Script ELFs to their exact IDL bytes, and runs all 25
+upstream CKB-VM tests against the bound artifacts.
 
-This evidence establishes schema compatibility, exact-byte preservation, and
-the SHA-256 suffix contract. It does not establish Lock Script semantics,
-signature correctness, transaction validity, or a security audit.
+[Upstream PR #7](https://github.com/OWK50GA/ckb_sudt_script/pull/7) merged the
+two runtime fixes first identified by this acceptance work: the contract
+Makefiles enable CKB's `lower-atomic` LLVM pass, and the timelock reads the
+transaction `HeaderDep` included by its tests. CellScript no longer applies a
+compatibility overlay for these paths.
+
+This evidence establishes schema compatibility, exact-byte preservation, the
+SHA-256 suffix contract, and local CKB-VM execution of the unmodified upstream
+examples.
+It does not establish signature correctness, production transaction validity,
+or a security audit.
