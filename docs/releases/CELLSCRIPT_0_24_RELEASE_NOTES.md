@@ -1,9 +1,9 @@
 # CellScript 0.24 Development Release Notes
 
-**Status**: implementation-complete merge candidate; `dev`, `ci`, and
-`backend` passed on 2026-08-10. The refreshed iCKB evidence submodule commit
-`0e18ccd97bd75cac7de9211dc8d344c0bc08942f` is published and bound by the
-parent gitlink; the full release gate remains required before production claims
+**Status**: audit-remediation merge candidate. The refreshed iCKB evidence
+submodule commit `0e18ccd97bd75cac7de9211dc8d344c0bc08942f` is published and
+bound by the parent gitlink. The merge gates must pass for the exact candidate,
+and the full release gate remains required before production claims.
 
 **Source edition**: 2026
 
@@ -301,13 +301,11 @@ or conversion of executable/copy artifacts into source dependencies.
 
 ## Validation
 
-The package/Registry closure passed `dev` and `ci` on 2026-08-10, with the CI
-website phase using the required Node 22 toolchain. The complete `backend` gate
-then passed from an isolated clean checkout containing the refreshed iCKB
-differential evidence, pinned CKB revision
-`f7fa4436737756f97a24e254f22c13a36316ecea`, and CKB SDK `v5.1.0`. This
-covered the compiler tests, Clippy, full strict backend audit, all 218 iCKB
-differential cases, and the production stateful CKB scenario harness:
+The 2026-08-10 `dev`, `ci`, and `backend` results predated later changes on the
+0.24 branch and are not evidence for this merge candidate. The exact audit-fix
+snapshot must pass all three commands below in an isolated checkout using Node
+22, CKB revision `f7fa4436737756f97a24e254f22c13a36316ecea`, and CKB SDK
+`v5.1.0` before merge:
 
 ```bash
 ./scripts/cellscript_gate.sh dev

@@ -165,6 +165,18 @@ and validates every step's commit, spent-input liveness, live outputs, cycles,
 serialized size, and occupied capacity. `--stateful-scenarios` remains only as
 an explicit option for bounded runs.
 
+The backend gate normally resolves that checkout as the sibling `../ckb`
+directory. When that path is occupied by another development worktree, set
+`CELLSCRIPT_CKB_REPO` to a separate clean checkout at the exact pinned revision;
+the stateful wrapper forwards it as the acceptance harness's `--ckb-repo`.
+This avoids modifying or stashing an unrelated CKB worktree during validation.
+
+For `release` and `release-quick`, pass the same checkout with `--ckb-repo`.
+The release gate stages the independent `ckb-tx-measure` workspace under
+`target/` with its tracked manifest, lockfile, and source so its relative CKB
+dependencies resolve against that explicit checkout too. The default remains
+the sibling `../ckb`; the tracked lockfile remains bound to the release pin.
+
 The transaction matrix is produced by the native Rust acceptance harness and
 is intentionally labelled as recipe-replayer evidence, not generated-builder
 output. Separately, the gate runs the public `cellc action build` and

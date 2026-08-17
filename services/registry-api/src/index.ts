@@ -201,7 +201,7 @@ export function registryRuntimeConfig(env: Env): RegistryRuntimeConfig {
   throw new ApiError(503, "invalid_registry_environment", "REGISTRY_ENVIRONMENT must be production or testnet-sandbox");
 }
 export const CANONICAL_REGISTRY_TYPE_SCRIPT = Object.freeze({
-  code_hash: "0x8b6de99567accdca438818a55c16534ed10fc335f117709b1487fd2666808bfb",
+  code_hash: "0x0dd596ade29e06e5bcc00f56abf36ecbe9afaa09f1b26a64436aa37854da622b",
   hash_type: "data1",
 });
 export const CKB_MAINNET_SIGHASH_LOCK = Object.freeze({
@@ -722,7 +722,7 @@ async function handleLsIdlRead(
   }
   const candidate = candidates[0]!;
   const deployment = candidate.deployment.evidence;
-  if (!compatibilityRoute && deployment["hash_type"] === "type" && !dataHash) {
+  if (deployment["hash_type"] === "type" && !dataHash) {
     throw new ApiError(
       409,
       "ls_idl_data_hash_required",
@@ -4700,7 +4700,7 @@ function errorResponse(error: unknown, requestId: string): Response {
   const headers = corsHeaders(requestId);
   const status = error instanceof ApiError ? error.status : 500;
   const code = error instanceof ApiError ? error.code : "internal_error";
-  const message = error instanceof Error ? error.message : "internal error";
+  const message = error instanceof ApiError ? error.message : "internal server error";
   return json({ request_id: requestId, error: { code, message } }, status, headers);
 }
 

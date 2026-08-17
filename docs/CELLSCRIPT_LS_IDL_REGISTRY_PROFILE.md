@@ -107,10 +107,12 @@ uniquely identify executable data. More than one matching deployment returns
 The compatibility route is:
 
 ```text
-GET /idl/:code_hash
+GET /idl/:code_hash[?data_hash=0x...]
 ```
 
 It is retained for existing LS-IDL clients and returns the same original
+bytes for immutable `data`/`data1`/`data2` identities. A Type-hash candidate
+still requires `data_hash`; code hash alone never selects upgradeable code
 bytes. New integrations should use the canonical route so network, hash type,
 and data-hash identity are explicit.
 

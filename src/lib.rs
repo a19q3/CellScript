@@ -1,6 +1,11 @@
 //! CellScript - Domain-specific language compiler for CKB blockchain
 //! Currently the backend can output RISC-V assembly or ELF artifacts.
 
+// The compiler's lowering and backend helpers intentionally carry explicit
+// context parameters. Keep their semantic refactors separate from release
+// hardening so Clippy does not force high-risk positional rewrites.
+#![allow(clippy::too_many_arguments)]
+
 pub(crate) mod aggregate_lowering;
 pub mod assumptions;
 pub mod ast;

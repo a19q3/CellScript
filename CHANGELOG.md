@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.24.0 - 2026-08-17
+
+- Close the 0.24 audit blockers: reject transitive executable resolvers and
+  unsafe Git refs, bound and origin-bind Registry downloads, preserve exact
+  LS-IDL Type-script identity, and stop exposing unexpected service errors.
+  Restore a deliberate Clippy boundary for legacy explicit-context helpers,
+  align package identities with 0.24, and carry the closed 0.23 release and
+  NovaSeal evidence forward.
+- Isolate every CKB-dependent gate check. The backend stateful wrapper accepts
+  `CELLSCRIPT_CKB_REPO`, and release modes propagate `--ckb-repo` to the staged
+  `ckb-tx-measure` workspace instead of silently using another sibling checkout.
 
 - Remove the unreachable external RISC-V toolchain fallback and make the
   audited internal assembler the sole ELF-emission path. Reassign `E2400` to

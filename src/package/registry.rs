@@ -29,8 +29,12 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_REGISTRY_URL: &str = "https://github.com/cellscript/cellscript-registry";
 pub const REGISTRY_URL_ENV: &str = "CELLSCRIPT_REGISTRY_URL";
 pub const DEFAULT_PUBLIC_REGISTRY_ORIGIN: &str = "https://api.registry.cellscript.dev";
+pub const DEFAULT_PUBLIC_REGISTRY_STATIC_ORIGIN: &str = "https://registry.cellscript.dev";
+pub const DEFAULT_TESTNET_REGISTRY_ORIGIN: &str = "https://api.testnet.registry.cellscript.dev";
+pub const DEFAULT_TESTNET_REGISTRY_STATIC_ORIGIN: &str = "https://objects.testnet.registry.cellscript.dev";
 pub const REGISTRY_API_URL_ENV: &str = "CELLSCRIPT_REGISTRY_API_URL";
 pub const REGISTRY_ORIGIN_ENV: &str = "CELLSCRIPT_REGISTRY_ORIGIN";
+pub const REGISTRY_STATIC_ORIGIN_ENV: &str = "CELLSCRIPT_REGISTRY_STATIC_ORIGIN";
 pub const REGISTRY_AUTH_PROTOCOL: &str = "cellscript-registry-auth-v1";
 pub const AUTHORIZE_CAPABILITY_ACTION: &str = "authorize_capability";
 pub const REVOKE_CAPABILITY_ACTION: &str = "revoke_capability";
@@ -496,8 +500,18 @@ fn lookup_public_registry(
     if !response.status().is_success() {
         return Err(CompileError::without_span(format!("public registry request '{}' returned HTTP {}", url, response.status())));
     }
-    let payload: PublicRegistryPackage = response
-        .json()
+    if response.content_length().is_some_and(|length| length == 0 || length > MAX_PUBLIC_REGISTRY_METADATA_BYTES) {
+        return Err(CompileError::without_span("public registry metadata Content-Length exceeds the bounded response contract"));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_PUBLIC_REGISTRY_METADATA_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| CompileError::without_span(format!("failed to read public registry response '{url}': {error}")))?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_PUBLIC_REGISTRY_METADATA_BYTES {
+        return Err(CompileError::without_span("public registry metadata exceeds the bounded response contract"));
+    }
+    let payload: PublicRegistryPackage = serde_json::from_slice(&bytes)
         .map_err(|error| CompileError::without_span(format!("public registry response '{}' is invalid: {error}", url)))?;
     payload.into_resolution(namespace, name)
 }
@@ -563,10 +577,21 @@ impl PublicRegistryPackage {
                 "artifact '{expected_namespace}/{expected_name}' is not a resolver-safe CellScript dependency"
             )));
         }
+        if self.releases.len() > MAX_PUBLIC_REGISTRY_RELEASES {
+            return Err(CompileError::without_span(format!(
+                "public registry package '{expected_namespace}/{expected_name}' exceeds the {MAX_PUBLIC_REGISTRY_RELEASES}-release response limit"
+            )));
+        }
         let source = self.repository.filter(|value| !value.trim().is_empty()).unwrap_or_default();
         let mut versions = Vec::with_capacity(self.releases.len());
         let mut source_snapshots = BTreeMap::new();
         for public_version in self.releases {
+            if public_version.registry_entry.versions.len() > MAX_PUBLIC_REGISTRY_RELEASES {
+                return Err(CompileError::without_span(format!(
+                    "public registry version '{}' exceeds the bounded signed-version list",
+                    public_version.release
+                )));
+            }
             if public_version.registry_entry.schema_version != RegistryIndex::CURRENT_SCHEMA_VERSION
                 || public_version.registry_entry.namespace != expected_namespace
                 || public_version.registry_entry.name != expected_name
@@ -645,7 +670,68 @@ fn public_registry_release_status(verification: &str, availability: &str) -> Res
 }
 
 #[cfg(feature = "cli")]
+const MAX_PUBLIC_REGISTRY_METADATA_BYTES: u64 = 1024 * 1024;
+#[cfg(feature = "cli")]
+const MAX_PUBLIC_REGISTRY_RELEASES: usize = 1024;
+#[cfg(feature = "cli")]
 const MAX_PUBLIC_SOURCE_SNAPSHOT_BYTES: u64 = 5 * 1024 * 1024;
+
+#[cfg(feature = "cli")]
+fn canonical_trusted_registry_origin(value: &str, label: &str) -> Result<String> {
+    let url = reqwest::Url::parse(value).map_err(|error| CompileError::without_span(format!("{label} is invalid: {error}")))?;
+    let Some(host) = url.host_str() else {
+        return Err(CompileError::without_span(format!("{label} has no host")));
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let loopback =
+        host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|address| address.is_loopback());
+    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+        return Err(CompileError::without_span(format!(
+            "{label} must use HTTPS; plaintext HTTP is allowed only for an explicitly configured loopback Registry"
+        )));
+    }
+    if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+        return Err(CompileError::without_span(format!("{label} must not contain credentials or a fragment")));
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
+#[cfg(feature = "cli")]
+fn trusted_registry_snapshot_origins() -> Result<Vec<String>> {
+    let api_origin = canonical_trusted_registry_origin(&resolver_registry_url(), "Registry API origin")?;
+    let mut origins = vec![api_origin.clone()];
+    if api_origin == DEFAULT_PUBLIC_REGISTRY_ORIGIN {
+        origins.push(DEFAULT_PUBLIC_REGISTRY_STATIC_ORIGIN.to_string());
+    } else if api_origin == DEFAULT_TESTNET_REGISTRY_ORIGIN {
+        origins.push(DEFAULT_TESTNET_REGISTRY_STATIC_ORIGIN.to_string());
+    }
+    if let Some(configured) =
+        std::env::var(REGISTRY_STATIC_ORIGIN_ENV).ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
+    {
+        origins.push(canonical_trusted_registry_origin(&configured, "Registry static origin")?);
+    }
+    origins.sort();
+    origins.dedup();
+    Ok(origins)
+}
+
+#[cfg(feature = "cli")]
+fn validate_registry_snapshot_url_against(url: &str, trusted_origins: &[String], label: &str) -> Result<reqwest::Url> {
+    let parsed = reqwest::Url::parse(url).map_err(|error| CompileError::without_span(format!("{label} URL is invalid: {error}")))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() || parsed.fragment().is_some() {
+        return Err(CompileError::without_span(format!("{label} URL must not contain credentials or a fragment")));
+    }
+    let origin = canonical_trusted_registry_origin(parsed.as_str(), &format!("{label} origin"))?;
+    if !trusted_origins.iter().any(|trusted| trusted == &origin) {
+        return Err(CompileError::without_span(format!("{label} URL origin '{origin}' is not a configured Registry object origin")));
+    }
+    Ok(parsed)
+}
+
+#[cfg(feature = "cli")]
+fn validate_registry_snapshot_url(url: &str, label: &str) -> Result<reqwest::Url> {
+    validate_registry_snapshot_url_against(url, &trusted_registry_snapshot_origins()?, label)
+}
 
 #[cfg(feature = "cli")]
 #[derive(Debug, Deserialize)]
@@ -684,7 +770,28 @@ pub fn materialize_public_source_snapshot(
     version: &str,
     expected_source_hash: &str,
 ) -> Result<PathBuf> {
-    validate_public_source_snapshot_descriptor(snapshot, expected_source_hash)?;
+    materialize_public_source_snapshot_against(
+        snapshot,
+        cache_root,
+        namespace,
+        name,
+        version,
+        expected_source_hash,
+        &trusted_registry_snapshot_origins()?,
+    )
+}
+
+#[cfg(feature = "cli")]
+fn materialize_public_source_snapshot_against(
+    snapshot: &PublicRegistrySourceSnapshot,
+    cache_root: &Path,
+    namespace: &str,
+    name: &str,
+    version: &str,
+    expected_source_hash: &str,
+    trusted_origins: &[String],
+) -> Result<PathBuf> {
+    validate_public_source_snapshot_descriptor_against(snapshot, expected_source_hash, trusted_origins)?;
     let bytes = download_public_source_snapshot(snapshot)?;
     std::fs::create_dir_all(cache_root).map_err(|error| {
         CompileError::without_span(format!("failed to create source snapshot cache '{}': {error}", cache_root.display()))
@@ -730,15 +837,7 @@ pub fn materialize_locked_public_source_snapshot(
     if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(CompileError::without_span("locked Registry snapshot hash must contain 32 bytes of hex"));
     }
-    let parsed = reqwest::Url::parse(url)
-        .map_err(|error| CompileError::without_span(format!("locked Registry snapshot URL is invalid: {error}")))?;
-    if !matches!(parsed.scheme(), "http" | "https")
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.fragment().is_some()
-    {
-        return Err(CompileError::without_span("locked Registry snapshot URL must be HTTP(S) without credentials or a fragment"));
-    }
+    let _parsed = validate_registry_snapshot_url(url, "locked Registry snapshot")?;
     std::fs::create_dir_all(cache_root)?;
     let target = cache_root.join(format!("{name}-snapshot-{digest}"));
     if target.exists() {
@@ -851,7 +950,11 @@ pub fn materialize_public_source_snapshot(
 }
 
 #[cfg(feature = "cli")]
-fn validate_public_source_snapshot_descriptor(snapshot: &PublicRegistrySourceSnapshot, expected_source_hash: &str) -> Result<()> {
+fn validate_public_source_snapshot_descriptor_against(
+    snapshot: &PublicRegistrySourceSnapshot,
+    expected_source_hash: &str,
+    trusted_origins: &[String],
+) -> Result<()> {
     if snapshot.schema != "cellscript-registry-immutable-bundle" {
         return Err(CompileError::without_span(format!("unsupported public registry source snapshot schema '{}'", snapshot.schema)));
     }
@@ -876,14 +979,7 @@ fn validate_public_source_snapshot_descriptor(snapshot: &PublicRegistrySourceSna
             snapshot.content_type
         )));
     }
-    let url = reqwest::Url::parse(&snapshot.url)
-        .map_err(|error| CompileError::without_span(format!("public registry source snapshot URL is invalid: {error}")))?;
-    if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() || url.fragment().is_some()
-    {
-        return Err(CompileError::without_span(
-            "public registry source snapshot URL must be an HTTP(S) URL without credentials or a fragment",
-        ));
-    }
+    let _url = validate_registry_snapshot_url_against(&snapshot.url, trusted_origins, "public Registry source snapshot")?;
     Ok(())
 }
 
@@ -2049,8 +2145,58 @@ left = "a"
             size_bytes: 42,
             content_type: "application/x-tar".to_string(),
         };
-        let error = validate_public_source_snapshot_descriptor(&snapshot, "source-hash").unwrap_err();
+        let error = validate_public_source_snapshot_descriptor_against(
+            &snapshot,
+            "source-hash",
+            &[DEFAULT_PUBLIC_REGISTRY_STATIC_ORIGIN.to_string()],
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("does not support source snapshot content type"));
+    }
+
+    #[cfg(feature = "cli")]
+    #[test]
+    fn registry_snapshot_urls_are_bound_to_explicit_trusted_origins() {
+        let production = vec![DEFAULT_PUBLIC_REGISTRY_STATIC_ORIGIN.to_string()];
+        assert!(validate_registry_snapshot_url_against(
+            "https://registry.cellscript.dev/source-snapshots/demo.json",
+            &production,
+            "snapshot",
+        )
+        .is_ok());
+        let internal =
+            validate_registry_snapshot_url_against("http://169.254.169.254/latest/meta-data/", &production, "snapshot").unwrap_err();
+        assert!(internal.message.contains("must use HTTPS") || internal.message.contains("not a configured Registry object origin"));
+
+        let development = vec!["http://127.0.0.1:8787".to_string()];
+        assert!(validate_registry_snapshot_url_against("http://127.0.0.1:8787/source-snapshots/demo.json", &development, "snapshot",)
+            .is_ok());
+        assert!(validate_registry_snapshot_url_against("http://127.0.0.1:8788/source-snapshots/demo.json", &development, "snapshot",)
+            .is_err());
+    }
+
+    #[cfg(feature = "cli")]
+    #[test]
+    fn public_registry_metadata_rejects_oversized_content_length() {
+        use std::io::{Read as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                MAX_PUBLIC_REGISTRY_METADATA_BYTES + 1
+            )
+            .unwrap();
+        });
+
+        let error = lookup_public_registry(&format!("http://{address}"), "cellscript", "demo").unwrap_err();
+        server.join().unwrap();
+        assert!(error.message.contains("Content-Length exceeds the bounded response contract"));
     }
 
     #[cfg(feature = "cli")]
@@ -2103,8 +2249,17 @@ left = "a"
             content_type: "application/vnd.cellscript.source-snapshot+json".to_string(),
         };
         let cache = tempfile::tempdir().unwrap();
-        let materialized =
-            materialize_public_source_snapshot(&descriptor, cache.path(), "cellscript", "demo", "1.2.3", &source_hash).unwrap();
+        let trusted_origins = vec![format!("http://{address}")];
+        let materialized = materialize_public_source_snapshot_against(
+            &descriptor,
+            cache.path(),
+            "cellscript",
+            "demo",
+            "1.2.3",
+            &source_hash,
+            &trusted_origins,
+        )
+        .unwrap();
         server.join().unwrap();
         assert_eq!(compute_source_hash(&materialized).unwrap(), source_hash);
         assert_eq!(std::fs::read(materialized.join("src/main.cell")).unwrap(), source);

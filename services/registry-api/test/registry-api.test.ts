@@ -667,7 +667,7 @@ async function completeBrowserAuthorisationSession(
   }, {}, { authorization: `Bearer ${browserToken}` });
 }
 
-async function lsIdlLookupApp(idlBytes: Uint8Array) {
+async function lsIdlLookupApp(idlBytes: Uint8Array, hashType: "data1" | "type" = "data1") {
   const store = new MemoryRegistryStore();
   const idl = new TextDecoder().decode(idlBytes);
   const digest = await sha256Hex(idlBytes);
@@ -718,7 +718,7 @@ async function lsIdlLookupApp(idlBytes: Uint8Array) {
       network: "mainnet",
       code_hash: codeHash,
       data_hash: codeHash,
-      hash_type: "data1",
+      hash_type: hashType,
       dep_type: "code",
     },
     request_id: "test",
@@ -769,6 +769,23 @@ describe("registry api", () => {
     expect(compatibility.headers.get("x-ls-idl-verification")).toBe("schema-and-suffix-bound");
 
     const formal = await get(app, `/v1/ckb/scripts/${codeHash}/interfaces/ls-idl?hash_type=data1&data_hash=${codeHash}`);
+    expect(formal.status).toBe(200);
+    expect(await formal.text()).toBe(idl);
+  });
+
+  it("requires exact code-cell data identity for Type-hash LS-IDL compatibility reads", async () => {
+    const idl = "{\"witness\":[]}\n";
+    const { app, codeHash } = await lsIdlLookupApp(new TextEncoder().encode(idl), "type");
+
+    const ambiguous = await get(app, `/idl/${codeHash.slice(2)}`);
+    expect(ambiguous.status).toBe(409);
+    expect((await ambiguous.json() as any).error.code).toBe("ls_idl_data_hash_required");
+
+    const compatibility = await get(app, `/idl/${codeHash.slice(2)}?data_hash=${codeHash}`);
+    expect(compatibility.status).toBe(200);
+    expect(await compatibility.text()).toBe(idl);
+
+    const formal = await get(app, `/v1/ckb/scripts/${codeHash}/interfaces/ls-idl?hash_type=type&data_hash=${codeHash}`);
     expect(formal.status).toBe(200);
     expect(await formal.text()).toBe(idl);
   });
@@ -2803,7 +2820,10 @@ describe("registry api", () => {
     );
 
     expect(response.status).toBe(500);
-    expect((await response.json() as any).error.code).toBe("internal_error");
+    const internalError = await response.json() as any;
+    expect(internalError.error.code).toBe("internal_error");
+    expect(internalError.error.message).toBe("internal server error");
+    expect(JSON.stringify(internalError)).not.toContain("static registry object write failed");
     expect(store.packageVersions.get("cellscript/demo@1.2.3")?.availability_status).toBe("active");
     expect(store.auditEvents.some((event) => event.event_type === "admin.package_version.status_updated")).toBe(false);
     const staticEntryWrites = snapshots.filter((snapshot) => snapshot.key === "artifacts/cellscript/demo/releases/1.2.3.json");

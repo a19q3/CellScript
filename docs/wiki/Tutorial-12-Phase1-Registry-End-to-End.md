@@ -294,7 +294,9 @@ curl --fail \
   --output idl.json
 ```
 
-The compatibility route `/idl/:code_hash` returns the same original bytes.
+The compatibility route `/idl/:code_hash` returns the same original bytes for
+immutable hash types. Type-hash deployments require `?data_hash=0x...` even on
+that route so an upgrade cannot resolve by code hash alone.
 The Registry proves the document schema, raw-byte digest, executable suffix,
 and deployment identity. It does not prove that the Lock Script correctly
 implements the interface, and it is not a security audit. See the

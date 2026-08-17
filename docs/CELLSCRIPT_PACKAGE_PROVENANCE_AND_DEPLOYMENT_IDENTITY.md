@@ -454,7 +454,7 @@ source_hash = "blake2b:0xabcd..."
 [package_build]
 edition = "2026"
 compatibility_profile_hash = "blake2b:0xprofile..."
-compiler_version = "0.22.0"
+compiler_version = "0.24.0"
 target_profile = "ckb"
 artifact_hash = "blake2b:0x1234..."
 metadata_hash = "blake2b:0x5678..."
@@ -840,7 +840,7 @@ for audit, offline fixtures, and direct-Git fallback:
       "version": "1.2.0",
       "tag": "v1.2.0",
       "source_hash": "blake2b:0xabcd...",
-      "cellscript_version": "0.22.0",
+      "cellscript_version": "0.24.0",
       "dependencies": {
         "token": { "namespace": "cellscript", "version": "0.3.0" }
       },

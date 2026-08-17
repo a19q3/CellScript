@@ -174,7 +174,8 @@ The canonical LS-IDL lookup returns
 `application/vnd.ckb.ls-idl+json` plus digest, coordinate, commitment, and
 verification headers. `data_hash` is required for `hash_type=type`; ambiguous
 matches return `409`. `/idl/:code_hash` is a compatibility route for existing
-clients and returns the same exact raw bytes.
+clients and returns the same exact raw bytes for immutable hash types; a
+Type-hash candidate still requires `?data_hash=0x...`.
 
 ## Publisher Authorisation
 
@@ -325,6 +326,9 @@ cellc publish --artifact-manifest Artifact.toml
 ```
 
 `CELLSCRIPT_REGISTRY_API_URL` overrides the API base URL.
+`CELLSCRIPT_REGISTRY_STATIC_ORIGIN` declares a separate trusted object origin
+for private registries; source snapshots are rejected unless their origin is
+the configured API/static origin or the production/testnet static origin.
 `CELLSCRIPT_CAPABILITY_PRIVATE_KEY_PKCS8_B64` supplies the delegated key in CI.
 `CELLSCRIPT_REGISTRY_IDEMPOTENCY_KEY` pins the exact retry key.
 

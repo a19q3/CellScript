@@ -477,8 +477,50 @@ check_wasm_release_bundle() {
     fi
 }
 
+release_ckb_repo_from_args() {
+    local ckb_repo="$ROOT_DIR/../ckb"
+    while (($# > 0)); do
+        case "$1" in
+            --ckb-repo)
+                if (($# < 2)); then
+                    printf 'missing value for --ckb-repo\n' >&2
+                    return 2
+                fi
+                ckb_repo="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+    printf '%s\n' "$ckb_repo"
+}
+
 check_ckb_tx_measure_tool() {
-    run cargo test --manifest-path tools/ckb-tx-measure/Cargo.toml --locked
+    local ckb_repo="$1"
+    local default_ckb_repo="$ROOT_DIR/../ckb"
+    if [[ ! -d "$ckb_repo" ]]; then
+        printf 'CKB checkout does not exist: %s\n' "$ckb_repo" >&2
+        return 1
+    fi
+    ckb_repo="$(cd "$ckb_repo" && pwd -P)"
+    if [[ -d "$default_ckb_repo" ]]; then
+        default_ckb_repo="$(cd "$default_ckb_repo" && pwd -P)"
+        if [[ "$ckb_repo" == "$default_ckb_repo" ]]; then
+            run cargo test --manifest-path tools/ckb-tx-measure/Cargo.toml --locked
+            return
+        fi
+    fi
+
+    local staging_dir
+    staging_dir="$(mktemp -d "$ROOT_DIR/target/cellscript-ckb-tx-measure.XXXXXX")"
+    mkdir -p "$staging_dir/cellscript/tools/ckb-tx-measure" "$staging_dir/cellscript/src/bin"
+    cp tools/ckb-tx-measure/Cargo.toml tools/ckb-tx-measure/Cargo.lock \
+        "$staging_dir/cellscript/tools/ckb-tx-measure/"
+    cp src/bin/ckb_tx_measure.rs "$staging_dir/cellscript/src/bin/"
+    ln -s "$ckb_repo" "$staging_dir/ckb"
+    run cargo test --manifest-path "$staging_dir/cellscript/tools/ckb-tx-measure/Cargo.toml" --locked
 }
 
 check_novaseal_rust_tooling() {
@@ -608,6 +650,7 @@ run_backend_gate() {
 }
 
 run_release_auxiliary_checks() {
+    local ckb_repo="$1"
     require_cmd npm
 
     run cargo run --quiet --locked -p cellscript-tools --bin cellscript-tools -- \
@@ -616,7 +659,7 @@ run_release_auxiliary_checks() {
     check_ckb_release_docs
     check_ckb_acceptance_boundaries
     check_novaseal_acceptance_boundaries
-    check_ckb_tx_measure_tool
+    check_ckb_tx_measure_tool "$ckb_repo"
     check_novaseal_rust_tooling
     check_novaseal_verifier_pinning
     check_wasm_release_bundle
@@ -628,18 +671,22 @@ run_release_auxiliary_checks() {
 }
 
 run_release_quick_gate() {
+    local ckb_repo
+    ckb_repo="$(release_ckb_repo_from_args "$@")"
     check_release_source_identity
     run_ci_gate
-    run_release_auxiliary_checks
+    run_release_auxiliary_checks "$ckb_repo"
     run ./scripts/ckb_cellscript_acceptance.sh --compile-only --production "$@"
     printf '\nCellScript backend shape report: %s\n' "$CELLSCRIPT_BACKEND_SHAPE_REPORT"
     printf 'CellScript Molecule schema manifest report: %s\n' "$CELLSCRIPT_MOLECULE_SCHEMA_MANIFEST_REPORT"
 }
 
 run_release_gate() {
+    local ckb_repo
+    ckb_repo="$(release_ckb_repo_from_args "$@")"
     check_release_source_identity
     run_ci_gate
-    run_release_auxiliary_checks
+    run_release_auxiliary_checks "$ckb_repo"
     run ./scripts/ckb_cellscript_acceptance.sh --production --stateful-scenarios "$@"
     printf '\nCellScript backend shape report: %s\n' "$CELLSCRIPT_BACKEND_SHAPE_REPORT"
     printf 'CellScript Molecule schema manifest report: %s\n' "$CELLSCRIPT_MOLECULE_SCHEMA_MANIFEST_REPORT"

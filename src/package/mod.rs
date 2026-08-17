@@ -550,6 +550,36 @@ fn sanitize_node_component(value: &str) -> String {
         .collect()
 }
 
+fn validate_git_dependency_ref(kind: &str, value: &str) -> Result<()> {
+    if kind == "rev" {
+        if value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Ok(());
+        }
+        return Err(CompileError::without_span("git dependency rev must be a full 40-hex commit identity"));
+    }
+
+    let invalid_character = value
+        .chars()
+        .any(|character| character.is_ascii_control() || character.is_ascii_whitespace() || "~^:?*[\\".contains(character));
+    let invalid_component = value.split('/').any(|component| {
+        component.is_empty() || component.starts_with('.') || component.ends_with('.') || component.ends_with(".lock")
+    });
+    if value.is_empty()
+        || value.starts_with('-')
+        || value == "@"
+        || value.contains("..")
+        || value.contains("@{")
+        || invalid_character
+        || invalid_component
+    {
+        return Err(CompileError::without_span(format!(
+            "invalid git dependency {kind} '{}'; expected a canonical Git reference name",
+            value
+        )));
+    }
+    Ok(())
+}
+
 fn package_node_id(package: &ResolvedPackage, options: &ResolutionOptions) -> String {
     let source = match &package.source {
         PackageSource::Local(path) => format!("path:{}", path.to_string_lossy().replace('\\', "/")),
@@ -793,7 +823,7 @@ dist/
         let dependencies = self.selected_dependencies(&manifest, options, true)?;
         for (alias, dep) in dependencies {
             let node_id =
-                self.resolve_dependency_from_root(&alias, &dep, &self.root.clone(), options, &mut Vec::new(), &mut Vec::new())?;
+                self.resolve_dependency_from_root(&alias, &dep, &self.root.clone(), options, true, &mut Vec::new(), &mut Vec::new())?;
             self.root_dependencies.insert(alias, node_id);
         }
 
@@ -1186,6 +1216,7 @@ dist/
         dep: &Dependency,
         base_root: &Path,
         parent_options: &ResolutionOptions,
+        resolver_owner_is_root: bool,
         stack_ids: &mut Vec<String>,
         stack_labels: &mut Vec<String>,
     ) -> Result<String> {
@@ -1196,6 +1227,12 @@ dist/
             }
             Dependency::Detailed(detailed) => {
                 if detailed.resolver.is_some() {
+                    if !resolver_owner_is_root {
+                        return Err(CompileError::without_span(format!(
+                            "transitive dependency '{}' cannot invoke an external resolver; only the root package may declare executable resolution policy",
+                            alias
+                        )));
+                    }
                     let normalized = self.resolve_external_dependency(alias, &package_name, detailed, base_root, parent_options)?;
                     let resolved = if let Some(git) = &normalized.git {
                         self.resolve_from_git_with_manifest(&package_name, git, &normalized)?
@@ -1275,8 +1312,15 @@ dist/
         let child_dependencies = self.selected_dependencies(&manifest, &child_options, false)?;
         let mut child_edges = BTreeMap::new();
         for (child_alias, child_dep) in child_dependencies {
-            let child_id =
-                self.resolve_dependency_from_root(&child_alias, &child_dep, &resolved.path, &child_options, stack_ids, stack_labels)?;
+            let child_id = self.resolve_dependency_from_root(
+                &child_alias,
+                &child_dep,
+                &resolved.path,
+                &child_options,
+                false,
+                stack_ids,
+                stack_labels,
+            )?;
             child_edges.insert(child_alias, child_id);
         }
         stack_ids.pop();
@@ -1780,7 +1824,24 @@ dist/
             CompileError::without_span(format!("failed to create git cache directory '{}': {}", cache_dir.display(), e))
         })?;
 
-        let requested_ref = detailed.rev.as_ref().or(detailed.tag.as_ref()).or(detailed.branch.as_ref());
+        let requested_ref = if let Some(revision) = detailed.rev.as_ref() {
+            validate_git_dependency_ref("rev", revision).map_err(|error| {
+                CompileError::without_span(format!("git dependency '{}' from '{}' is invalid: {}", name, url, error.message))
+            })?;
+            Some(revision)
+        } else if let Some(tag) = detailed.tag.as_ref() {
+            validate_git_dependency_ref("tag", tag).map_err(|error| {
+                CompileError::without_span(format!("git dependency '{}' from '{}' is invalid: {}", name, url, error.message))
+            })?;
+            Some(tag)
+        } else if let Some(branch) = detailed.branch.as_ref() {
+            validate_git_dependency_ref("branch", branch).map_err(|error| {
+                CompileError::without_span(format!("git dependency '{}' from '{}' is invalid: {}", name, url, error.message))
+            })?;
+            Some(branch)
+        } else {
+            None
+        };
         let cache_key = format!("{}#{}", url, requested_ref.map(String::as_str).unwrap_or("HEAD"));
         let cache_name = format!("{}-{:016x}", name, simple_hash(&cache_key));
         let clone_dir = cache_dir.join(&cache_name);
@@ -3458,6 +3519,98 @@ resolver = "local"
         let mut locked = PackageManager::new(root);
         locked.resolve_locked_dependencies(&ResolutionOptions::default()).unwrap();
         assert_eq!(locked.get_resolved()[target].version, "1.2.3");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transitive_dependency_cannot_invoke_external_resolver() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        write_path_package(root, "child", "child", "1.0.0");
+        let marker = root.join("transitive-resolver-ran");
+        let shell_digest = sha256_file(Path::new("/bin/sh")).unwrap();
+        std::fs::write(
+            root.join("child/Cell.toml"),
+            format!(
+                r#"
+[package]
+edition = "2026"
+name = "child"
+version = "1.0.0"
+
+[resolvers.untrusted]
+command = "/bin/sh"
+sha256 = "sha256:{shell_digest}"
+args = ["-c", "touch '{}'"]
+
+[dependencies.grandchild]
+version = "*"
+resolver = "untrusted"
+"#,
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Cell.toml"),
+            r#"
+[package]
+edition = "2026"
+name = "app"
+version = "0.1.0"
+
+[dependencies.child]
+path = "child"
+"#,
+        )
+        .unwrap();
+
+        let error = PackageManager::new(root).resolve_dependencies().unwrap_err();
+        assert!(error.message.contains("transitive dependency 'grandchild' cannot invoke an external resolver"));
+        assert!(!marker.exists(), "transitive resolver command must never start");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_dependency_tag_rejects_option_injection_before_git_runs() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        let dependency_repo = root.join("git-package");
+        write_path_package(root, "git-package", "git_package", "1.0.0");
+        for arguments in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "tests@cellscript.dev"],
+            vec!["config", "user.name", "CellScript Tests"],
+            vec!["add", "."],
+            vec!["commit", "-q", "-m", "initial"],
+        ] {
+            let status = std::process::Command::new("git").args(arguments).current_dir(&dependency_repo).status().unwrap();
+            assert!(status.success());
+        }
+        let marker = root.join("git-option-injection-ran");
+        std::fs::write(
+            root.join("Cell.toml"),
+            format!(
+                r#"
+[package]
+edition = "2026"
+name = "app"
+version = "0.1.0"
+
+[dependencies.remote]
+package = "git_package"
+git = "{}"
+tag = "--upload-pack=/bin/sh -c 'touch {}'"
+"#,
+                dependency_repo.display(),
+                marker.display()
+            ),
+        )
+        .unwrap();
+
+        let error = PackageManager::new(root).resolve_dependencies().unwrap_err();
+        assert!(error.message.contains("invalid git dependency tag"), "{}", error.message);
+        assert!(!marker.exists(), "invalid Git ref must be rejected before Git executes");
     }
 
     #[test]
