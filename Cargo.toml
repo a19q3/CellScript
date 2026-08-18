@@ -39,6 +39,7 @@ exclude = [
     ".idea/",
     ".playwright-mcp/",
     ".rustfmt.toml",
+    "audit_poc/",
     "rust-toolchain.toml",
     ".github/",
     "AGENTS.md",

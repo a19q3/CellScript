@@ -18,6 +18,7 @@ import {
   ckbScriptHash,
   hexToBytes,
   initialArtifactStates,
+  interfacePredecessorVersion,
   isCanonicalP256SpkiPublicKey,
   isImportableP256SpkiPublicKey,
   isPrincipalType,
@@ -3305,16 +3306,29 @@ async function handlePublishVersion(
   }
   if (payload.artifact.profile === "cellscript_source") {
     const candidateInterface = payload.registry_entry.versions[0].interface;
-    const previousVersions = await store.listPackageVersions({
-      namespace: payload.namespace,
-      name: payload.name,
-      limit: 200,
-      offset: 0,
-    });
+    const previousVersions: PackageVersionRecord[] = [];
+    for (let offset = 0; ; offset += 200) {
+      const page = await store.listPackageVersions({
+        namespace: payload.namespace,
+        name: payload.name,
+        limit: 200,
+        offset,
+      });
+      previousVersions.push(...page);
+      if (page.length < 200) break;
+    }
+    const predecessorVersion = interfacePredecessorVersion(previousVersions.map((version) => version.version), payload.version);
     const previousBound = previousVersions.find((version) => {
       const release = version.registry_entry.versions.find((entry) => entry.version === version.version);
-      return release?.interface !== undefined;
+      return version.version === predecessorVersion && release?.interface !== undefined;
     });
+    if (predecessorVersion && !previousBound) {
+      throw new ApiError(
+        409,
+        "missing_predecessor_interface",
+        `cannot admit ${payload.version}: predecessor ${predecessorVersion} has no canonical interface`,
+      );
+    }
     if (previousBound) {
       const previousRelease = previousBound.registry_entry.versions.find((entry) => entry.version === previousBound.version);
       validateInterfaceUpgrade(previousRelease?.interface, candidateInterface);

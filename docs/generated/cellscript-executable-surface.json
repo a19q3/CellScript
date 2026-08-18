@@ -161,6 +161,70 @@
       "status": "complete"
     },
     {
+      "conditions": "Concrete fixed-layout type definition.",
+      "fail_closed_features": [],
+      "id": "ir-item:type-def",
+      "layer": "ir-item",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Proof-planning invariant record.",
+      "fail_closed_features": [],
+      "id": "ir-item:invariant",
+      "layer": "ir-item",
+      "production_policy": "not materialized as a runtime value",
+      "status": "compile-time-only"
+    },
+    {
+      "conditions": "Executable transaction action entry.",
+      "fail_closed_features": [],
+      "id": "ir-item:action",
+      "layer": "ir-item",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Resolved helper callable.",
+      "fail_closed_features": [],
+      "id": "ir-item:pure-fn",
+      "layer": "ir-item",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Executable lock predicate entry.",
+      "fail_closed_features": [],
+      "id": "ir-item:lock",
+      "layer": "ir-item",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Typed return with an optional value.",
+      "fail_closed_features": [],
+      "id": "ir-terminator:return",
+      "layer": "terminator",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Validated direct CFG edge.",
+      "fail_closed_features": [],
+      "id": "ir-terminator:jump",
+      "layer": "terminator",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
+      "conditions": "Validated boolean conditional CFG edge.",
+      "fail_closed_features": [],
+      "id": "ir-terminator:branch",
+      "layer": "terminator",
+      "production_policy": "accepted",
+      "status": "complete"
+    },
+    {
       "conditions": "Materializes supported scalar and fixed-byte constants.",
       "fail_closed_features": [],
       "id": "ir:load-const",

@@ -379,10 +379,79 @@ export function validatePackageIdent(value: string, field: string): string {
 
 export function validateVersion(value: string): string {
   const trimmed = value.trim();
-  if (!/^[0-9]+[.][0-9]+[.][0-9]+(?:[-+][0-9A-Za-z.-]+)?$/.test(trimmed)) {
-    throw new ApiError(400, "invalid_version", "version must be semver-like");
-  }
+  parseSemVer(trimmed);
   return trimmed;
+}
+
+type ParsedSemVer = {
+  major: bigint;
+  minor: bigint;
+  patch: bigint;
+  prerelease: string[] | null;
+};
+
+function parseSemVer(value: string): ParsedSemVer {
+  const match = /^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:[.][0-9A-Za-z-]+)*))?(?:[+]([0-9A-Za-z-]+(?:[.][0-9A-Za-z-]+)*))?$/.exec(value);
+  if (!match) {
+    throw new ApiError(400, "invalid_version", "version must be valid SemVer");
+  }
+  const prerelease = match[4]?.split(".") ?? null;
+  if (prerelease?.some((identifier) => /^[0-9]+$/.test(identifier) && identifier.length > 1 && identifier.startsWith("0"))) {
+    throw new ApiError(400, "invalid_version", "numeric SemVer prerelease identifiers must not contain leading zeroes");
+  }
+  return {
+    major: BigInt(match[1]!),
+    minor: BigInt(match[2]!),
+    patch: BigInt(match[3]!),
+    prerelease,
+  };
+}
+
+export function compareVersions(left: string, right: string): number {
+  const a = parseSemVer(left);
+  const b = parseSemVer(right);
+  for (const key of ["major", "minor", "patch"] as const) {
+    if (a[key] < b[key]) return -1;
+    if (a[key] > b[key]) return 1;
+  }
+  if (a.prerelease === null || b.prerelease === null) {
+    return a.prerelease === b.prerelease ? 0 : a.prerelease === null ? 1 : -1;
+  }
+  const count = Math.max(a.prerelease.length, b.prerelease.length);
+  for (let index = 0; index < count; index += 1) {
+    const leftIdentifier = a.prerelease[index];
+    const rightIdentifier = b.prerelease[index];
+    if (leftIdentifier === undefined || rightIdentifier === undefined) {
+      return leftIdentifier === rightIdentifier ? 0 : leftIdentifier === undefined ? -1 : 1;
+    }
+    if (leftIdentifier === rightIdentifier) continue;
+    const leftNumeric = /^[0-9]+$/.test(leftIdentifier);
+    const rightNumeric = /^[0-9]+$/.test(rightIdentifier);
+    if (leftNumeric && rightNumeric) return BigInt(leftIdentifier) < BigInt(rightIdentifier) ? -1 : 1;
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    return leftIdentifier < rightIdentifier ? -1 : 1;
+  }
+  return 0;
+}
+
+export function versionCompatibilityLine(version: string): string {
+  const parsed = parseSemVer(version);
+  return parsed.major === 0n ? `0.${parsed.minor}` : parsed.major.toString();
+}
+
+export function interfacePredecessorVersion(existingVersions: string[], candidateVersion: string): string | null {
+  validateVersion(candidateVersion);
+  const ordered = [...existingVersions].map(validateVersion).sort((left, right) => compareVersions(right, left));
+  const highest = ordered[0];
+  if (highest && compareVersions(candidateVersion, highest) <= 0) {
+    throw new ApiError(
+      409,
+      "non_monotonic_release_version",
+      `release ${candidateVersion} must be greater than the highest admitted version ${highest}`,
+    );
+  }
+  const compatibilityLine = versionCompatibilityLine(candidateVersion);
+  return ordered.find((version) => versionCompatibilityLine(version) === compatibilityLine) ?? null;
 }
 
 export function validateDeploymentPayload(
@@ -860,8 +929,8 @@ function validateRegistryEntry(
       const interfaceHash = requireString(published, "interface_hash");
       validateHash(interfaceHash, "interface_hash", "invalid_interface_hash");
       const publicInterface = assertPlainObject(published["interface"], "invalid_public_interface");
-      if (publicInterface["schema"] !== "cellscript-package-interface-v1" || publicInterface["version"] !== 1) {
-        throw new ApiError(400, "unsupported_public_interface", "public interface must use cellscript-package-interface-v1");
+      if (publicInterface["schema"] !== "cellscript-package-interface-v2" || publicInterface["version"] !== 2) {
+        throw new ApiError(400, "unsupported_public_interface", "public interface must use cellscript-package-interface-v2");
       }
       const computedInterfaceHash = ckbBlake2bHex(canonicalJson(publicInterface));
       if (computedInterfaceHash.replace(/^0x/, "") !== interfaceHash.replace(/^0x/, "")) {

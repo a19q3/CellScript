@@ -18,11 +18,21 @@
   reborrowing while preserving non-escape and lifecycle-crossing rejection.
   Add explicit public/package/private visibility, canonical package interfaces,
   six-dimensional interface compatibility with stable E2501 rejection,
-  Registry interface/hash admission, metadata schema 60 typed-semantics records,
-  lowering-record v2 and independent V2419/V2420 typed-to-machine checks. Add
+  Registry interface/hash admission, metadata schema 61 typed-semantics-v2 records,
+  lowering-record v3 and independent V2419/V2420 typed-to-machine checks. Generic
+  templates now specialize across package boundaries in their owning module;
+  implementation monomorphizations no longer pollute package interfaces. Add
   labeled break/continue CFG lowering and CKB-VM evidence. Upgrade the VS Code
   grammar and Playground highlighting, and show interface and typed-semantics
-  identities in the Playground Inspector.
+  identities in the Playground Inspector. Route all wide u128 binary operands
+  through shared stack-spilled loading so dynamic Molecule-table field
+  validation can no longer clobber live limbs, keep constant folding from
+  wrapping arithmetic the runtime would trap on, decide match exhaustiveness
+  with a bounded constructor-matrix computation that merges nested and
+  or-pattern payload coverage, derive Cell-backed value abilities structurally
+  through struct and enum fields, and register E2501 with the shared error
+  registry. Dynamic-schema u128 bitwise, addition, and shift paths now carry
+  exact CKB-VM execution vectors.
 
 - Ship the 0.24 package and Registry trust closure, informed by Sui Move's
   package-alt separation of resolution from compilation. Replace permissive

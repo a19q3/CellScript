@@ -45,7 +45,7 @@ const FULL_METADATA_SIZE_BUDGETS: [(&str, FullMetadataSizeBudget); 4] = [
     (
         "amm_pool.cell",
         FullMetadataSizeBudget {
-            max_compact_metadata_bytes: 240 * 1024,
+            max_compact_metadata_bytes: 288 * 1024,
             max_proof_plan_records: 42,
             max_compact_proof_plan_bytes: 36 * 1024,
             max_source_units: 2,
@@ -55,7 +55,7 @@ const FULL_METADATA_SIZE_BUDGETS: [(&str, FullMetadataSizeBudget); 4] = [
     (
         "nft.cell",
         FullMetadataSizeBudget {
-            max_compact_metadata_bytes: 420 * 1024,
+            max_compact_metadata_bytes: 464 * 1024,
             max_proof_plan_records: 90,
             max_compact_proof_plan_bytes: 80 * 1024,
             max_source_units: 2,
@@ -75,7 +75,7 @@ const FULL_METADATA_SIZE_BUDGETS: [(&str, FullMetadataSizeBudget); 4] = [
     (
         "vesting.cell",
         FullMetadataSizeBudget {
-            max_compact_metadata_bytes: 236 * 1024,
+            max_compact_metadata_bytes: 260 * 1024,
             max_proof_plan_records: 50,
             max_compact_proof_plan_bytes: 48 * 1024,
             max_source_units: 2,
@@ -96,7 +96,7 @@ const ENTRY_ARTIFACT_SIZE_BUDGETS: [(&str, EntryArtifactSizeBudget); 4] = [
         "amm_pool.cell",
         EntryArtifactSizeBudget {
             max_elf_bytes: 40 * 1024,
-            max_compact_metadata_bytes: 96 * 1024,
+            max_compact_metadata_bytes: 112 * 1024,
             max_proof_plan_records: 11,
             max_compact_proof_plan_bytes: 10 * 1024,
             max_actions: 2,
@@ -107,7 +107,7 @@ const ENTRY_ARTIFACT_SIZE_BUDGETS: [(&str, EntryArtifactSizeBudget); 4] = [
         "nft.cell",
         EntryArtifactSizeBudget {
             max_elf_bytes: 48 * 1024,
-            max_compact_metadata_bytes: 128 * 1024,
+            max_compact_metadata_bytes: 136 * 1024,
             max_proof_plan_records: 30,
             max_compact_proof_plan_bytes: 32 * 1024,
             max_actions: 1,

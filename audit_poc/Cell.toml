@@ -1,0 +1,4 @@
+[package]
+edition = "2026"
+name = "auditpoc"
+version = "0.1.0"

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 #[derive(Debug)]
 pub struct ModuleResolver {
     modules: HashMap<String, Module>,
+    module_packages: HashMap<String, String>,
     symbol_tables: HashMap<String, SymbolTable>,
     imports: HashMap<String, Vec<ImportItem>>,
 }
@@ -56,10 +57,14 @@ impl Default for ModuleResolver {
 
 impl ModuleResolver {
     pub fn new() -> Self {
-        Self { modules: HashMap::new(), symbol_tables: HashMap::new(), imports: HashMap::new() }
+        Self { modules: HashMap::new(), module_packages: HashMap::new(), symbol_tables: HashMap::new(), imports: HashMap::new() }
     }
 
     pub fn register_module(&mut self, module: Module) -> Result<()> {
+        self.register_module_in_package(module, "__cellscript_single_package__")
+    }
+
+    pub fn register_module_in_package(&mut self, module: Module, package_id: impl Into<String>) -> Result<()> {
         let name = module.name.clone();
         if self.modules.contains_key(&name) {
             return Err(CompileError::new(format!("duplicate module '{}'", name), module.span));
@@ -67,7 +72,7 @@ impl ModuleResolver {
 
         let mut symbol_table = SymbolTable::default();
 
-        for item in &module.items {
+        for item in module.items.iter().chain(module.interface_templates.iter()) {
             match item {
                 Item::Resource(r) => {
                     Self::insert_type_symbol(&mut symbol_table, &r.name, TypeDef::Resource(r.clone()), r.span)?;
@@ -120,6 +125,7 @@ impl ModuleResolver {
         }
 
         self.symbol_tables.insert(name.clone(), symbol_table);
+        self.module_packages.insert(name.clone(), package_id.into());
         self.modules.insert(name, module);
 
         Ok(())
@@ -169,12 +175,84 @@ impl ModuleResolver {
         Ok(())
     }
 
+    fn localize_type(&self, requester: &str, owner: &str, ty: &Type) -> Type {
+        match ty {
+            Type::Array(inner, len) => Type::Array(Box::new(self.localize_type(requester, owner, inner)), *len),
+            Type::Tuple(items) => Type::Tuple(items.iter().map(|item| self.localize_type(requester, owner, item)).collect()),
+            Type::Ref(inner) => Type::Ref(Box::new(self.localize_type(requester, owner, inner))),
+            Type::MutRef(inner) => Type::MutRef(Box::new(self.localize_type(requester, owner, inner))),
+            Type::Named(name) => {
+                let expected = format!("{owner}::{name}");
+                let local = self.symbol_tables.get(requester).and_then(|table| {
+                    table.imported.iter().find_map(|(local, imported)| (imported == &expected).then(|| local.clone()))
+                });
+                Type::Named(local.unwrap_or_else(|| name.clone()))
+            }
+            primitive => primitive.clone(),
+        }
+    }
+
+    fn localize_type_def(&self, requester: &str, owner: &str, mut ty: TypeDef) -> TypeDef {
+        let localize_fields = |fields: &mut [Field]| {
+            for field in fields {
+                field.ty = self.localize_type(requester, owner, &field.ty);
+            }
+        };
+        match &mut ty {
+            TypeDef::Resource(def) => localize_fields(&mut def.fields),
+            TypeDef::Shared(def) => localize_fields(&mut def.fields),
+            TypeDef::Receipt(def) => {
+                localize_fields(&mut def.fields);
+                def.claim_output = def.claim_output.as_ref().map(|ty| self.localize_type(requester, owner, ty));
+            }
+            TypeDef::Struct(def) => localize_fields(&mut def.fields),
+            TypeDef::Enum(def) => {
+                for variant in &mut def.variants {
+                    for field in &mut variant.fields {
+                        *field = self.localize_type(requester, owner, field);
+                    }
+                }
+            }
+        }
+        ty
+    }
+
+    fn localize_function_def(&self, requester: &str, owner: &str, mut function: FunctionDef) -> FunctionDef {
+        let localize_params = |params: &mut [Param]| {
+            for param in params {
+                param.ty = self.localize_type(requester, owner, &param.ty);
+            }
+        };
+        match &mut function {
+            FunctionDef::Action(def) => {
+                localize_params(&mut def.params);
+                def.return_type = def.return_type.as_ref().map(|ty| self.localize_type(requester, owner, ty));
+                for output in &mut def.outputs {
+                    output.ty = self.localize_type(requester, owner, &output.ty);
+                }
+            }
+            FunctionDef::Function(def) => {
+                localize_params(&mut def.params);
+                def.return_type = def.return_type.as_ref().map(|ty| self.localize_type(requester, owner, ty));
+            }
+            FunctionDef::Lock(def) => {
+                localize_params(&mut def.params);
+                def.return_type = self.localize_type(requester, owner, &def.return_type);
+            }
+        }
+        function
+    }
+
     pub fn resolve_type(&self, module: &str, name: &str) -> Option<TypeDef> {
         if let Some((target_module, symbol)) = name.rsplit_once("::") {
             if !self.symbol_accessible(module, target_module, symbol) {
                 return None;
             }
-            return self.symbol_tables.get(target_module).and_then(|table| table.types.get(symbol).cloned());
+            return self
+                .symbol_tables
+                .get(target_module)
+                .and_then(|table| table.types.get(symbol).cloned())
+                .map(|ty| self.localize_type_def(module, target_module, ty));
         }
 
         if let Some(table) = self.symbol_tables.get(module) {
@@ -187,7 +265,11 @@ impl ModuleResolver {
                     if !self.symbol_accessible(module, target_module, symbol) {
                         return None;
                     }
-                    return self.symbol_tables.get(target_module).and_then(|target_table| target_table.types.get(symbol).cloned());
+                    return self
+                        .symbol_tables
+                        .get(target_module)
+                        .and_then(|target_table| target_table.types.get(symbol).cloned())
+                        .map(|ty| self.localize_type_def(module, target_module, ty));
                 }
             }
         }
@@ -207,7 +289,8 @@ impl ModuleResolver {
             return self
                 .symbol_tables
                 .get(target_module)
-                .and_then(|table| table.functions.get(symbol).cloned().map(|function| (target_module.to_string(), function)));
+                .and_then(|table| table.functions.get(symbol).cloned())
+                .map(|function| (target_module.to_string(), self.localize_function_def(module, target_module, function)));
         }
 
         if let Some(table) = self.symbol_tables.get(module) {
@@ -221,7 +304,11 @@ impl ModuleResolver {
                         return None;
                     }
                     if let Some(target_table) = self.symbol_tables.get(target_module) {
-                        return target_table.functions.get(symbol).cloned().map(|function| (target_module.to_string(), function));
+                        return target_table
+                            .functions
+                            .get(symbol)
+                            .cloned()
+                            .map(|function| (target_module.to_string(), self.localize_function_def(module, target_module, function)));
                     }
                 }
             }
@@ -329,8 +416,15 @@ impl ModuleResolver {
                     ));
                 }
                 if !self.symbol_accessible(module, &target_module, &import.name) {
+                    let visibility = self.modules[&target_module].visibility_of(&import.name);
                     return Err(CompileError::new(
-                        format!("symbol '{}' imported by '{}' is private in module '{}'", import.name, module, target_module),
+                        format!(
+                            "symbol '{}' imported by '{}' is {} in module '{}'",
+                            import.name,
+                            module,
+                            visibility.as_str(),
+                            target_module
+                        ),
                         import.span,
                     ));
                 }
@@ -340,9 +434,26 @@ impl ModuleResolver {
         Ok(())
     }
 
-    fn symbol_accessible(&self, requester: &str, owner: &str, symbol: &str) -> bool {
-        requester == owner
-            || self.modules.get(owner).is_some_and(|module| !matches!(module.visibility_of(symbol), Visibility::Private))
+    pub(crate) fn symbol_accessible(&self, requester: &str, owner: &str, symbol: &str) -> bool {
+        if requester == owner {
+            return true;
+        }
+        if crate::generics::decode_monomorph_name(symbol).is_some() {
+            let expected = format!("{owner}::{symbol}");
+            if !self.symbol_tables.get(requester).is_some_and(|table| table.imported.values().any(|imported| imported == &expected)) {
+                return false;
+            }
+        }
+        let Some(owner_module) = self.modules.get(owner) else {
+            return false;
+        };
+        match owner_module.visibility_of(symbol) {
+            Visibility::Private => false,
+            Visibility::Package => {
+                self.module_packages.contains_key(requester) && self.module_packages.get(requester) == self.module_packages.get(owner)
+            }
+            Visibility::LegacyPublic | Visibility::Public => true,
+        }
     }
 
     fn symbol_is_exported(&self, owner: &str, symbol: &str) -> bool {
@@ -423,6 +534,41 @@ mod tests {
         resolver.register_module(source_module("module consumer\nuse library::Secret\nuse library::Shared\n")).unwrap();
         let error = resolver.validate_imports().unwrap_err();
         assert!(error.message.contains("Secret") && error.message.contains("private"));
+    }
+
+    #[test]
+    fn package_symbols_are_restricted_to_the_owning_package() {
+        let mut resolver = ModuleResolver::new();
+        resolver
+            .register_module_in_package(
+                source_module(
+                    "module library\npublic(package) struct Shared { value: u64, }\npublic struct Exported { value: u64, }\n",
+                ),
+                "dependency",
+            )
+            .unwrap();
+        resolver.register_module_in_package(source_module("module consumer\nuse library::Shared\n"), "application").unwrap();
+
+        let error = resolver.validate_imports().unwrap_err();
+        assert!(error.message.contains("Shared") && error.message.contains("public(package)"));
+        assert!(resolver.resolve_type("consumer", "Shared").is_none());
+        assert!(resolver.resolve_type("consumer", "library::Shared").is_none());
+        assert!(resolver.resolve_type("consumer", "library::Exported").is_some());
+    }
+
+    #[test]
+    fn package_symbols_remain_visible_across_modules_in_one_package() {
+        let mut resolver = ModuleResolver::new();
+        resolver
+            .register_module_in_package(
+                source_module("module library\npublic(package) struct Shared { value: u64, }\n"),
+                "application",
+            )
+            .unwrap();
+        resolver.register_module_in_package(source_module("module consumer\nuse library::Shared\n"), "application").unwrap();
+
+        resolver.validate_imports().unwrap();
+        assert!(resolver.resolve_type("consumer", "Shared").is_some());
     }
 
     #[test]

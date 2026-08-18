@@ -1,0 +1,15 @@
+// audit: exhaustive nested-variant match should be accepted
+module audit::nested_patterns
+
+enum Inner { None, Some((u64, u64)) }
+enum Outer { Empty, Wrapped(Inner) }
+
+action verify() -> u64 {
+    verification
+        let outer: Outer = Outer::Wrapped(Inner::Some((20, 22)))
+        match outer {
+            Outer::Empty => { 0 }
+            Outer::Wrapped(Inner::None) => { 1 }
+            Outer::Wrapped(Inner::Some((left, right))) => { left + right }
+        }
+}

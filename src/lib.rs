@@ -219,8 +219,8 @@ fn strict_capability_name(capability: ast::Capability) -> &'static str {
 
 const DEFAULT_TARGET: &str = "riscv64-asm";
 const DEFAULT_TARGET_PROFILE: &str = "ckb";
-const ARTIFACT_CACHE_VERSION: &str = "project-source-set-v10-verified-artifact";
-pub const METADATA_SCHEMA_VERSION: u32 = 60;
+const ARTIFACT_CACHE_VERSION: &str = "project-source-set-v14-typed-semantics-v2";
+pub const METADATA_SCHEMA_VERSION: u32 = 61;
 pub const SOURCE_METADATA_SCHEMA_VERSION: u32 = 2;
 pub const ARTIFACT_METADATA_SCHEMA_VERSION: u32 = 1;
 pub const CONSTRAINTS_METADATA_SCHEMA_VERSION: u32 = 2;
@@ -466,6 +466,7 @@ pub struct GenericInstantiationMetadata {
     pub schema: String,
     pub version: u32,
     pub kind: String,
+    pub module: String,
     pub template: String,
     pub concrete_name: String,
     pub identity: String,
@@ -1178,7 +1179,7 @@ pub fn validate_compile_metadata(metadata: &CompileMetadata, artifact_format: Ar
         )));
     }
     if metadata.typed_semantics.schema != cellscript_artifact_checker::TYPED_SEMANTICS_SCHEMA
-        || metadata.typed_semantics.version != 1
+        || metadata.typed_semantics.version != cellscript_artifact_checker::TYPED_SEMANTICS_VERSION
         || metadata.typed_semantics.module != metadata.module
         || metadata.typed_semantics.interface_hash != metadata.interface_hash
     {
@@ -1201,6 +1202,7 @@ pub fn validate_compile_metadata(metadata: &CompileMetadata, artifact_format: Ar
             || instantiation.version != 1
             || instantiation.value_ability_registry_version != ast::ValueAbility::REGISTRY_VERSION
             || !instantiation.constraints_verified
+            || instantiation.module.is_empty()
             || instantiation.type_arguments.is_empty()
             || !matches!(instantiation.kind.as_str(), "struct" | "enum" | "function")
         {
@@ -1215,7 +1217,7 @@ pub fn validate_compile_metadata(metadata: &CompileMetadata, artifact_format: Ar
                 instantiation.identity
             )));
         };
-        let expected_identity = format!("{}::{}<{}>", metadata.module, template, args.join(","));
+        let expected_identity = format!("{}::{}<{}>", instantiation.module, template, args.join(","));
         if template != instantiation.template
             || args != instantiation.type_arguments
             || instantiation.identity != expected_identity
@@ -5439,7 +5441,8 @@ fn load_project_for_entry(entry_path: &Utf8Path, entry_source_override: Option<&
             error::Span::default(),
         ));
     };
-    monomorphize_loaded_entry(&mut modules, entry_index)?;
+    let source_resolver = build_module_resolver_from_loaded_modules(&modules)?;
+    monomorphize_loaded_project(&mut modules, entry_index, &source_resolver)?;
     let resolver = build_module_resolver_from_loaded_modules(&modules)?;
     Ok(LoadedProject { entry_index, modules, resolver })
 }
@@ -5456,7 +5459,8 @@ fn load_project_for_entry_diagnostics(
             error::Span::default(),
         )]);
     };
-    monomorphize_loaded_entry_diagnostics(&mut modules, entry_index)?;
+    let source_resolver = build_module_resolver_from_loaded_modules(&modules).map_err(|error| vec![error])?;
+    monomorphize_loaded_project_diagnostics(&mut modules, entry_index, &source_resolver)?;
     let resolver = build_module_resolver_from_loaded_modules(&modules).map_err(|error| vec![error])?;
     Ok(LoadedProject { entry_index, modules, resolver })
 }
@@ -5500,8 +5504,9 @@ fn load_virtual_project_for_entry_diagnostics(
     let Some(entry_index) = modules.iter().position(|module| module.path == entry_path_buf) else {
         return Err(vec![CompileError::without_span(format!("entry source '{}' was not provided", entry_path))]);
     };
-    monomorphize_loaded_entry_diagnostics(&mut modules, entry_index)?;
-    let resolver = build_module_resolver_from_loaded_modules(&modules).map_err(|error| vec![error])?;
+    let source_resolver = build_module_resolver_from_loaded_modules_in_single_package(&modules).map_err(|error| vec![error])?;
+    monomorphize_loaded_project_diagnostics(&mut modules, entry_index, &source_resolver)?;
+    let resolver = build_module_resolver_from_loaded_modules_in_single_package(&modules).map_err(|error| vec![error])?;
     Ok(LoadedProject { entry_index, modules, resolver })
 }
 
@@ -5597,27 +5602,149 @@ fn parse_loaded_module_diagnostics(
     Ok(LoadedModule { path, source, ast, edition })
 }
 
-fn monomorphize_loaded_entry(modules: &mut [LoadedModule], entry_index: usize) -> Result<()> {
-    let module =
-        modules.get_mut(entry_index).ok_or_else(|| CompileError::without_span("entry module index is outside the loaded project"))?;
-    module.ast = generics::monomorphize(&module.ast).map_err(|error| attach_file_if_missing(error, &module.path))?;
-    Ok(())
+fn monomorphize_loaded_project(modules: &mut [LoadedModule], entry_index: usize, source_resolver: &ModuleResolver) -> Result<()> {
+    monomorphize_loaded_project_diagnostics(modules, entry_index, source_resolver).map_err(diagnostics_to_compile_error)
 }
 
-fn monomorphize_loaded_entry_diagnostics(
+fn monomorphize_loaded_project_diagnostics(
     modules: &mut [LoadedModule],
     entry_index: usize,
+    source_resolver: &ModuleResolver,
 ) -> std::result::Result<(), Vec<CompileError>> {
-    let module = modules
-        .get_mut(entry_index)
-        .ok_or_else(|| vec![CompileError::without_span("entry module index is outside the loaded project")])?;
-    match generics::monomorphize(&module.ast) {
-        Ok(ast) => {
-            module.ast = ast;
-            Ok(())
+    let module_indices =
+        modules.iter().enumerate().map(|(index, module)| (module.ast.name.clone(), index)).collect::<BTreeMap<_, _>>();
+    let Some(entry_module) = modules.get(entry_index) else {
+        return Err(vec![CompileError::without_span("entry module index is outside the loaded project")]);
+    };
+    let mut reachable = BTreeSet::from([entry_index]);
+    let mut pending = vec![entry_module.ast.name.clone()];
+    while let Some(module_name) = pending.pop() {
+        for import in source_resolver.imports_for_module(&module_name) {
+            let owner_module = import.module_path.join("::");
+            let Some(&owner_index) = module_indices.get(&owner_module) else {
+                continue;
+            };
+            if reachable.insert(owner_index) {
+                pending.push(owner_module);
+            }
         }
-        Err(error) => Err(vec![attach_file_if_missing(error, &module.path)]),
     }
+    let source_modules = modules.iter().map(|module| module.ast.clone()).collect::<Vec<_>>();
+    let external_items = source_modules
+        .iter()
+        .map(|module| {
+            source_resolver
+                .imports_for_module(&module.name)
+                .into_iter()
+                .filter_map(|import| {
+                    let owner_module = import.module_path.join("::");
+                    let owner = source_resolver.module(&owner_module)?;
+                    let item = owner
+                        .items
+                        .iter()
+                        .chain(owner.interface_templates.iter())
+                        .find(|item| item.name() == Some(import.name.as_str()))?
+                        .clone();
+                    Some(generics::ExternalGenericItem {
+                        local_name: import.alias.unwrap_or_else(|| import.name.clone()),
+                        owner_module,
+                        source_name: import.name,
+                        item,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mut seeds = vec![BTreeMap::<String, generics::SeedInstantiation>::new(); modules.len()];
+    let mut final_outputs = loop {
+        let mut outputs = BTreeMap::new();
+        let mut discovered = Vec::new();
+        let mut diagnostics = Vec::new();
+        for &index in &reachable {
+            let source_module = &source_modules[index];
+            let module_seeds = seeds[index].values().cloned().collect::<Vec<_>>();
+            match generics::monomorphize_with_project_context(source_module, &external_items[index], &module_seeds) {
+                Ok(output) => {
+                    discovered.extend(output.external_requests.iter().cloned());
+                    outputs.insert(index, output);
+                }
+                Err(error) => diagnostics.push(attach_file_if_missing(error, &modules[index].path)),
+            }
+        }
+        if !diagnostics.is_empty() {
+            return Err(diagnostics);
+        }
+
+        let mut changed = false;
+        for request in discovered {
+            let Some(&owner_index) = module_indices.get(&request.owner_module) else {
+                return Err(vec![CompileError::without_span(format!(
+                    "generic template owner module '{}' was not loaded",
+                    request.owner_module
+                ))]);
+            };
+            let key = format!(
+                "{}<{}>",
+                request.source_name,
+                request.seed.args.iter().map(generics::render_type).collect::<Vec<_>>().join(",")
+            );
+            if let std::collections::btree_map::Entry::Vacant(entry) = seeds[owner_index].entry(key) {
+                entry.insert(request.seed);
+                changed = true;
+            }
+        }
+        let total_seeds = seeds.iter().map(BTreeMap::len).sum::<usize>();
+        if total_seeds > generics::MAX_GENERIC_INSTANTIATIONS {
+            return Err(vec![CompileError::without_span(format!(
+                "cross-module generic instantiation count exceeds the limit of {}",
+                generics::MAX_GENERIC_INSTANTIATIONS
+            ))
+            .with_code("E2112")]);
+        }
+        if !changed {
+            break outputs;
+        }
+    };
+
+    let mut linked_exports = vec![BTreeSet::<String>::new(); modules.len()];
+    for (&requester_index, output) in &mut final_outputs {
+        let generic_source_imports = external_items[requester_index]
+            .iter()
+            .filter(|external| {
+                matches!(&external.item, ast::Item::Struct(def) if !def.type_params.is_empty())
+                    || matches!(&external.item, ast::Item::Enum(def) if !def.type_params.is_empty())
+                    || matches!(&external.item, ast::Item::Function(def) if !def.type_params.is_empty())
+            })
+            .map(|external| (external.owner_module.clone(), external.source_name.clone()))
+            .collect::<BTreeSet<_>>();
+        for item in &mut output.module.items {
+            if let ast::Item::Use(imports) = item {
+                let owner = imports.module_path.join("::");
+                imports.imports.retain(|import| !generic_source_imports.contains(&(owner.clone(), import.name.clone())));
+            }
+        }
+        output.module.items.retain(|item| !matches!(item, ast::Item::Use(imports) if imports.imports.is_empty()));
+        for request in &output.external_requests {
+            let owner_index = module_indices[&request.owner_module];
+            linked_exports[owner_index].insert(request.owner_concrete_name.clone());
+            output.module.items.push(ast::Item::Use(ast::UseStmt {
+                module_path: request.owner_module.split("::").map(str::to_string).collect(),
+                imports: vec![ast::UseImport {
+                    name: request.owner_concrete_name.clone(),
+                    alias: (request.local_concrete_name != request.owner_concrete_name).then(|| request.local_concrete_name.clone()),
+                }],
+                span: error::Span::default(),
+            }));
+        }
+    }
+    for (index, output) in final_outputs {
+        let mut module = output.module;
+        for name in &linked_exports[index] {
+            module.visibilities.insert(name.clone(), ast::Visibility::Public);
+        }
+        modules[index].ast = module;
+    }
+    Ok(())
 }
 
 fn source_edition(path: &Utf8Path) -> Result<CellScriptEdition> {
@@ -5630,10 +5757,31 @@ fn source_edition(path: &Utf8Path) -> Result<CellScriptEdition> {
 fn build_module_resolver_from_loaded_modules(modules: &[LoadedModule]) -> Result<ModuleResolver> {
     let mut resolver = ModuleResolver::new();
     for module in modules {
+        let package_id = loaded_module_package_id(&module.path)?;
+        resolver
+            .register_module_in_package(module.ast.clone(), package_id)
+            .map_err(|error| attach_file_if_missing(error, &module.path))?;
+    }
+    validate_loaded_project_imports(&resolver, modules)?;
+    Ok(resolver)
+}
+
+fn build_module_resolver_from_loaded_modules_in_single_package(modules: &[LoadedModule]) -> Result<ModuleResolver> {
+    let mut resolver = ModuleResolver::new();
+    for module in modules {
         resolver.register_module(module.ast.clone()).map_err(|error| attach_file_if_missing(error, &module.path))?;
     }
     validate_loaded_project_imports(&resolver, modules)?;
     Ok(resolver)
+}
+
+fn loaded_module_package_id(path: &Utf8Path) -> Result<String> {
+    if let Some(root) = find_package_root(path)? {
+        return Ok(format!("package:{}", canonical_utf8_path(&root)?));
+    }
+    let parent = path.parent().unwrap_or_else(|| Utf8Path::new("."));
+    let parent = if parent.exists() { canonical_utf8_path(parent)? } else { parent.to_path_buf() };
+    Ok(format!("unpackaged:{}", parent))
 }
 
 fn validate_loaded_project_imports(resolver: &ModuleResolver, modules: &[LoadedModule]) -> Result<()> {
@@ -5650,6 +5798,20 @@ fn validate_loaded_project_imports(resolver: &ModuleResolver, modules: &[LoadedM
             if !resolver.module_has_symbol(&target_module, &import.name) {
                 return Err(CompileError::new(
                     format!("symbol '{}' imported by '{}' not found in module '{}'", import.name, module.ast.name, target_module),
+                    import.span,
+                )
+                .with_file(module.path.clone()));
+            }
+            if !resolver.symbol_accessible(&module.ast.name, &target_module, &import.name) {
+                let visibility = resolver.module(&target_module).expect("target module checked above").visibility_of(&import.name);
+                return Err(CompileError::new(
+                    format!(
+                        "symbol '{}' imported by '{}' is {} in module '{}'",
+                        import.name,
+                        module.ast.name,
+                        visibility.as_str(),
+                        target_module
+                    ),
                     import.span,
                 )
                 .with_file(module.path.clone()));
@@ -5725,6 +5887,7 @@ pub fn compile_metadata(source: &str, edition: CellScriptEdition, target: Option
     types::check(&ast)?;
     flow::check(&ast)?;
     let ir = ir::generate(&ast)?;
+    executable_surface::validate_ir_module(&ir)?;
     let mut metadata = compile_metadata_from_ir(&ir, artifact_format, target_profile, edition, None);
     bind_public_interface(&mut metadata, &ast);
     bind_typed_semantics(&mut metadata, &ir);
@@ -5780,7 +5943,8 @@ pub fn compile_metadata_with_diagnostics(
     };
     let target_profile = TargetProfile::Ckb;
 
-    let mut diagnostics = types::diagnostics(&ast);
+    let mut diagnostics = visibility_migration_diagnostics(&ast);
+    diagnostics.extend(types::diagnostics(&ast));
     if diagnostics.iter().any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error) {
         return CompileMetadataDiagnosticReport { metadata: None, diagnostics };
     }
@@ -5797,6 +5961,10 @@ pub fn compile_metadata_with_diagnostics(
             return CompileMetadataDiagnosticReport { metadata: None, diagnostics };
         }
     };
+    if let Err(error) = executable_surface::validate_ir_module(&ir) {
+        diagnostics.push(error);
+        return CompileMetadataDiagnosticReport { metadata: None, diagnostics };
+    }
     let mut metadata = compile_metadata_from_ir(&ir, artifact_format, target_profile, edition, None);
     bind_public_interface(&mut metadata, &ast);
     bind_typed_semantics(&mut metadata, &ir);
@@ -5839,6 +6007,10 @@ pub fn compile_sources_metadata_with_diagnostics(
             return CompileMetadataDiagnosticReport { metadata: None, diagnostics };
         }
     };
+    if let Err(error) = executable_surface::validate_ir_module(&ir) {
+        diagnostics.push(attach_file_if_missing(error, &entry.path));
+        return CompileMetadataDiagnosticReport { metadata: None, diagnostics };
+    }
     let mut metadata = compile_metadata_from_ir(&ir, artifact_format, target_profile, edition, None);
     bind_public_interface(&mut metadata, &entry.ast);
     bind_typed_semantics(&mut metadata, &ir);
@@ -5939,6 +6111,10 @@ fn compile_file_metadata_with_diagnostics(
             return CompileMetadataDiagnosticReport { metadata: None, diagnostics };
         }
     };
+    if let Err(error) = executable_surface::validate_ir_module(&ir) {
+        diagnostics.push(attach_file_if_missing(error, &entry.path));
+        return CompileMetadataDiagnosticReport { metadata: None, diagnostics };
+    }
     let mut metadata =
         compile_metadata_from_ir(&ir, artifact_format, target_profile, options.edition, options.primitive_compat.as_deref());
     bind_public_interface(&mut metadata, &entry.ast);
@@ -5984,6 +6160,10 @@ fn project_frontend_diagnostics(project: &LoadedProject, options: &CompileOption
             }
         }
 
+        diagnostics.extend(
+            visibility_migration_diagnostics(&module.ast).into_iter().map(|warning| attach_file_if_missing(warning, &module.path)),
+        );
+
         diagnostics.extend(attach_default_file(
             types::diagnostics_with_resolver(&module.ast, &project.resolver, &module.ast.name),
             &module.path,
@@ -6012,6 +6192,21 @@ fn diagnostics_to_compile_error(mut diagnostics: Vec<CompileError>) -> CompileEr
 #[cfg(test)]
 mod compile_diagnostic_tests {
     use super::*;
+
+    #[test]
+    fn mixed_explicit_and_legacy_visibility_emits_one_migration_warning() {
+        let report = compile_metadata_with_diagnostics(
+            "module visibility\npublic fn explicit() -> u64 { return 1 }\nfn implicit() -> u64 { return 2 }\n",
+            CURRENT_EDITION,
+            None,
+        );
+        assert!(report.metadata.is_some());
+        let warnings = report.diagnostics.iter().filter(|diagnostic| diagnostic.code.as_deref() == Some("W2500")).collect::<Vec<_>>();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].severity, DiagnosticSeverity::Warning);
+        assert!(warnings[0].message.contains("implicit"));
+        assert!(report.metadata.unwrap().constraints.warnings.iter().any(|warning| warning.contains("legacy-public")));
+    }
 
     #[test]
     fn compile_metadata_diagnostics_collects_multiple_type_errors() {
@@ -6195,6 +6390,16 @@ pub enum ExecutableSurfacePolicy {
 /// This function is public for tooling that consumes metadata directly. The
 /// production compile path also invokes the same validation before codegen.
 pub fn validate_executable_surface(metadata: &CompileMetadata, policy: ExecutableSurfacePolicy) -> Result<()> {
+    executable_surface::validate_fail_closed_features(
+        metadata
+            .runtime
+            .fail_closed_runtime_features
+            .iter()
+            .map(String::as_str)
+            .chain(metadata.actions.iter().flat_map(|item| item.fail_closed_runtime_features.iter().map(String::as_str)))
+            .chain(metadata.functions.iter().flat_map(|item| item.fail_closed_runtime_features.iter().map(String::as_str)))
+            .chain(metadata.locks.iter().flat_map(|item| item.fail_closed_runtime_features.iter().map(String::as_str))),
+    )?;
     if policy == ExecutableSurfacePolicy::AllowFailClosed || metadata.runtime.fail_closed_runtime_features.is_empty() {
         return Ok(());
     }
@@ -6286,6 +6491,7 @@ fn compile_ast_with_build(
         None => None,
     };
     let ir = scoped_ir.as_ref().unwrap_or(&ir);
+    executable_surface::validate_ir_module(ir)?;
 
     let mut metadata =
         compile_metadata_from_ir(ir, artifact_format, target_profile, options.edition, options.primitive_compat.as_deref());
@@ -7009,6 +7215,7 @@ fn generic_instantiation_metadata(ir: &ir::IrModule) -> Vec<GenericInstantiation
             schema: "cellscript-generic-instantiation-v1".to_string(),
             version: 1,
             kind: kind.to_string(),
+            module: ir.name.clone(),
             template,
             concrete_name: concrete_name.to_string(),
             identity,
@@ -7034,8 +7241,93 @@ fn generic_instantiation_metadata(ir: &ir::IrModule) -> Vec<GenericInstantiation
 }
 
 fn bind_public_interface(metadata: &mut CompileMetadata, ast: &ast::Module) {
+    let mut linked_instantiations = HashMap::new();
+    for item in &ast.items {
+        let ast::Item::Use(imports) = item else { continue };
+        if imports.span != error::Span::default() {
+            continue;
+        }
+        let owner_module = imports.module_path.join("::");
+        for import in &imports.imports {
+            let Some((source_template, _)) = generics::decode_monomorph_name(&import.name) else {
+                continue;
+            };
+            linked_instantiations.insert(
+                import.alias.clone().unwrap_or_else(|| import.name.clone()),
+                (owner_module.clone(), source_template, import.name.clone()),
+            );
+        }
+    }
+    for instantiation in &mut metadata.generic_instantiations {
+        if let Some((owner_module, source_template, owner_concrete_name)) = linked_instantiations.get(&instantiation.concrete_name) {
+            instantiation.module = owner_module.clone();
+            instantiation.template = source_template.clone();
+            instantiation.concrete_name = owner_concrete_name.clone();
+            instantiation.identity = format!("{}::{}<{}>", owner_module, source_template, instantiation.type_arguments.join(","));
+        }
+    }
+    metadata.generic_instantiations.sort_by(|left, right| left.identity.cmp(&right.identity));
+    metadata.generic_instantiations.dedup_by(|left, right| left.identity == right.identity);
+    for warning in visibility_migration_diagnostics(ast) {
+        if !metadata.constraints.warnings.contains(&warning.message) {
+            metadata.constraints.warnings.push(warning.message.clone());
+        }
+    }
     metadata.public_interface = interface::build(ast, metadata);
     metadata.interface_hash = interface::hash(&metadata.public_interface);
+}
+
+pub fn visibility_migration_diagnostics(module: &ast::Module) -> Vec<CompileError> {
+    let source_items = module.items.iter().chain(module.interface_templates.iter()).filter_map(|item| {
+        let name = item.name()?;
+        if generics::decode_monomorph_name(name).is_some() {
+            return None;
+        }
+        let span = match item {
+            ast::Item::Resource(def) => def.span,
+            ast::Item::Shared(def) => def.span,
+            ast::Item::Receipt(def) => def.span,
+            ast::Item::Struct(def) => def.span,
+            ast::Item::Invariant(def) => def.span,
+            ast::Item::Const(def) => def.span,
+            ast::Item::Enum(def) => def.span,
+            ast::Item::Action(def) => def.span,
+            ast::Item::Function(def) => def.span,
+            ast::Item::Lock(def) => def.span,
+            ast::Item::Flow(_) | ast::Item::Use(_) => return None,
+        };
+        Some((name, module.visibility_of(name), span))
+    });
+    let items = source_items.collect::<Vec<_>>();
+    if !items.iter().any(|(_, visibility, _)| *visibility != ast::Visibility::LegacyPublic) {
+        return Vec::new();
+    }
+    let implicit = items
+        .iter()
+        .filter(|(_, visibility, _)| *visibility == ast::Visibility::LegacyPublic)
+        .map(|(name, _, _)| (*name).to_string())
+        .collect::<Vec<_>>();
+    if implicit.is_empty() {
+        return Vec::new();
+    }
+    vec![CompileError::warning(
+        format!(
+            "module '{}' mixes explicit visibility with Edition 2026 legacy-public defaults; add public, public(package), or private to: {}",
+            module.name,
+            implicit.join(", ")
+        ),
+        items
+            .iter()
+            .find(|(_, visibility, _)| *visibility == ast::Visibility::LegacyPublic)
+            .map_or(module.span, |(_, _, span)| *span),
+    )
+    .with_code("W2500")
+    .with_details(serde_json::json!({
+        "module": module.name,
+        "implicit_visibility": "legacy-public",
+        "items": implicit,
+        "migration": "choose public, public(package), or private explicitly",
+    }))]
 }
 
 fn bind_typed_semantics(metadata: &mut CompileMetadata, ir: &ir::IrModule) {
@@ -23311,6 +23603,18 @@ action bad(token: Token) {
             "narrowing cast is missing its fail-closed runtime path:\n{}",
             asm
         );
+        assert!(
+            result.metadata.typed_semantics.entries.iter().any(|entry| {
+                entry.id == "action:narrow"
+                    && entry.blocks.iter().any(|block| {
+                        block.runtime_error.as_ref().is_some_and(|error| {
+                            error.code == crate::runtime_errors::CellScriptRuntimeError::NumericOrDiscriminantInvalid.code()
+                                && error.name == crate::runtime_errors::CellScriptRuntimeError::NumericOrDiscriminantInvalid.name()
+                        })
+                    })
+            }),
+            "narrowing cast typed semantics must identify its fail-closed numeric error exit"
+        );
     }
 
     #[test]
@@ -26609,6 +26913,34 @@ fn contextual_literals() -> u8 {
                     .unwrap();
             assert!(result.artifact_bytes.starts_with(b"\x7fELF"));
         }
+    }
+
+    #[test]
+    fn optimization_preserves_checked_u128_constant_overflow_paths() {
+        let source = r#"
+module u128_constant_overflow
+
+action verify() -> u64 {
+    verification
+        let add_overflow: u128 = 340282366920938463463374607431768211455 + 340282366920938463463374607431768211455
+        let sub_overflow: u128 = 18446744073709551616 - 340282366920938463463374607431768211455
+        let mul_overflow: u128 = 340282366920938463463374607431768211455 * 340282366920938463463374607431768211455
+        require add_overflow == 0
+        require sub_overflow == 0
+        require mul_overflow == 0
+        return 0
+}
+"#;
+
+        let mut trap_counts = Vec::new();
+        for opt_level in [0, 1] {
+            let result = compile(source, CompileOptions { opt_level, ..CompileOptions::default() }).unwrap();
+            let asm = String::from_utf8(result.artifact_bytes).unwrap();
+            let trap_count = asm.matches("# cellscript runtime error 49 aggregate-amount-mismatch").count();
+            assert!(trap_count >= 3, "-O{opt_level} must retain all three checked u128 overflow paths:\n{asm}");
+            trap_counts.push(trap_count);
+        }
+        assert_eq!(trap_counts[0], trap_counts[1], "optimization must not erase checked u128 overflow traps");
     }
 
     #[test]
@@ -32314,6 +32646,129 @@ action pass_through(token: Token) -> Token {
     }
 
     #[test]
+    fn compile_file_monomorphizes_imported_generic_types_and_functions_in_their_owner_module() {
+        let temp = tempdir().unwrap();
+        let root = Utf8Path::from_path(temp.path()).unwrap();
+        let dep_root = root.join("generic_dep");
+        let app_root = root.join("generic_app");
+        std::fs::create_dir_all(dep_root.join("src")).unwrap();
+        std::fs::create_dir_all(app_root.join("src")).unwrap();
+        std::fs::write(
+            dep_root.join("Cell.toml"),
+            r#"
+[package]
+edition = "2026"
+name = "generic_dep"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dep_root.join("src").join("pairs.cell"),
+            r#"
+module generic_dep::pairs
+
+public struct Pair<T: copy + drop + store + fixed + serializable + non_linear>
+    has copy, drop, store, fixed, serializable, non_linear {
+    left: T,
+    right: T,
+}
+
+public fn swap<T: copy + drop + store + fixed + serializable + non_linear>(pair: Pair<T>) -> Pair<T> {
+    return Pair<T> { left: pair.right, right: pair.left }
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            app_root.join("Cell.toml"),
+            r#"
+[package]
+edition = "2026"
+name = "generic_app"
+version = "0.1.0"
+
+[dependencies]
+generic_dep = { path = "../generic_dep" }
+"#,
+        )
+        .unwrap();
+        let entry = app_root.join("src").join("main.cell");
+        std::fs::write(
+            &entry,
+            r#"
+module generic_app::main
+
+use generic_dep::pairs::Pair as Duo
+use generic_dep::pairs::swap as flip
+
+action verify() -> u64 {
+    verification
+        let pair: Duo<u64> = Duo<u64> { left: 20, right: 22 }
+        let swapped: Duo<u64> = flip<u64>(pair)
+        return swapped.left + swapped.right
+}
+"#,
+        )
+        .unwrap();
+
+        lock_package_for_test(&app_root).unwrap();
+        let result = compile_file(&entry, CompileOptions::default()).unwrap();
+        assert!(!result.artifact_bytes.is_empty());
+        assert!(result
+            .metadata
+            .generic_instantiations
+            .iter()
+            .any(|item| item.module == "generic_dep::pairs" && item.template == "swap"));
+        let interface = &result.metadata.public_interface;
+        assert!(interface.types.iter().all(|item| !item.name.contains("__mono__")));
+        assert!(interface.callables.iter().all(|item| !item.name.contains("__mono__")));
+    }
+
+    #[test]
+    fn compile_file_does_not_instantiate_unrelated_unpacked_sibling_modules() {
+        let temp = tempdir().unwrap();
+        let root = Utf8Path::from_path(temp.path()).unwrap();
+        let entry = root.join("entry.cell");
+        std::fs::write(
+            &entry,
+            r#"
+module audit::entry
+
+action verify() -> u64 {
+    verification
+        return 42
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("unrelated_rejection.cell"),
+            r#"
+module audit::unrelated
+
+resource Token has consume {
+    amount: u64,
+}
+
+enum Boxed<T> {
+    Empty,
+    Some(T),
+}
+
+fn hide(input: Token) -> Boxed<Token> {
+    Boxed::Some<Token>(input)
+}
+"#,
+        )
+        .unwrap();
+
+        let result = compile_file(&entry, CompileOptions::default()).unwrap();
+        assert!(!result.artifact_bytes.is_empty());
+        assert_eq!(result.metadata.module, "audit::entry");
+    }
+
+    #[test]
     fn compile_file_metadata_lays_out_imported_nested_fixed_structs() {
         let temp = tempdir().unwrap();
         let root = Utf8Path::from_path(temp.path()).unwrap();
@@ -34243,6 +34698,48 @@ action verify() -> u64 {
     }
 
     #[test]
+    fn nested_payload_patterns_merge_exhaustive_coverage_across_arms_and_or_patterns() {
+        for source in [
+            r#"
+module patterns::nested_arms
+
+enum Inner { None, Some((u64, u64)) }
+enum Outer { Empty, Wrapped(Inner) }
+
+action verify() -> u64 {
+    verification
+        let outer: Outer = Outer::Wrapped(Inner::Some((20, 22)))
+        return match outer {
+            Outer::Empty => { 0 }
+            Outer::Wrapped(Inner::None) => { 1 }
+            Outer::Wrapped(Inner::Some((left, right))) => { left + right }
+        }
+}
+"#,
+            r#"
+module patterns::payload_or
+
+enum Inner { None, Some((u64, u64)) }
+enum Outer { Empty, Wrapped(Inner) }
+
+action verify() -> u64 {
+    verification
+        let outer: Outer = Outer::Wrapped(Inner::None)
+        return match outer {
+            Outer::Empty => { 0 }
+            Outer::Wrapped(Inner::None | Inner::Some(_)) => { 1 }
+        }
+}
+"#,
+        ] {
+            let result = compile(source, CompileOptions { target: Some("riscv64-elf".to_string()), ..CompileOptions::default() })
+                .expect("nested exhaustive coverage must compile");
+            assert_eq!(&result.artifact_bytes[..4], b"\x7fELF");
+            result.validate().unwrap();
+        }
+    }
+
+    #[test]
     fn builtin_option_and_generic_fixed_vector_use_the_same_kernel() {
         let source = r#"
 module generics::prelude
@@ -34321,6 +34818,29 @@ fn hide(value: Token) -> Box<Token> { Box<Token> { value } }
         .unwrap_err();
         assert_eq!(hidden.code.as_deref(), Some("E2111"));
         assert!(hidden.message.contains("cannot be hidden in ordinary generic layout"));
+
+        let transitively_hidden = compile(
+            r#"
+module generics::transitively_hidden_cell
+resource Token has store, consume { amount: u64 }
+struct Wrapper has fixed, serializable { token: Token }
+struct Box<T: fixed + serializable + non_linear>
+    has fixed, serializable, non_linear
+{
+    value: T,
+}
+action launder(token: Token) {
+    verification
+        let wrapper: Wrapper = Wrapper { token }
+        consume token
+        let boxed: Box<Wrapper> = Box<Wrapper> { value: wrapper }
+}
+"#,
+            CompileOptions::default(),
+        )
+        .unwrap_err();
+        assert_eq!(transitively_hidden.code.as_deref(), Some("E2111"));
+        assert!(transitively_hidden.message.contains("cannot be hidden in ordinary generic layout"));
 
         let reserved = compile(
             r#"

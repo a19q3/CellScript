@@ -198,7 +198,7 @@ records the exact `identity(...)` condition declared by the same resource.
 No proof may source authority from a container or another Cell type.
 
 Top-level `enum_layouts` for concrete payload ADTs first appeared in schema 53
-and remain in current metadata schema 60. Audit the
+and remain in current metadata schema 61. Audit the
 `packed-tagged-union-v1` layout, one-byte tag, sequential variant tags, packed
 field offsets, encoded size, ownership, storage, and ABI together. A
 `linear-cell-handle` field is exactly eight bytes and forces
@@ -225,7 +225,7 @@ the `consume_each` runtime-helper tier. For `BoundedList<P, N>` driving
 the matching outputs or sufficient capacity.
 
 The validity record first appeared in schema 55 during the 0.22 line and is
-retained by current metadata schema 60 as `types[].validity_predicates`. Review each predicate's
+retained by current metadata schema 61 as `types[].validity_predicates`. Review each predicate's
 `expression`, `dependencies`, `evidence_tier`,
 `runtime_checked_on_create`, `create_paths_selected`,
 `create_paths_checked`, `update_paths_selected`, `create_path_status`,

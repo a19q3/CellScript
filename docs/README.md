@@ -47,7 +47,7 @@ drafts. Released versions should use non-draft filenames.
   record for bounded generics, public interfaces, typed-semantics verification,
   executable-surface closure, and the upgraded Playground inspector.
 - `roadmap/CELLSCRIPT_0_25_ROADMAP.md` tracks the active language-completeness
-  implementation. Current metadata schema 60 adds deterministic public
+  implementation. Current metadata schema 61 adds deterministic public
   interfaces and independently checked typed-semantics evidence on top of the
   schema 59 value-generic instantiation records.
 

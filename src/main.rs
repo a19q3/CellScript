@@ -340,6 +340,7 @@ fn main() {
                     "target_profile": result.metadata.target_profile.name,
                     "artifact_hash": result.metadata.artifact_hash,
                     "artifact_size_bytes": result.artifact_bytes.len(),
+                    "warnings": result.metadata.constraints.warnings,
                 });
                 print_main_json(&payload);
             } else {
@@ -349,6 +350,9 @@ fn main() {
                 println!("  Artifact hash: {:x?}", result.artifact_hash);
                 println!("  Output: {}", output_path);
                 println!("  Metadata: {}", metadata_path);
+                for warning in &result.metadata.constraints.warnings {
+                    eprintln!("{}: {}", "warning".yellow(), warning);
+                }
                 if let Some((lowering_record, source_map)) = verified_sidecars {
                     println!("  Lowering record: {}", lowering_record);
                     println!("  Source map: {}", source_map);

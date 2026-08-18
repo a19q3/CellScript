@@ -21,12 +21,16 @@ import {
   ckbBlake2bHex,
   ckbScriptHash,
   ckbSecp256k1PrincipalIdFromPublicKey,
+  compareVersions,
   artifactProfileSupportsDependencyResolution,
   joyidPrincipalIdFromBinding,
+  interfacePredecessorVersion,
   scopeAllows,
   validatePublishPayload,
   validateInterfaceUpgrade,
   validateArtifactDescriptor,
+  validateVersion,
+  versionCompatibilityLine,
   type CapabilityAuthorisationPayload,
   type CapabilityRevocationPayload,
   type AvailabilityPayload,
@@ -382,16 +386,16 @@ async function publishPayload(keyId: string): Promise<PublishPayload> {
         edition: "2026",
         compatibility_profile_hash: "ef".repeat(32),
         interface_hash: ckbBlake2bHex(canonicalJson({
-          schema: "cellscript-package-interface-v1",
-          version: 1,
+          schema: "cellscript-package-interface-v2",
+          version: 2,
           module: "cellscript::demo",
           types: [],
           constants: [],
           callables: [],
         })),
         interface: {
-          schema: "cellscript-package-interface-v1",
-          version: 1,
+          schema: "cellscript-package-interface-v2",
+          version: 2,
           module: "cellscript::demo",
           types: [],
           constants: [],
@@ -451,8 +455,8 @@ async function ckbExecutablePublishPayload(keyId: string): Promise<PublishPayloa
 
 describe("CellScript public interface admission", () => {
   const baseInterface = {
-    schema: "cellscript-package-interface-v1",
-    version: 1,
+    schema: "cellscript-package-interface-v2",
+    version: 2,
     module: "cellscript::demo",
     types: [{
       identity: "cellscript::demo::Value",
@@ -488,6 +492,19 @@ describe("CellScript public interface admission", () => {
       ...baseInterface,
       types: [{ ...baseInterface.types[0], layout_identity: "44".repeat(32) }],
     })).toThrow(/changed incompatibly/);
+  });
+
+  it("uses strict SemVer precedence and explicit compatibility lines", () => {
+    expect(compareVersions("1.10.0", "1.9.9")).toBeGreaterThan(0);
+    expect(compareVersions("2.0.0-rc.1", "2.0.0-beta.11")).toBeGreaterThan(0);
+    expect(compareVersions("2.0.0", "2.0.0-rc.1")).toBeGreaterThan(0);
+    expect(versionCompatibilityLine("2.4.0")).toBe("2");
+    expect(versionCompatibilityLine("0.25.3")).toBe("0.25");
+    expect(() => validateVersion("01.2.3")).toThrow(/valid SemVer/);
+    expect(() => validateVersion("1.2.3-01")).toThrow(/leading zeroes/);
+    expect(interfacePredecessorVersion(["1.9.0", "2.0.0"], "2.1.0")).toBe("2.0.0");
+    expect(interfacePredecessorVersion(["1.9.0", "2.1.0"], "3.0.0")).toBeNull();
+    expect(() => interfacePredecessorVersion(["2.0.0"], "1.10.0")).toThrow(/highest admitted version/);
   });
 });
 

@@ -174,6 +174,12 @@ pub const COMPILER_ERROR_INFOS: &[CompilerErrorInfo] = &[
         hint: "Check CELLSCRIPT_RISCV_CC or the CELLSCRIPT_RISCV_AS/CELLSCRIPT_RISCV_LD pair and their stderr output.",
     },
     CompilerErrorInfo {
+        code: "E2501",
+        name: "public-interface-breaking",
+        description: "A public interface comparison found a breaking source API, serialized layout, runtime ABI, effect/capability, builder, or deployment change.",
+        hint: "Inspect every reported compatibility dimension and intentionally version or reverse the incompatible change before Registry publication.",
+    },
+    CompilerErrorInfo {
         code: "E2900",
         name: "backend-invariant",
         description: "A backend invariant was violated after semantic checking.",

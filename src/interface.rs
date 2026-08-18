@@ -10,8 +10,8 @@ use crate::{ckb_blake2b256, CompileMetadata};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const INTERFACE_SCHEMA: &str = "cellscript-package-interface-v1";
-pub const INTERFACE_SCHEMA_VERSION: u32 = 1;
+pub const INTERFACE_SCHEMA: &str = "cellscript-package-interface-v2";
+pub const INTERFACE_SCHEMA_VERSION: u32 = 2;
 pub const COMPATIBILITY_SCHEMA: &str = "cellscript-interface-compatibility-v1";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -25,7 +25,6 @@ pub struct PackageInterface {
     pub types: Vec<InterfaceType>,
     pub constants: Vec<InterfaceConstant>,
     pub callables: Vec<InterfaceCallable>,
-    pub generic_instantiations: Vec<InterfaceInstantiation>,
     pub runtime_contract: InterfaceRuntimeContract,
     pub builder_contract_hash: String,
     pub deployment_contract_hash: String,
@@ -100,14 +99,6 @@ pub struct InterfaceParam {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InterfaceInstantiation {
-    pub kind: String,
-    pub template: String,
-    pub identity: String,
-    pub type_arguments: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InterfaceRuntimeContract {
     pub target_profile: String,
     pub vm_abi: String,
@@ -158,6 +149,9 @@ pub fn build(ast: &ast::Module, metadata: &CompileMetadata) -> PackageInterface 
     let items = ast.items.iter().chain(ast.interface_templates.iter());
     for item in items {
         let Some(name) = item.name() else { continue };
+        if crate::generics::decode_monomorph_name(name).is_some() {
+            continue;
+        }
         let visibility = ast.visibility_of(name);
         if !visibility.is_exported() {
             continue;
@@ -222,7 +216,7 @@ pub fn build(ast: &ast::Module, metadata: &CompileMetadata) -> PackageInterface 
                     .iter()
                     .map(|variant| InterfaceVariant {
                         name: variant.name.clone(),
-                        fields: variant.fields.iter().map(crate::generics::render_type).collect(),
+                        fields: variant.fields.iter().map(crate::generics::render_source_type).collect(),
                     })
                     .collect::<Vec<_>>();
                 types.push(interface_structural_type(
@@ -243,7 +237,7 @@ pub fn build(ast: &ast::Module, metadata: &CompileMetadata) -> PackageInterface 
                 identity,
                 name: name.to_string(),
                 visibility: visibility.as_str().to_string(),
-                r#type: crate::generics::render_type(&def.ty),
+                r#type: crate::generics::render_source_type(&def.ty),
             }),
             Item::Action(def) => {
                 let params = source_params(&def.params);
@@ -252,7 +246,7 @@ pub fn build(ast: &ast::Module, metadata: &CompileMetadata) -> PackageInterface 
                     .iter()
                     .map(|output| InterfaceParam {
                         name: output.name.clone(),
-                        r#type: crate::generics::render_type(&output.ty),
+                        r#type: crate::generics::render_source_type(&output.ty),
                         source: "output".to_string(),
                         mutable: false,
                         reference: false,
@@ -269,7 +263,7 @@ pub fn build(ast: &ast::Module, metadata: &CompileMetadata) -> PackageInterface 
                     visibility: visibility.as_str().to_string(),
                     type_parameters: Vec::new(),
                     params,
-                    return_type: def.return_type.as_ref().map(crate::generics::render_type),
+                    return_type: def.return_type.as_ref().map(crate::generics::render_source_type),
                     outputs,
                     effect: format!("{:?}", def.effect),
                     entry_witness_abi: Some(metadata.target_profile.witness_abi.clone()),
@@ -289,7 +283,7 @@ pub fn build(ast: &ast::Module, metadata: &CompileMetadata) -> PackageInterface 
                     visibility: visibility.as_str().to_string(),
                     type_parameters: type_parameters(&def.type_params),
                     params,
-                    return_type: def.return_type.as_ref().map(crate::generics::render_type),
+                    return_type: def.return_type.as_ref().map(crate::generics::render_source_type),
                     outputs: Vec::new(),
                     effect: format!("{:?}", def.effect),
                     entry_witness_abi: None,
@@ -309,7 +303,7 @@ pub fn build(ast: &ast::Module, metadata: &CompileMetadata) -> PackageInterface 
                     visibility: visibility.as_str().to_string(),
                     type_parameters: Vec::new(),
                     params,
-                    return_type: Some(crate::generics::render_type(&def.return_type)),
+                    return_type: Some(crate::generics::render_source_type(&def.return_type)),
                     outputs: Vec::new(),
                     effect: "ReadOnly".to_string(),
                     entry_witness_abi: Some(metadata.target_profile.witness_abi.clone()),
@@ -326,16 +320,6 @@ pub fn build(ast: &ast::Module, metadata: &CompileMetadata) -> PackageInterface 
     callables.sort_by(|left, right| left.identity.cmp(&right.identity));
     callables.dedup_by(|left, right| left.identity == right.identity);
 
-    let generic_instantiations = metadata
-        .generic_instantiations
-        .iter()
-        .map(|item| InterfaceInstantiation {
-            kind: item.kind.clone(),
-            template: item.template.clone(),
-            identity: item.identity.clone(),
-            type_arguments: item.type_arguments.clone(),
-        })
-        .collect::<Vec<_>>();
     let runtime_contract = InterfaceRuntimeContract {
         target_profile: metadata.target_profile.name.clone(),
         vm_abi: metadata.target_profile.vm_abi.clone(),
@@ -358,7 +342,6 @@ pub fn build(ast: &ast::Module, metadata: &CompileMetadata) -> PackageInterface 
         types,
         constants,
         callables,
-        generic_instantiations,
         runtime_contract,
         builder_contract_hash,
         deployment_contract_hash,
@@ -438,7 +421,7 @@ fn interface_structural_type(
             let layout = metadata.and_then(|metadata| metadata.fields.iter().find(|candidate| candidate.name == field.name));
             InterfaceField {
                 name: field.name.clone(),
-                r#type: crate::generics::render_type(&field.ty),
+                r#type: crate::generics::render_source_type(&field.ty),
                 offset: layout.map(|layout| layout.offset),
                 encoded_size: layout.and_then(|layout| layout.encoded_size),
             }
@@ -476,7 +459,7 @@ fn source_params(params: &[ast::Param]) -> Vec<InterfaceParam> {
         .iter()
         .map(|param| InterfaceParam {
             name: param.name.clone(),
-            r#type: crate::generics::render_type(&param.ty),
+            r#type: crate::generics::render_source_type(&param.ty),
             source: match param.source {
                 ast::ParamSource::Default => "default",
                 ast::ParamSource::Witness => "witness",
@@ -657,5 +640,30 @@ fn use_it() -> u64 { return id<u64>(7) }
             .dimensions
             .iter()
             .any(|dimension| dimension.dimension == "serialized_layout" && dimension.classification == "breaking"));
+    }
+
+    #[test]
+    fn private_monomorphization_use_sites_do_not_change_the_public_interface() {
+        let with_private_use = interface(
+            r#"
+module api
+public struct Pair<T: copy + drop + store + fixed + serializable + non_linear>
+    has copy, drop, store, fixed, serializable, non_linear { left: T, right: T, }
+private fn implementation() -> u64 {
+    let pair: Pair<u64> = Pair<u64> { left: 20, right: 22 }
+    return pair.left + pair.right
+}
+"#,
+        );
+        let without_private_use = interface(
+            r#"
+module api
+public struct Pair<T: copy + drop + store + fixed + serializable + non_linear>
+    has copy, drop, store, fixed, serializable, non_linear { left: T, right: T, }
+private fn implementation() -> u64 { return 42 }
+"#,
+        );
+        assert_eq!(with_private_use, without_private_use);
+        assert!(compare(&with_private_use, &without_private_use).compatible);
     }
 }

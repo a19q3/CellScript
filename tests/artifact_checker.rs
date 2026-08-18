@@ -1,7 +1,8 @@
 use cellscript::{compile, CompileOptions, CompileResult};
 use cellscript_artifact_checker::{
     canonical_bytes, canonical_hash, check_bundle, check_bundle_values, parse_elf, CheckerBudgets, CheckerRejectionCode, EdgeKind,
-    SourceArtifactMap, VerifiedLoweringRecord, LOWERING_RECORD_SCHEMA, SOURCE_MAP_SCHEMA,
+    SourceArtifactMap, TypedSemanticConstant, TypedSemanticOperationDetail, VerifiedLoweringRecord, LOWERING_RECORD_SCHEMA,
+    SOURCE_MAP_SCHEMA,
 };
 use serde_json::Value;
 
@@ -44,6 +45,11 @@ impl Fixture {
         fixture
     }
 
+    fn from_source(source: &str) -> Self {
+        let result = compile(source, CompileOptions { target: Some("riscv64-elf".to_string()), ..CompileOptions::default() }).unwrap();
+        Self::from_result(result)
+    }
+
     fn check(&self) -> Result<(), CheckerRejectionCode> {
         check_bundle_values(&self.artifact, &self.metadata, &self.record, &self.source_map, &CheckerBudgets::default())
             .map(|_| ())
@@ -58,6 +64,14 @@ impl Fixture {
         self.metadata["verified_artifact"]["source_map_hash"] = Value::String(source_map_hash);
     }
 
+    fn rebind_typed_semantics(&mut self) {
+        self.record.typed_semantics_hash =
+            canonical_hash(cellscript_artifact_checker::TYPED_SEMANTICS_SCHEMA, &self.record.typed_semantics).unwrap();
+        self.metadata["typed_semantics"] = serde_json::to_value(&self.record.typed_semantics).unwrap();
+        self.metadata["typed_semantics_hash"] = Value::String(self.record.typed_semantics_hash.clone());
+        self.rebind_sidecars();
+    }
+
     fn bind_artifact_identity(&mut self) {
         let artifact_hash = cellscript_artifact_checker::hex_encode(&cellscript_artifact_checker::ckb_blake2b256(&self.artifact));
         self.record.artifact_hash.clone_from(&artifact_hash);
@@ -68,6 +82,23 @@ impl Fixture {
         self.rebind_sidecars();
     }
 }
+
+const REFERENCE_ENTRY_SOURCE: &str = r#"
+module artifact_checker_reference_fixture
+
+resource Token has consume {
+    amount: u64,
+}
+
+fn inspect(token: &Token) -> u64 {
+    return token.amount
+}
+
+action main() -> u64 {
+    verification
+        return 0
+}
+"#;
 
 fn assert_code(fixture: &Fixture, expected: CheckerRejectionCode) {
     match fixture.check() {
@@ -326,6 +357,305 @@ fn stable_rejection_codes_cover_elf_sections_instructions_flow_and_digests() {
     changed.artifact[block_offset..block_offset + 4].copy_from_slice(&(candidate.word ^ (1 << 20)).to_le_bytes());
     changed.bind_artifact_identity();
     assert_code(&changed, CheckerRejectionCode::V2415BlockDigestMismatch);
+}
+
+#[test]
+fn typed_semantics_rejects_operator_and_constant_mutations_after_rebinding() {
+    let valid = Fixture::new();
+
+    let mut changed = valid.clone();
+    let binary = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .flat_map(|entry| &mut entry.blocks)
+        .flat_map(|block| &mut block.operations)
+        .find(|operation| operation.opcode == "binary")
+        .expect("fixture must contain a binary operation");
+    binary.detail = TypedSemanticOperationDetail::BinaryOperator { operator: "and".to_string() };
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid.clone();
+    let constant = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .flat_map(|entry| &mut entry.blocks)
+        .flat_map(|block| &mut block.operations)
+        .flat_map(|operation| &mut operation.operands)
+        .find_map(|operand| operand.constant.as_mut())
+        .expect("fixture must contain a constant operand");
+    *constant = TypedSemanticConstant::U64("01".to_string());
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid.clone();
+    let constant = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .flat_map(|entry| &mut entry.blocks)
+        .flat_map(|block| &mut block.operations)
+        .flat_map(|operation| &mut operation.operands)
+        .find_map(|operand| match &mut operand.constant {
+            Some(TypedSemanticConstant::U64(value)) => Some(value),
+            _ => None,
+        })
+        .expect("fixture must contain a u64 constant operand");
+    *constant = "2".to_string();
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2420TypedMachineBindingInvalid);
+}
+
+#[test]
+fn typed_semantics_accepts_declared_vec_constructors_and_unsigned_widening() {
+    let widened = Fixture::from_source(
+        r#"
+module checker::widening
+
+action multiply(amount: u64, basis_points: u16) -> u64 {
+    verification
+        return amount * basis_points
+}
+"#,
+    );
+    assert!(widened.check().is_ok());
+
+    let empty_array = Fixture::from_source(
+        r#"
+module checker::empty_array
+
+action empty() -> [u8; 0] {
+    verification
+        return []
+}
+"#,
+    );
+    assert!(empty_array.check().is_ok());
+
+    let script_tuple = Fixture::from_source(
+        r#"
+module checker::script_tuple
+
+action script_value() -> u64 {
+    verification
+        let args = script::args_empty()
+        let value = script::new(Hash::zero(), 0, args)
+        return 0
+}
+"#,
+    );
+    assert!(script_tuple.check().is_ok());
+
+    let collection = Fixture::from_source(include_str!("../examples/language/order_book.cell"));
+    assert!(collection.check().is_ok());
+
+    let mut changed = collection;
+    let declared_type = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .flat_map(|entry| &mut entry.blocks)
+        .flat_map(|block| &mut block.operations)
+        .find_map(|operation| match &mut operation.detail {
+            TypedSemanticOperationDetail::Collection { declared_type } => Some(declared_type),
+            _ => None,
+        })
+        .expect("fixture must contain a collection constructor");
+    *declared_type = "Map".to_string();
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+}
+
+#[test]
+fn typed_semantics_requires_reference_coercion_for_reference_calls() {
+    let valid = Fixture::from_source(
+        r#"
+module checker::reference_call
+
+struct Wallet {
+    amount: u64,
+}
+
+fn inspect(wallet: &Wallet) -> u64 {
+    return wallet.amount
+}
+
+action main(wallet: Wallet) -> u64 {
+    verification
+        return inspect(&wallet)
+}
+"#,
+    );
+    assert!(valid.check().is_ok());
+
+    let mut changed = valid;
+    let operator = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .flat_map(|entry| &mut entry.blocks)
+        .flat_map(|block| &mut block.operations)
+        .find_map(|operation| match &mut operation.detail {
+            TypedSemanticOperationDetail::UnaryOperator { operator } if operator == "ref" => Some(operator),
+            _ => None,
+        })
+        .expect("fixture must contain a reference coercion");
+    *operator = "deref".to_string();
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+}
+
+#[test]
+fn typed_semantics_requires_exact_guard_for_unsigned_narrowing() {
+    let valid = Fixture::from_source(
+        r#"
+module checker::narrowing
+
+action narrow(value: u64) -> u8 {
+    verification
+        return value as u8
+}
+"#,
+    );
+    assert!(valid.check().is_ok());
+
+    let mut changed = valid;
+    let bound = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .flat_map(|entry| &mut entry.blocks)
+        .flat_map(|block| &mut block.operations)
+        .flat_map(|operation| &mut operation.operands)
+        .find_map(|operand| match &mut operand.constant {
+            Some(TypedSemanticConstant::U64(value)) if value == "255" => Some(value),
+            _ => None,
+        })
+        .expect("fixture must contain the u8 narrowing bound");
+    *bound = "256".to_string();
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+}
+
+#[test]
+fn typed_semantics_rejects_field_enum_layout_and_instantiation_mutations() {
+    let valid = Fixture::from_source(include_str!("syntax_combo/seeds/generic-value.cell"));
+
+    let mut changed = valid.clone();
+    let field = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .flat_map(|entry| &mut entry.blocks)
+        .flat_map(|block| &mut block.operations)
+        .find_map(|operation| match &mut operation.detail {
+            TypedSemanticOperationDetail::Field { name } => Some(name),
+            _ => None,
+        })
+        .expect("fixture must contain a field access");
+    *field = "missing".to_string();
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid.clone();
+    let variant = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .flat_map(|entry| &mut entry.blocks)
+        .flat_map(|block| &mut block.operations)
+        .find_map(|operation| match &mut operation.detail {
+            TypedSemanticOperationDetail::EnumConstruct { variant, .. } => Some(variant),
+            _ => None,
+        })
+        .expect("fixture must contain an enum constructor");
+    *variant = "Missing".to_string();
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid.clone();
+    let field_index = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .flat_map(|entry| &mut entry.blocks)
+        .flat_map(|block| &mut block.operations)
+        .find_map(|operation| match &mut operation.detail {
+            TypedSemanticOperationDetail::EnumPayload { field_index, .. } => Some(field_index),
+            _ => None,
+        })
+        .expect("fixture must contain an enum payload read");
+    *field_index = u32::MAX;
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid.clone();
+    changed.record.typed_semantics.types[0].layout_hash = "00".repeat(32);
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid.clone();
+    changed.record.typed_semantics.instantiations[0].identity.push_str("::tampered");
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+}
+
+#[test]
+fn typed_semantics_rejects_borrow_ownership_cfg_and_reference_mutations() {
+    let valid = Fixture::from_source(include_str!("syntax_combo/seeds/explicit-borrow.cell"));
+
+    let mut changed = valid.clone();
+    changed.record.typed_semantics.entries[0].borrows[0].start_operation = u32::MAX;
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid.clone();
+    changed.record.typed_semantics.entries[0].ownership[0].final_state = "available".to_string();
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid.clone();
+    let block = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .flat_map(|entry| &mut entry.blocks)
+        .find(|block| !block.successors.is_empty())
+        .expect("fixture must contain a CFG edge");
+    block.successors[0] = u32::MAX;
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = Fixture::from_source(REFERENCE_ENTRY_SOURCE);
+    let entry = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .find(|entry| entry.name == "inspect")
+        .expect("fixture must contain the reference helper");
+    let binding_id = entry.params[0].binding_id;
+    entry.params[0].ty = "Token".to_string();
+    entry.locals.iter_mut().find(|local| local.id == binding_id).unwrap().ty = "Token".to_string();
+    for operand in entry.blocks.iter_mut().flat_map(|block| &mut block.operations).flat_map(|operation| &mut operation.operands) {
+        if operand.local == Some(binding_id) {
+            operand.ty = "Token".to_string();
+        }
+    }
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2420TypedMachineBindingInvalid);
 }
 
 fn encode_jal(offset: i32) -> u32 {

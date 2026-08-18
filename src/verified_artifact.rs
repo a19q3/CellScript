@@ -5,9 +5,9 @@ use crate::{CompileMetadata, ParamMetadata};
 use cellscript_artifact_checker::{
     canonical_hash, check_bundle_values, domain_hash_bytes, parse_elf, CheckerBudgets, CompatibilityProfileIdentity, EdgeKind,
     EntryKind, LoweringBlock, LoweringEdge, LoweringEntry, MachineRange, MachineTerminator, ProofRecord, RuntimeErrorExit,
-    SourceArtifactMap, SourceMapCoverageClaim, SourceMapInterval, StorageClass, SyscallSite, TypedParameter, VerificationClaim,
-    VerifiedArtifactMetadata, VerifiedArtifactState, VerifiedLoweringRecord, CHECKER_POLICY_SCHEMA, CHECKER_VERSION,
-    LOWERING_RECORD_SCHEMA, LOWERING_RECORD_VERSION, SOURCE_MAP_SCHEMA, SOURCE_MAP_VERSION,
+    SourceArtifactMap, SourceMapCoverageClaim, SourceMapInterval, StorageClass, SyscallSite, TypedBlockBinding, TypedParameter,
+    VerificationClaim, VerifiedArtifactMetadata, VerifiedArtifactState, VerifiedLoweringRecord, CHECKER_POLICY_SCHEMA,
+    CHECKER_VERSION, LOWERING_RECORD_SCHEMA, LOWERING_RECORD_VERSION, SOURCE_MAP_SCHEMA, SOURCE_MAP_VERSION,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -77,11 +77,25 @@ pub(crate) fn build_verified_artifact_boundary(
             .find(|entry| entry.id == owner_entry)
             .map(|entry| entry.effect.clone())
             .unwrap_or_else(|| "runtime".to_string());
+        let lowering_block_id = lowering_block_id(machine.label.as_deref(), owner_name);
+        let typed_block_hash = lowering_block_id
+            .and_then(|block_id| {
+                metadata
+                    .typed_semantics
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == owner_entry)
+                    .and_then(|entry| entry.blocks.iter().find(|block| block.id == block_id))
+            })
+            .map(|block| canonical_hash("cellscript-typed-block-v1", block))
+            .transpose()
+            .map_err(|error| boundary_error(error.to_string()))?;
         blocks.push(LoweringBlock {
             id: machine_block_id(index),
             owner_entry,
             reachable: true,
-            lowering_block_id: lowering_block_id(machine.label.as_deref(), owner_name),
+            lowering_block_id,
+            typed_block_hash,
             machine_label: machine.label.clone(),
             terminator: match machine.terminator {
                 MachineTerminatorEvidence::Fallthrough => MachineTerminator::Fallthrough,
@@ -122,6 +136,7 @@ pub(crate) fn build_verified_artifact_boundary(
         })
         .collect::<Vec<_>>();
     edges.sort_by(|a, b| (&a.from, &a.kind, &a.to).cmp(&(&b.from, &b.kind, &b.to)));
+    bind_typed_blocks(&mut entries, &blocks, metadata)?;
     mark_reachable_blocks(&entries, &mut blocks, &edges);
 
     let syscall_sites = elf
@@ -310,10 +325,34 @@ fn build_entries(metadata: &CompileMetadata, frame_sizes: &BTreeMap<String, u32>
             proof_ids: Vec::new(),
             frame_size_bytes,
             outgoing_argument_bytes: outgoing_argument_bytes.min(frame_size_bytes),
+            typed_blocks: Vec::new(),
         });
     }
     entries.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(entries)
+}
+
+fn bind_typed_blocks(entries: &mut [LoweringEntry], blocks: &[LoweringBlock], metadata: &CompileMetadata) -> Result<()> {
+    for entry in entries {
+        let Some(typed_entry) = metadata.typed_semantics.entries.iter().find(|typed| typed.id == entry.id) else {
+            continue;
+        };
+        entry.typed_blocks = typed_entry
+            .blocks
+            .iter()
+            .map(|typed_block| {
+                let hash =
+                    canonical_hash("cellscript-typed-block-v1", typed_block).map_err(|error| boundary_error(error.to_string()))?;
+                let machine_block_ids = blocks
+                    .iter()
+                    .filter(|block| block.owner_entry == entry.id && block.lowering_block_id == Some(typed_block.id))
+                    .map(|block| block.id.clone())
+                    .collect();
+                Ok(TypedBlockBinding { id: typed_block.id, hash, machine_block_ids })
+            })
+            .collect::<Result<Vec<_>>>()?;
+    }
+    Ok(())
 }
 
 fn complete_frame_sizes(

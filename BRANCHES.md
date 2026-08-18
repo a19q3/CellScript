@@ -1,5 +1,15 @@
 # Branch Context
 
+## nightly-0.25
+
+`nightly-0.25` is the active language-completeness development line. It adds
+bounded value generics, explicit visibility and package interfaces, exhaustive
+IR-surface classification, and the typed-semantics v2 / lowering-record v3
+boundary. Treat it as merge-ready only when compiler, independent checker,
+Registry, editor/Playground, docs, and the `dev`, `ci`, and `backend` gates all
+agree. It is not a stable release or production CKB evidence claim; the crate
+version remains pinned until the coordinated release gate changes it.
+
 ## 0.12-era proposal baseline
 
 The 0.12-era work is the formal proposal baseline for grant-style acceptance

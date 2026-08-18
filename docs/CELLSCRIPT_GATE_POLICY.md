@@ -231,12 +231,12 @@ CKB-VM execution, deployment, and chain evidence.
 
 ### 0.25 language, interface, and typed-semantics evidence
 
-The 0.25 implementation advances compile metadata to schema 60. The compiler
+The 0.25 implementation advances compile metadata to schema 61. The compiler
 gate now checks the generated executable-surface matrix, bounded generic value
 instantiations, explicit visibility and canonical public interfaces, six-axis
 interface compatibility, and Registry interface/hash admission. CKB ELF
-lowering uses `cellscript-verified-lowering-record-v2`, embedding the canonical
-`cellscript-typed-semantics-v1` record.
+lowering uses `cellscript-verified-lowering-record-v3`, embedding the canonical
+`cellscript-typed-semantics-v2` record.
 
 The standalone checker remains parser/resolver/codegen-independent. Its
 mutation corpus extends the stable boundary with `V2419` for malformed or

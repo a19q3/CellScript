@@ -295,6 +295,10 @@ pub struct IrBorrowRegion {
     pub binding: String,
     pub root_type: String,
     pub view_type: String,
+    pub start_block: BlockId,
+    pub start_instruction: usize,
+    pub end_block: Option<BlockId>,
+    pub end_instruction: Option<usize>,
     pub span: Span,
 }
 
@@ -2524,17 +2528,27 @@ impl IrGenerator {
                 let canonical_root = parent_region.as_ref().map_or_else(|| borrow_stmt.root.clone(), |region| region.root.clone());
                 let mut canonical_path = parent_region.map_or_else(Vec::new, |region| region.path);
                 canonical_path.extend(borrow_stmt.path.iter().cloned());
+                let region_index = self.borrow_regions.len();
+                let start_instruction = self.block_mut(blocks, current).instructions.len();
                 self.borrow_regions.push(IrBorrowRegion {
                     root: canonical_root,
                     path: canonical_path,
                     binding: borrow_stmt.binding.clone(),
                     root_type: ir_type_display(&root.ty),
                     view_type: ir_type_display(&view_target),
+                    start_block: current,
+                    start_instruction,
+                    end_block: None,
+                    end_instruction: None,
                     span: borrow_stmt.span,
                 });
                 let view = IrVar { id: projected.id, name: borrow_stmt.binding.clone(), ty: IrType::Ref(Box::new(view_target)) };
                 let previous = vars.insert(borrow_stmt.binding.clone(), view);
                 let exit = self.lower_stmts(&borrow_stmt.body, current, blocks, vars, return_type, false);
+                if let Some(end_block) = exit {
+                    self.borrow_regions[region_index].end_block = Some(end_block);
+                    self.borrow_regions[region_index].end_instruction = Some(self.block_mut(blocks, end_block).instructions.len());
+                }
                 if let Some(previous) = previous {
                     vars.insert(borrow_stmt.binding.clone(), previous);
                 } else {
@@ -3598,8 +3612,11 @@ impl IrGenerator {
             IrTerminator::Branch { cond: IrOperand::Var(condition), then_block: ok_block, else_block: fail_block };
         self.block_mut(blocks, fail_block).terminator =
             IrTerminator::Return(Some(self.fail_closed_runtime_return_operand(CellScriptRuntimeError::NumericOrDiscriminantInvalid)));
+        self.block_mut(blocks, fail_block).runtime_error = Some(CellScriptRuntimeError::NumericOrDiscriminantInvalid);
 
-        LoweredExpr { operand: lowered.operand, current: Some(ok_block) }
+        let cast_value = self.new_var("cast_value", target_ty);
+        self.block_mut(blocks, ok_block).instructions.push(IrInstruction::Move { dest: cast_value.clone(), src: lowered.operand });
+        LoweredExpr { operand: IrOperand::Var(cast_value), current: Some(ok_block) }
     }
 
     /// Lower `require { expr1, expr2, ... }` — desugar into independent atomic `require` statements.
@@ -5244,7 +5261,10 @@ impl IrGenerator {
                     self.push_block(blocks)
                 } else {
                     let fail_block = self.push_block(blocks);
-                    self.block_mut(blocks, fail_block).terminator = IrTerminator::Return(Some(IrOperand::Const(IrConst::U64(8))));
+                    let fail = self.block_mut(blocks, fail_block);
+                    fail.terminator =
+                        IrTerminator::Return(Some(IrOperand::Const(IrConst::U64(CellScriptRuntimeError::FlowNewStateInvalid.code()))));
+                    fail.runtime_error = Some(CellScriptRuntimeError::FlowNewStateInvalid);
                     fail_block
                 };
                 self.block_mut(blocks, check_block).terminator =

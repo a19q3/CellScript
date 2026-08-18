@@ -1,0 +1,22 @@
+// audit: hidden-cell laundering attempt via plain struct wrapper
+module audit::hidden_cell
+
+resource Token has store, create, consume, replace, burn {
+    amount: u128,
+}
+
+struct Wrapper has fixed, serializable {
+    token: Token,
+}
+
+struct Box<T: fixed + serializable + non_linear>
+    has fixed, serializable, non_linear
+{
+    value: T,
+}
+
+action verify() -> u64 {
+    verification
+        let boxed: Box<Wrapper> = Box<Wrapper> { value: Wrapper { token: ... } }
+        0
+}

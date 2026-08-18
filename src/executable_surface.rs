@@ -6,6 +6,8 @@
 //! compilation accepts only shapes for which the metadata classifier reports
 //! no fail-closed feature.
 
+use crate::error::{CompileError, Result};
+use crate::ir::{IrBody, IrInstruction, IrItem, IrModule, IrTerminator, IrType};
 use serde::Serialize;
 
 pub const EXECUTABLE_SURFACE_SCHEMA: &str = "cellscript-executable-surface-v1";
@@ -110,6 +112,14 @@ pub static EXECUTABLE_SURFACE: &[ExecutableSurfaceEntry] = &[
         ACCEPT,
         "Nearest and labeled break/continue targets lower to explicit CFG jumps after compile-time target validation."
     ),
+    entry!("ir-item:type-def", "ir-item", "bounded", ACCEPT_WHEN_CLOSED, "Concrete fixed-layout type definition."),
+    entry!("ir-item:invariant", "ir-item", "compile-time-only", FRONTEND_ONLY, "Proof-planning invariant record."),
+    entry!("ir-item:action", "ir-item", "bounded", ACCEPT_WHEN_CLOSED, "Executable transaction action entry."),
+    entry!("ir-item:pure-fn", "ir-item", "bounded", ACCEPT_WHEN_CLOSED, "Resolved helper callable."),
+    entry!("ir-item:lock", "ir-item", "bounded", ACCEPT_WHEN_CLOSED, "Executable lock predicate entry."),
+    entry!("ir-terminator:return", "terminator", "complete", ACCEPT, "Typed return with an optional value."),
+    entry!("ir-terminator:jump", "terminator", "complete", ACCEPT, "Validated direct CFG edge."),
+    entry!("ir-terminator:branch", "terminator", "complete", ACCEPT, "Validated boolean conditional CFG edge."),
     entry!("ir:load-const", "instruction", "complete", ACCEPT, "Materializes supported scalar and fixed-byte constants."),
     entry!("ir:load-var", "instruction", "complete", ACCEPT, "Loads a checked local binding."),
     entry!("ir:store-var", "instruction", "complete", ACCEPT, "Stores a checked local binding without changing Cell authority."),
@@ -347,6 +357,195 @@ pub static EXECUTABLE_SURFACE: &[ExecutableSurfaceEntry] = &[
     ),
 ];
 
+pub fn validate_ir_module(module: &IrModule) -> Result<()> {
+    for external in &module.external_type_defs {
+        require_registered("ir-item:type-def")?;
+        for field in &external.fields {
+            validate_ir_type(&field.ty)?;
+        }
+        if let Some(claim_output) = &external.claim_output {
+            validate_ir_type(claim_output)?;
+        }
+    }
+    for item in &module.items {
+        require_registered(ir_item_surface_id(item))?;
+        match item {
+            IrItem::TypeDef(definition) => {
+                for field in &definition.fields {
+                    validate_ir_type(&field.ty)?;
+                }
+                if let Some(claim_output) = &definition.claim_output {
+                    validate_ir_type(claim_output)?;
+                }
+            }
+            IrItem::Action(action) => {
+                validate_params_and_return(&action.params, action.return_type.as_ref())?;
+                validate_body(&action.body)?;
+            }
+            IrItem::PureFn(function) => {
+                validate_params_and_return(&function.params, function.return_type.as_ref())?;
+                validate_body(&function.body)?;
+            }
+            IrItem::Lock(lock) => {
+                validate_params_and_return(&lock.params, Some(&IrType::Bool))?;
+                validate_body(&lock.body)?;
+            }
+            IrItem::Invariant(_) => {}
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_fail_closed_features<'a>(features: impl IntoIterator<Item = &'a str>) -> Result<()> {
+    let registered = EXECUTABLE_SURFACE
+        .iter()
+        .flat_map(|entry| entry.fail_closed_features.iter().copied())
+        .collect::<std::collections::BTreeSet<_>>();
+    let unknown = features.into_iter().filter(|feature| !registered.contains(feature)).collect::<Vec<_>>();
+    if unknown.is_empty() {
+        Ok(())
+    } else {
+        Err(CompileError::without_span(format!(
+            "executable surface reported unregistered fail-closed feature(s): {}",
+            unknown.join(", ")
+        ))
+        .with_code("E2105"))
+    }
+}
+
+fn validate_params_and_return(params: &[crate::ir::IrParam], return_type: Option<&IrType>) -> Result<()> {
+    for param in params {
+        validate_ir_type(&param.ty)?;
+    }
+    if let Some(return_type) = return_type {
+        validate_ir_type(return_type)?;
+    }
+    Ok(())
+}
+
+fn validate_body(body: &IrBody) -> Result<()> {
+    for block in &body.blocks {
+        for instruction in &block.instructions {
+            require_registered(ir_instruction_surface_id(instruction))?;
+        }
+        require_registered(ir_terminator_surface_id(&block.terminator))?;
+    }
+    Ok(())
+}
+
+fn validate_ir_type(ty: &IrType) -> Result<()> {
+    require_registered(ir_type_surface_id(ty))?;
+    match ty {
+        IrType::Array(inner, _) | IrType::Ref(inner) | IrType::MutRef(inner) => validate_ir_type(inner),
+        IrType::Tuple(items) => {
+            for item in items {
+                validate_ir_type(item)?;
+            }
+            Ok(())
+        }
+        IrType::U8
+        | IrType::U16
+        | IrType::U32
+        | IrType::I32
+        | IrType::U64
+        | IrType::U128
+        | IrType::Bool
+        | IrType::Unit
+        | IrType::Address
+        | IrType::Hash
+        | IrType::Named(_) => Ok(()),
+    }
+}
+
+fn require_registered(id: &str) -> Result<()> {
+    if EXECUTABLE_SURFACE.iter().any(|entry| entry.id == id) {
+        Ok(())
+    } else {
+        Err(CompileError::without_span(format!("IR surface classifier emitted unregistered ID '{id}'")).with_code("E2105"))
+    }
+}
+
+fn ir_item_surface_id(item: &IrItem) -> &'static str {
+    match item {
+        IrItem::TypeDef(_) => "ir-item:type-def",
+        IrItem::Invariant(_) => "ir-item:invariant",
+        IrItem::Action(_) => "ir-item:action",
+        IrItem::PureFn(_) => "ir-item:pure-fn",
+        IrItem::Lock(_) => "ir-item:lock",
+    }
+}
+
+fn ir_type_surface_id(ty: &IrType) -> &'static str {
+    match ty {
+        IrType::U8 => "type:u8",
+        IrType::U16 => "type:u16",
+        IrType::U32 => "type:u32",
+        IrType::I32 => "type:i32",
+        IrType::U64 => "type:u64",
+        IrType::U128 => "type:u128",
+        IrType::Bool => "type:bool",
+        IrType::Unit => "type:unit",
+        IrType::Address => "type:Address",
+        IrType::Hash => "type:Hash",
+        IrType::Array(_, _) => "type:Array",
+        IrType::Tuple(_) => "type:Tuple",
+        IrType::Named(_) => "type:Named",
+        IrType::Ref(_) => "type:Ref",
+        IrType::MutRef(_) => "type:MutRef",
+    }
+}
+
+fn ir_instruction_surface_id(instruction: &IrInstruction) -> &'static str {
+    match instruction {
+        IrInstruction::LoadConst { .. } => "ir:load-const",
+        IrInstruction::LoadVar { .. } => "ir:load-var",
+        IrInstruction::StoreVar { .. } => "ir:store-var",
+        IrInstruction::Binary { .. } => "ir:binary",
+        IrInstruction::Unary { .. } => "ir:unary",
+        IrInstruction::FieldAccess { .. } => "ir:field-access",
+        IrInstruction::Index { .. } => "ir:index",
+        IrInstruction::Length { .. } => "ir:length",
+        IrInstruction::TypeHash { .. } => "ir:type-hash",
+        IrInstruction::CollectionNew { .. } => "ir:collection-new",
+        IrInstruction::CollectionCapacity { .. } => "ir:collection-capacity",
+        IrInstruction::CollectionPush { .. } => "ir:collection-push",
+        IrInstruction::CollectionExtend { .. } => "ir:collection-extend",
+        IrInstruction::CollectionClear { .. } => "ir:collection-clear",
+        IrInstruction::CollectionContains { .. } => "ir:collection-contains",
+        IrInstruction::CollectionRemove { .. } => "ir:collection-remove",
+        IrInstruction::CollectionInsert { .. } => "ir:collection-insert",
+        IrInstruction::CollectionSet { .. } => "ir:collection-set",
+        IrInstruction::CollectionPop { .. } => "ir:collection-pop",
+        IrInstruction::CollectionReverse { .. } => "ir:collection-reverse",
+        IrInstruction::CollectionTruncate { .. } => "ir:collection-truncate",
+        IrInstruction::CollectionSwap { .. } => "ir:collection-swap",
+        IrInstruction::Call { .. } => "ir:call",
+        IrInstruction::ReadRef { .. } => "ir:read-ref",
+        IrInstruction::Move { .. } => "ir:move",
+        IrInstruction::Tuple { .. } => "ir:tuple",
+        IrInstruction::EnumConstruct { .. } => "ir:enum-construct",
+        IrInstruction::EnumTag { .. } => "ir:enum-tag",
+        IrInstruction::EnumPayload { .. } => "ir:enum-payload",
+        IrInstruction::Consume { .. } => "ir:consume",
+        IrInstruction::Create { .. } => "ir:create",
+        IrInstruction::Transfer { .. } => "ir:transfer",
+        IrInstruction::Destroy { .. } => "ir:destroy",
+        IrInstruction::Claim { .. } => "ir:claim",
+        IrInstruction::Settle { .. } => "ir:settle",
+        IrInstruction::CreateUnique { .. } => "ir:create-unique",
+        IrInstruction::ReplaceUnique { .. } => "ir:replace-unique",
+        IrInstruction::CellMetadataEquality { .. } => "ir:cell-metadata-equality",
+    }
+}
+
+fn ir_terminator_surface_id(terminator: &IrTerminator) -> &'static str {
+    match terminator {
+        IrTerminator::Return(_) => "ir-terminator:return",
+        IrTerminator::Jump(_) => "ir-terminator:jump",
+        IrTerminator::Branch { .. } => "ir-terminator:branch",
+    }
+}
+
 pub fn executable_surface_json() -> String {
     let value = serde_json::json!({
         "schema": EXECUTABLE_SURFACE_SCHEMA,
@@ -378,7 +577,7 @@ Production compilation means `--production` or `--deny-fail-closed`; both stop b
 
 #[cfg(test)]
 mod tests {
-    use super::EXECUTABLE_SURFACE;
+    use super::{validate_fail_closed_features, EXECUTABLE_SURFACE};
     use std::collections::BTreeSet;
 
     #[test]
@@ -395,5 +594,12 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn unregistered_fail_closed_features_are_rejected_even_before_policy_selection() {
+        let error = validate_fail_closed_features(["new-unclassified-runtime-shape"]).unwrap_err();
+        assert_eq!(error.code.as_deref(), Some("E2105"));
+        assert!(error.message.contains("unregistered"));
     }
 }

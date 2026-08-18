@@ -6,9 +6,11 @@ backend. Together they make more compiler claims independently inspectable
 without calling local execution chain evidence.
 
 The 0.25 line extends the same four-file bundle with
-`cellscript-typed-semantics-v1` inside lowering record v2. The checker now
-recomputes the typed record and its connection to entry ABI and final machine
-blocks; failures use stable `V2419` and `V2420` codes. It still keeps
+`cellscript-typed-semantics-v2` inside lowering record v3. The checker now
+independently validates the IR-shaped typed record, recomputes its layout,
+identity, operation, dataflow, ownership, and borrow invariants, and checks its
+connection to entry ABI and final machine blocks; failures use stable `V2419`
+and `V2420` codes. It does not reconstruct the record from source and still keeps
 `semantic_equivalence_claimed = false`.
 
 ## Build the Four-File Bundle

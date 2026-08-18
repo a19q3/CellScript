@@ -11,7 +11,7 @@ use crate::error::{CompileError, Result, Span};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 const MONO_MARKER: &str = "__mono__";
-const MAX_GENERIC_INSTANTIATIONS: usize = 256;
+pub(crate) const MAX_GENERIC_INSTANTIATIONS: usize = 256;
 const MAX_GENERIC_NESTING: usize = 32;
 const MAX_MONOMORPH_NAME_BYTES: usize = 1024;
 
@@ -28,6 +28,43 @@ struct Instantiation {
     base: String,
     args: Vec<Type>,
     span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExternalGenericItem {
+    pub(crate) local_name: String,
+    pub(crate) owner_module: String,
+    pub(crate) source_name: String,
+    pub(crate) item: Item,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SeedInstantiation {
+    pub(crate) base: String,
+    pub(crate) args: Vec<Type>,
+    pub(crate) span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExternalInstantiationRequest {
+    pub(crate) owner_module: String,
+    pub(crate) source_name: String,
+    pub(crate) local_concrete_name: String,
+    pub(crate) owner_concrete_name: String,
+    pub(crate) seed: SeedInstantiation,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MonomorphizeOutput {
+    pub(crate) module: Module,
+    pub(crate) external_requests: Vec<ExternalInstantiationRequest>,
+}
+
+#[derive(Debug, Clone)]
+struct ExternalOrigin {
+    owner_module: String,
+    source_name: String,
+    kind: TemplateKind,
 }
 
 #[derive(Default)]
@@ -76,16 +113,32 @@ struct Monomorphizer {
     functions: HashMap<String, FnDef>,
     concrete_struct_abilities: HashMap<String, Vec<ValueAbility>>,
     concrete_enum_abilities: HashMap<String, Vec<ValueAbility>>,
+    concrete_struct_fields: HashMap<String, Vec<Type>>,
+    concrete_enum_fields: HashMap<String, Vec<Type>>,
     cell_types: HashSet<String>,
     pending: BTreeMap<String, Instantiation>,
     emitted: HashSet<String>,
+    external_origins: HashMap<String, ExternalOrigin>,
+    external_requests: BTreeMap<String, ExternalInstantiationRequest>,
 }
 
 /// Replace every reachable generic template in one module with deterministic
-/// concrete specializations. Cross-module templates are rejected until the
-/// canonical package-interface phase owns their identities.
+/// concrete specializations.
 pub fn monomorphize(module: &Module) -> Result<Module> {
-    Monomorphizer::new(module)?.run(module)
+    let mut monomorphizer = Monomorphizer::new(module)?;
+    monomorphizer.run(module)
+}
+
+pub(crate) fn monomorphize_with_project_context(
+    module: &Module,
+    external_items: &[ExternalGenericItem],
+    seeds: &[SeedInstantiation],
+) -> Result<MonomorphizeOutput> {
+    let mut monomorphizer = Monomorphizer::new(module)?;
+    monomorphizer.register_external_items(external_items)?;
+    monomorphizer.seed(seeds)?;
+    let module = monomorphizer.run(module)?;
+    Ok(MonomorphizeOutput { module, external_requests: monomorphizer.external_requests.into_values().collect() })
 }
 
 /// Decode the stable internal specialization name into its source template and
@@ -111,9 +164,13 @@ impl Monomorphizer {
             functions: HashMap::new(),
             concrete_struct_abilities: HashMap::new(),
             concrete_enum_abilities: HashMap::new(),
+            concrete_struct_fields: HashMap::new(),
+            concrete_enum_fields: HashMap::new(),
             cell_types: HashSet::new(),
             pending: BTreeMap::new(),
             emitted: HashSet::new(),
+            external_origins: HashMap::new(),
+            external_requests: BTreeMap::new(),
         };
         let option = builtin_option_template();
         this.enums.insert(option.name.clone(), option);
@@ -140,6 +197,7 @@ impl Monomorphizer {
                 }
                 Item::Struct(def) if def.type_params.is_empty() => {
                     this.concrete_struct_abilities.insert(def.name.clone(), def.abilities.clone());
+                    this.concrete_struct_fields.insert(def.name.clone(), def.fields.iter().map(|field| field.ty.clone()).collect());
                 }
                 Item::Struct(def) => {
                     Self::validate_type_params("struct", &def.name, &def.type_params, def.span)?;
@@ -149,6 +207,8 @@ impl Monomorphizer {
                 }
                 Item::Enum(def) if def.type_params.is_empty() => {
                     this.concrete_enum_abilities.insert(def.name.clone(), def.abilities.clone());
+                    this.concrete_enum_fields
+                        .insert(def.name.clone(), def.variants.iter().flat_map(|variant| variant.fields.iter().cloned()).collect());
                 }
                 Item::Enum(def) => {
                     Self::validate_type_params("enum", &def.name, &def.type_params, def.span)?;
@@ -177,7 +237,83 @@ impl Monomorphizer {
         Ok(this)
     }
 
-    fn run(mut self, module: &Module) -> Result<Module> {
+    fn register_external_items(&mut self, external_items: &[ExternalGenericItem]) -> Result<()> {
+        for external in external_items {
+            match &external.item {
+                Item::Resource(_) | Item::Shared(_) | Item::Receipt(_) => {
+                    self.cell_types.insert(external.local_name.clone());
+                }
+                Item::Struct(def) if def.type_params.is_empty() => {
+                    self.concrete_struct_abilities.insert(external.local_name.clone(), def.abilities.clone());
+                    self.concrete_struct_fields
+                        .insert(external.local_name.clone(), def.fields.iter().map(|field| field.ty.clone()).collect());
+                }
+                Item::Struct(def) => {
+                    self.structs.insert(external.local_name.clone(), def.clone());
+                    self.external_origins.insert(
+                        external.local_name.clone(),
+                        ExternalOrigin {
+                            owner_module: external.owner_module.clone(),
+                            source_name: external.source_name.clone(),
+                            kind: TemplateKind::Struct,
+                        },
+                    );
+                }
+                Item::Enum(def) if def.type_params.is_empty() => {
+                    self.concrete_enum_abilities.insert(external.local_name.clone(), def.abilities.clone());
+                    self.concrete_enum_fields.insert(
+                        external.local_name.clone(),
+                        def.variants.iter().flat_map(|variant| variant.fields.iter().cloned()).collect(),
+                    );
+                }
+                Item::Enum(def) => {
+                    self.enums.insert(external.local_name.clone(), def.clone());
+                    self.external_origins.insert(
+                        external.local_name.clone(),
+                        ExternalOrigin {
+                            owner_module: external.owner_module.clone(),
+                            source_name: external.source_name.clone(),
+                            kind: TemplateKind::Enum,
+                        },
+                    );
+                }
+                Item::Function(def) if !def.type_params.is_empty() => {
+                    self.functions.insert(external.local_name.clone(), def.clone());
+                    self.external_origins.insert(
+                        external.local_name.clone(),
+                        ExternalOrigin {
+                            owner_module: external.owner_module.clone(),
+                            source_name: external.source_name.clone(),
+                            kind: TemplateKind::Function,
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn seed(&mut self, seeds: &[SeedInstantiation]) -> Result<()> {
+        for seed in seeds {
+            let kind = if self.structs.contains_key(&seed.base) {
+                TemplateKind::Struct
+            } else if self.enums.contains_key(&seed.base) {
+                TemplateKind::Enum
+            } else if self.functions.contains_key(&seed.base) {
+                TemplateKind::Function
+            } else {
+                return Err(generic_instantiation_error(
+                    format!("unknown generic template '{}' requested by another module", seed.base),
+                    seed.span,
+                ));
+            };
+            self.enqueue(kind, &seed.base, seed.args.clone(), seed.span)?;
+        }
+        Ok(())
+    }
+
+    fn run(&mut self, module: &Module) -> Result<Module> {
         let interface_templates = module
             .items
             .iter()
@@ -217,9 +353,7 @@ impl Monomorphizer {
         let mut visibilities = module.visibilities.clone();
         for item in &items {
             let Some(name) = item_decl_name(item) else { continue };
-            let visibility = decode_monomorph_name(name)
-                .map(|(template, _)| module.visibility_of(&template))
-                .unwrap_or_else(|| module.visibility_of(name));
+            let visibility = if decode_monomorph_name(name).is_some() { Visibility::Private } else { module.visibility_of(name) };
             visibilities.insert(name.to_string(), visibility);
         }
         Ok(Module { name: module.name.clone(), items, interface_templates, visibilities, span: module.span })
@@ -327,6 +461,8 @@ impl Monomorphizer {
                     concrete.span,
                 )?;
                 self.concrete_struct_abilities.insert(concrete.name.clone(), concrete.abilities.clone());
+                self.concrete_struct_fields
+                    .insert(concrete.name.clone(), concrete.fields.iter().map(|field| field.ty.clone()).collect());
                 Ok(Item::Struct(concrete))
             }
             TemplateKind::Enum => {
@@ -352,6 +488,10 @@ impl Monomorphizer {
                     concrete.span,
                 )?;
                 self.concrete_enum_abilities.insert(concrete.name.clone(), concrete.abilities.clone());
+                self.concrete_enum_fields.insert(
+                    concrete.name.clone(),
+                    concrete.variants.iter().flat_map(|variant| variant.fields.iter().cloned()).collect(),
+                );
                 Ok(Item::Enum(concrete))
             }
             TemplateKind::Function => {
@@ -404,6 +544,30 @@ impl Monomorphizer {
                 ));
             }
             let actual_abilities = self.abilities_for_type(actual, &mut HashSet::new());
+            let cell_backed = actual_abilities.contains(&ValueAbility::Cell);
+            match kind {
+                TemplateKind::Struct | TemplateKind::Enum if cell_backed && !param.phantom => {
+                    return Err(generic_instantiation_error(
+                        format!(
+                            "Cell-backed type '{}' cannot be hidden in ordinary generic layout parameter '{}'; use an explicit Cell collection/flow primitive",
+                            render_type(actual),
+                            param.name
+                        ),
+                        span,
+                    ));
+                }
+                TemplateKind::Function if cell_backed && !param.constraints.contains(&ValueAbility::Cell) => {
+                    return Err(generic_instantiation_error(
+                        format!(
+                            "generic function parameter '{}' received Cell-backed type '{}' without an explicit 'cell' constraint",
+                            param.name,
+                            render_type(actual)
+                        ),
+                        span,
+                    ));
+                }
+                _ => {}
+            }
             for required in &param.constraints {
                 if !actual_abilities.contains(required) {
                     return Err(generic_instantiation_error(
@@ -419,18 +583,7 @@ impl Monomorphizer {
                 }
             }
 
-            let cell_backed = actual_abilities.contains(&ValueAbility::Cell);
             match kind {
-                TemplateKind::Struct | TemplateKind::Enum if cell_backed && !param.phantom => {
-                    return Err(generic_instantiation_error(
-                        format!(
-                            "Cell-backed type '{}' cannot be hidden in ordinary generic layout parameter '{}'; use an explicit Cell collection/flow primitive",
-                            render_type(actual),
-                            param.name
-                        ),
-                        span,
-                    ));
-                }
                 TemplateKind::Struct | TemplateKind::Enum if !param.phantom => {
                     for required in [ValueAbility::Fixed, ValueAbility::Serializable, ValueAbility::NonLinear] {
                         if !actual_abilities.contains(&required) {
@@ -445,16 +598,6 @@ impl Monomorphizer {
                             ));
                         }
                     }
-                }
-                TemplateKind::Function if cell_backed && !param.constraints.contains(&ValueAbility::Cell) => {
-                    return Err(generic_instantiation_error(
-                        format!(
-                            "generic function parameter '{}' received Cell-backed type '{}' without an explicit 'cell' constraint",
-                            param.name,
-                            render_type(actual)
-                        ),
-                        span,
-                    ));
                 }
                 _ => {}
             }
@@ -541,7 +684,18 @@ impl Monomorphizer {
                     .or_else(|| self.enums.get(base).map(|def| &def.abilities))
                 {
                     let mut result = abilities.iter().copied().collect::<HashSet<_>>();
-                    if !result.contains(&ValueAbility::Cell) {
+                    if !visiting.insert(name.clone()) {
+                        return HashSet::new();
+                    }
+                    let contains_cell = self
+                        .structural_field_types(name, base)
+                        .iter()
+                        .any(|field| self.abilities_for_type(field, visiting).contains(&ValueAbility::Cell));
+                    visiting.remove(name);
+                    if contains_cell {
+                        result.retain(|ability| matches!(ability, ValueAbility::Fixed | ValueAbility::Serializable));
+                        result.insert(ValueAbility::Cell);
+                    } else {
                         result.insert(ValueAbility::NonLinear);
                     }
                     return result;
@@ -555,8 +709,72 @@ impl Monomorphizer {
         }
     }
 
+    fn structural_field_types(&self, name: &str, base: &str) -> Vec<Type> {
+        if let Some(fields) = self.concrete_struct_fields.get(name).or_else(|| self.concrete_struct_fields.get(base)) {
+            return fields.clone();
+        }
+        if let Some(fields) = self.concrete_enum_fields.get(name).or_else(|| self.concrete_enum_fields.get(base)) {
+            return fields.clone();
+        }
+
+        let arguments = decode_monomorph_name(name)
+            .map(|(_, arguments)| arguments)
+            .or_else(|| applied_type(name).map(|(_, arguments)| arguments))
+            .unwrap_or_default();
+        let arguments = arguments.iter().filter_map(|argument| parse_type_repr(argument)).collect::<Vec<_>>();
+
+        if let Some(template) = self.structs.get(base).filter(|template| template.type_params.len() == arguments.len()) {
+            let substitution = template
+                .type_params
+                .iter()
+                .zip(arguments.iter().cloned())
+                .map(|(parameter, argument)| (parameter.name.clone(), argument))
+                .collect::<HashMap<_, _>>();
+            return template.fields.iter().filter_map(|field| substitute_type_pure(&field.ty, &substitution)).collect();
+        }
+        if let Some(template) = self.enums.get(base).filter(|template| template.type_params.len() == arguments.len()) {
+            let substitution = template
+                .type_params
+                .iter()
+                .zip(arguments.iter().cloned())
+                .map(|(parameter, argument)| (parameter.name.clone(), argument))
+                .collect::<HashMap<_, _>>();
+            return template
+                .variants
+                .iter()
+                .flat_map(|variant| variant.fields.iter())
+                .filter_map(|field| substitute_type_pure(field, &substitution))
+                .collect();
+        }
+        Vec::new()
+    }
+
     fn enqueue(&mut self, kind: TemplateKind, base: &str, args: Vec<Type>, span: Span) -> Result<String> {
         let name = monomorph_name(base, &args, span)?;
+        if let Some(origin) = self.external_origins.get(base).filter(|origin| origin.kind == kind).cloned() {
+            let params = match kind {
+                TemplateKind::Struct => &self.structs.get(base).expect("registered external struct").type_params,
+                TemplateKind::Enum => &self.enums.get(base).expect("registered external enum").type_params,
+                TemplateKind::Function => &self.functions.get(base).expect("registered external function").type_params,
+            };
+            self.validate_instantiation(params, &args, kind, span)?;
+            let owner_concrete_name = monomorph_name(&origin.source_name, &args, span)?;
+            let key = format!("{}:{}:{}", origin.owner_module, kind_key(kind), owner_concrete_name);
+            self.external_requests.entry(key).or_insert_with(|| ExternalInstantiationRequest {
+                owner_module: origin.owner_module,
+                source_name: origin.source_name.clone(),
+                local_concrete_name: name.clone(),
+                owner_concrete_name,
+                seed: SeedInstantiation { base: origin.source_name, args, span },
+            });
+            if self.external_requests.len() + self.pending.len() + self.emitted.len() > MAX_GENERIC_INSTANTIATIONS {
+                return Err(generic_budget_error(
+                    format!("generic instantiation count exceeds the limit of {}", MAX_GENERIC_INSTANTIATIONS),
+                    span,
+                ));
+            }
+            return Ok(name);
+        }
         let key = format!("{}:{}", kind_key(kind), name);
         if !self.emitted.contains(&key) && !self.pending.contains_key(&key) {
             self.pending.insert(key, Instantiation { kind, base: base.to_string(), args, span });
@@ -1350,6 +1568,17 @@ pub(crate) fn render_type(ty: &Type) -> String {
         Type::Named(name) => name.clone(),
         Type::Ref(inner) => format!("&{}", render_type(inner)),
         Type::MutRef(inner) => format!("&mut {}", render_type(inner)),
+    }
+}
+
+pub(crate) fn render_source_type(ty: &Type) -> String {
+    match ty {
+        Type::Array(inner, len) => format!("[{}; {}]", render_source_type(inner), len),
+        Type::Tuple(items) => format!("({})", items.iter().map(render_source_type).collect::<Vec<_>>().join(", ")),
+        Type::Named(name) => source_type_name(name),
+        Type::Ref(inner) => format!("&{}", render_source_type(inner)),
+        Type::MutRef(inner) => format!("&mut {}", render_source_type(inner)),
+        primitive => render_type(primitive),
     }
 }
 

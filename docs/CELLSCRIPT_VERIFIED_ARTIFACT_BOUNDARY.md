@@ -2,12 +2,12 @@
 
 **Status**: typed boundary implemented on the 0.25 development line
 
-**Schemas**: `cellscript-verified-lowering-record-v2`,
-`cellscript-typed-semantics-v1`,
+**Schemas**: `cellscript-verified-lowering-record-v3`,
+`cellscript-typed-semantics-v2`,
 `cellscript-source-artifact-map-v1`, and
 `cellscript-artifact-checker-policy-v1`
 
-**Metadata schema**: 60
+**Metadata schema**: 61
 
 ## Purpose
 
@@ -23,9 +23,11 @@ build/main.elf.sourcemap.json
 
 The typed semantic record retains checked types, locals, calls, effects,
 ownership, borrow regions, concrete generic instantiations, layouts, and CFG
-operations in a parser-free schema. Lowering record v2 embeds that record and
-binds it to the final machine layout. The source map binds source spans and
-lowering block IDs to final instruction ranges. All records are hash-bound into
+operations in a parser-free schema. Lowering record v3 embeds that record and
+binds it to the final machine layout. Every typed block is accounted for;
+optimized/elided typed blocks have an explicit empty machine-block list, while
+materialized blocks carry exact typed-block hashes. The source map binds source
+spans and lowering block IDs to final instruction ranges. All records are hash-bound into
 compile metadata and validated immediately after compilation.
 
 The sidecars do not claim complete source-to-machine semantic equivalence.
@@ -51,9 +53,10 @@ The checker independently recomputes and validates:
   uniqueness, and domain-separated hashes;
 - entry, block, CFG, reachability, call-depth, recursion, frame, stack-slot,
   typed ABI, capability, and ProofPlan relationships;
-- typed semantic schemas, canonical type and local tables, operation operands,
-  call signatures and effects, control-flow joins, ownership and borrow
-  records, layouts, and concrete instantiations;
+- typed semantic schemas, exact constants and operation detail, canonical type
+  and local tables, call signatures and effects, definite-definition joins,
+  ownership/borrow state transitions, enum/layout hashes, and owner-qualified
+  concrete instantiations;
 - typed entry/block/operation identities against lowering blocks, final
   machine ABI, and the metadata `typed_semantics_hash`;
 - ELF64 little-endian RISC-V identity, exact static sections, read/execute

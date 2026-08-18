@@ -4015,6 +4015,122 @@ action run(x: u64) -> u64 {
 }
 
 #[test]
+fn cellc_enforces_package_visibility_across_path_dependencies() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let dep_root = root.join("dep_pkg");
+    let app_root = root.join("app_pkg");
+
+    std::fs::create_dir_all(dep_root.join("src")).unwrap();
+    std::fs::create_dir_all(app_root.join("src")).unwrap();
+    std::fs::write(
+        dep_root.join("Cell.toml"),
+        r#"
+[package]
+edition = "2026"
+name = "dep_pkg"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dep_root.join("src").join("math.cell"),
+        r#"
+module dep::math
+
+public(package) fn package_secret(x: u64) -> u64 {
+    return x + 1
+}
+
+public fn exported(x: u64) -> u64 {
+    return x + 2
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        app_root.join("Cell.toml"),
+        r#"
+[package]
+edition = "2026"
+name = "app_pkg"
+version = "0.1.0"
+
+[dependencies]
+dep_pkg = { path = "../dep_pkg" }
+"#,
+    )
+    .unwrap();
+
+    let app_source = app_root.join("src").join("main.cell");
+    std::fs::write(
+        &app_source,
+        r#"
+module app::main
+
+use dep::math::package_secret as hidden
+
+action run(x: u64) -> u64 {
+    verification
+        return hidden(x)
+}
+"#,
+    )
+    .unwrap();
+    lock_package(&app_root);
+    let aliased = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).output().unwrap();
+    assert!(!aliased.status.success(), "package-private alias unexpectedly compiled");
+    let stderr = String::from_utf8_lossy(&aliased.stderr);
+    assert!(stderr.contains("package_secret") && stderr.contains("public(package)"), "unexpected stderr: {stderr}");
+
+    std::fs::write(
+        &app_source,
+        r#"
+module app::main
+
+action run(x: u64) -> u64 {
+    verification
+        return dep::math::package_secret(x)
+}
+"#,
+    )
+    .unwrap();
+    lock_package(&app_root);
+    let qualified = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).output().unwrap();
+    assert!(!qualified.status.success(), "qualified package-private call unexpectedly compiled");
+
+    std::fs::write(
+        app_root.join("src").join("internal.cell"),
+        r#"
+module app::internal
+
+public(package) fn same_package(x: u64) -> u64 {
+    return x + 3
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &app_source,
+        r#"
+module app::main
+
+use app::internal::same_package
+use dep::math::exported
+
+action run(x: u64) -> u64 {
+    verification
+        return same_package(x) + exported(x)
+}
+"#,
+    )
+    .unwrap();
+    lock_package(&app_root);
+    let allowed = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).output().unwrap();
+    assert!(allowed.status.success(), "stderr: {}", String::from_utf8_lossy(&allowed.stderr));
+}
+
+#[test]
 fn cellc_compiles_aliased_external_dependency_function_calls() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -7156,6 +7272,20 @@ fn cellc_explain_subcommand_reports_compiler_error() {
     assert_eq!(summary["name"], "instruction-encoding");
     assert!(summary["description"].as_str().unwrap().contains("RISC-V instruction"));
     assert!(summary["hint"].as_str().unwrap().contains("immediate range"));
+}
+
+#[test]
+fn cellc_explain_subcommand_reports_public_interface_breaking_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc")).args(["explain", "E2501", "--json"]).output().unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let summary: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(summary["status"], "ok");
+    assert_eq!(summary["domain"], "compiler");
+    assert_eq!(summary["code"], "E2501");
+    assert_eq!(summary["name"], "public-interface-breaking");
+    assert!(summary["description"].as_str().unwrap().contains("public interface"));
+    assert!(summary["hint"].as_str().unwrap().contains("compatibility dimension"));
 }
 
 #[test]

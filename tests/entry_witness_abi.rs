@@ -122,6 +122,30 @@ action verify(
 }
 "#;
 
+const U128_DYNAMIC_SCHEMA_BITWISE_ENTRY: &str = r#"
+module entry_witness_u128_dynamic_schema_bitwise
+
+struct Entry {
+    amount: u128,
+    note: Vec<u8>,
+}
+
+action verify(
+    witness left: Entry,
+    witness right: Entry,
+    witness count: u64,
+    witness expected_and: u128,
+    witness expected_shl: u128,
+    witness expected_add: u128,
+) -> u64 {
+    verification
+        require (left.amount & right.amount) == expected_and
+        require (left.amount << count) == expected_shl
+        require (left.amount + right.amount) == expected_add
+        return 0
+}
+"#;
+
 const SCALAR_SHIFT_ENTRY: &str = r#"
 module entry_witness_scalar_shift
 
@@ -308,6 +332,49 @@ fn execute_scalar_shift(
     execute_cellscript_script(elf, &fixture)
 }
 
+/// Encode a dynamic-layout `Entry` as the Molecule table shape the runtime
+/// decodes: `<u32 total><u32 offset amount><u32 offset note><amount><note>`.
+/// The dynamic `Vec<u8>` field forces table decoding for every field access,
+/// including the `u128` limb loads of `amount`.
+fn molecule_dynamic_entry_bytes(amount: u128, note: &[u8], total_override: Option<u32>) -> Vec<u8> {
+    let amount_offset = 4 + 4 * 2;
+    let note_offset = amount_offset + 16;
+    let total = note_offset + note.len();
+    let mut bytes = Vec::with_capacity(total);
+    bytes.extend_from_slice(&total_override.unwrap_or(total as u32).to_le_bytes());
+    bytes.extend_from_slice(&(amount_offset as u32).to_le_bytes());
+    bytes.extend_from_slice(&(note_offset as u32).to_le_bytes());
+    bytes.extend_from_slice(&amount.to_le_bytes());
+    bytes.extend_from_slice(note);
+    bytes
+}
+
+fn execute_u128_dynamic_schema_bitwise(
+    elf: &[u8],
+    left: u128,
+    right: u128,
+    count: u64,
+    expected_and: u128,
+    expected_shl: u128,
+    expected_add: u128,
+    total_override: Option<u32>,
+) -> ckb_script_runner::CkbScriptExecutionResult {
+    let mut payload = b"CSARGv1\0".to_vec();
+    for value in [left, right] {
+        let entry = molecule_dynamic_entry_bytes(value, b"audit", total_override);
+        payload.extend_from_slice(&(entry.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&entry);
+    }
+    payload.extend_from_slice(&count.to_le_bytes());
+    payload.extend_from_slice(&expected_and.to_le_bytes());
+    payload.extend_from_slice(&expected_shl.to_le_bytes());
+    payload.extend_from_slice(&expected_add.to_le_bytes());
+    let witness = canonical_multisig_v2_witness(Bytes::from(payload));
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    fixture.witnesses = vec![witness.as_bytes()];
+    execute_cellscript_script(elf, &fixture)
+}
+
 fn execute_on_second_group_input(witness: Bytes) -> ckb_script_runner::CkbScriptExecutionResult {
     let elf = compile_cellscript_source_to_elf(PARAMETERIZED_ENTRY, "verify", None);
     let mut fixture = build_simple_fixture(Bytes::default(), 2, 1, true, None);
@@ -486,6 +553,55 @@ fn u128_bitwise_and_shift_operations_execute_in_ckb_vm() {
         invalid.exit_code, 65,
         "runtime shift amount equal to the value width must use shift-amount-invalid: {:?}",
         invalid.captured_debug
+    );
+}
+
+#[test]
+fn u128_bitwise_add_and_shift_on_dynamic_schema_fields_execute_in_ckb_vm() {
+    let elf = compile_cellscript_source_to_elf(U128_DYNAMIC_SCHEMA_BITWISE_ENTRY, "verify", None);
+    let vectors: [(u128, u128, u64); 3] = [
+        (0x00ff_ffee_ddcc_bbaa_55aa_55aa_55aa_55aa, 0x55aa_55aa_55aa_55aa_aa55_aa55_aa55_aa55, 3),
+        (0x0123_4567_89ab_cdef_fedc_ba98_7654_3210, 0xf0f0_0f0f_f0f0_0f0f_aaaa_5555_aaaa_5555, 67),
+        (1, u128::MAX - 1, 127),
+    ];
+    for (left, right, count) in vectors {
+        let expected_add = left.checked_add(right).expect("vector must not overflow");
+        let result = execute_u128_dynamic_schema_bitwise(&elf, left, right, count, left & right, left << count, expected_add, None);
+        assert_eq!(
+            result.exit_code, 0,
+            "u128 bitwise/add/shift over Molecule-table-decoded fields (count={count}) must execute exactly in CKB-VM: {:?}",
+            result.captured_debug
+        );
+    }
+
+    let wrong_and = execute_u128_dynamic_schema_bitwise(
+        &elf,
+        0xff00_ff00_ff00_ff00_ff00_ff00_ff00_ff00,
+        1,
+        3,
+        1,
+        0,
+        0xff01_ff00_ff00_ff00_ff00_ff00_ff00_ff00,
+        None,
+    );
+    assert_eq!(
+        wrong_and.exit_code, 5,
+        "a wrong expected bitwise result over dynamic schema fields must use assertion-failed: {:?}",
+        wrong_and.captured_debug
+    );
+
+    let invalid_shift = execute_u128_dynamic_schema_bitwise(&elf, 1, 1, 128, 1, 0, 2, None);
+    assert_eq!(
+        invalid_shift.exit_code, 65,
+        "a dynamic schema field shift amount of 128 must use shift-amount-invalid: {:?}",
+        invalid_shift.captured_debug
+    );
+
+    let bad_total = execute_u128_dynamic_schema_bitwise(&elf, 8, 1, 3, 0, 64, 9, Some(255));
+    assert_eq!(
+        bad_total.exit_code, 2,
+        "a Molecule table total length that disagrees with the payload length must use bounds-check-failed: {:?}",
+        bad_total.captured_debug
     );
 }
 

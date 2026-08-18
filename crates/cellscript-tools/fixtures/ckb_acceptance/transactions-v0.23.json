@@ -508,7 +508,7 @@
           "capacity": "0x174876e800",
           "lock": {
             "args": "0x",
-            "code_hash": "0x67c60bfc34958c28b1d5277be6995af9920d480f60ded40806eaf173c704d10d",
+            "code_hash": "0x7d05007ce1c760d839d72084651963bfaee9a0ed4aff6fb6c7c85be84eb4cf95",
             "hash_type": "data1"
           },
           "type": null
@@ -997,7 +997,7 @@
           "capacity": "0x174876e800",
           "lock": {
             "args": "0x",
-            "code_hash": "0x9da2791f3f0a46790e4b187a1d1dd15813f2c14883138631255c58b495a845d8",
+            "code_hash": "0xac0a11b468099e7db4224bbf946583b2faaa04906c5df81132fb6f79ba3f18c7",
             "hash_type": "data1"
           },
           "type": {
@@ -7274,7 +7274,7 @@
           "capacity": "0x104c533c00",
           "lock": {
             "args": "0x",
-            "code_hash": "0x9da2791f3f0a46790e4b187a1d1dd15813f2c14883138631255c58b495a845d8",
+            "code_hash": "0xac0a11b468099e7db4224bbf946583b2faaa04906c5df81132fb6f79ba3f18c7",
             "hash_type": "data1"
           },
           "type": {
@@ -7287,7 +7287,7 @@
           "capacity": "0x6fc23ac00",
           "lock": {
             "args": "0x",
-            "code_hash": "0x9da2791f3f0a46790e4b187a1d1dd15813f2c14883138631255c58b495a845d8",
+            "code_hash": "0xac0a11b468099e7db4224bbf946583b2faaa04906c5df81132fb6f79ba3f18c7",
             "hash_type": "data1"
           },
           "type": {
@@ -7627,7 +7627,7 @@
           "capacity": "0x174876e800",
           "lock": {
             "args": "0x",
-            "code_hash": "0x67c60bfc34958c28b1d5277be6995af9920d480f60ded40806eaf173c704d10d",
+            "code_hash": "0x7d05007ce1c760d839d72084651963bfaee9a0ed4aff6fb6c7c85be84eb4cf95",
             "hash_type": "data1"
           },
           "type": {
@@ -9547,7 +9547,7 @@
           "capacity": "0x104c533c00",
           "lock": {
             "args": "0x",
-            "code_hash": "0x9da2791f3f0a46790e4b187a1d1dd15813f2c14883138631255c58b495a845d8",
+            "code_hash": "0xac0a11b468099e7db4224bbf946583b2faaa04906c5df81132fb6f79ba3f18c7",
             "hash_type": "data1"
           },
           "type": {
@@ -9560,7 +9560,7 @@
           "capacity": "0x6fc23ac00",
           "lock": {
             "args": "0x",
-            "code_hash": "0x9da2791f3f0a46790e4b187a1d1dd15813f2c14883138631255c58b495a845d8",
+            "code_hash": "0xac0a11b468099e7db4224bbf946583b2faaa04906c5df81132fb6f79ba3f18c7",
             "hash_type": "data1"
           },
           "type": {
@@ -11694,7 +11694,7 @@
           "capacity": "0x174876e800",
           "lock": {
             "args": "0x",
-            "code_hash": "0x9da2791f3f0a46790e4b187a1d1dd15813f2c14883138631255c58b495a845d8",
+            "code_hash": "0xac0a11b468099e7db4224bbf946583b2faaa04906c5df81132fb6f79ba3f18c7",
             "hash_type": "data1"
           },
           "type": {
@@ -11799,7 +11799,7 @@
           "capacity": "0x2e90edd000",
           "lock": {
             "args": "0x",
-            "code_hash": "0x67c60bfc34958c28b1d5277be6995af9920d480f60ded40806eaf173c704d10d",
+            "code_hash": "0x7d05007ce1c760d839d72084651963bfaee9a0ed4aff6fb6c7c85be84eb4cf95",
             "hash_type": "data1"
           },
           "type": null
@@ -12852,7 +12852,7 @@
       "data_hash": "0x6c3bf0d1bc162b2c71378ec3ea55d34121ab8c66480524e83cc8943de6b26555"
     },
     "0x04ff3d5eebf352f6edd435d3c42bba62a2b84b65b79504643548e80b2d4d150c:0x0": {
-      "data_hash": "0x67c60bfc34958c28b1d5277be6995af9920d480f60ded40806eaf173c704d10d"
+      "data_hash": "0x7d05007ce1c760d839d72084651963bfaee9a0ed4aff6fb6c7c85be84eb4cf95"
     },
     "0x05bdf82334e9817b9e706495e1e0897548dad8e635a07d19ae0dfb2551ed84e9:0x0": {
       "data_hash": "0x30999ca44c3638eceddd4d707a01242294bd06473c9e34f92f5cdea23c2bdb75"
@@ -12990,7 +12990,7 @@
       "data_hash": "0x10f75e072356b123d3864ae553870a4759943c4ed71d373218ca17b611795020"
     },
     "0x7316d0640df6e12bf34469505237b41ef4ef81dd1d7cbe667d2bd929928a8ee9:0x0": {
-      "data_hash": "0x67c60bfc34958c28b1d5277be6995af9920d480f60ded40806eaf173c704d10d"
+      "data_hash": "0x7d05007ce1c760d839d72084651963bfaee9a0ed4aff6fb6c7c85be84eb4cf95"
     },
     "0x7385b0cd1428d6b3de24c02748cd013790f75530ae9fe8bd125b74ba6388f97c:0x0": {
       "data_hash": "0xc6c1fd22456162ae2457a61bb7fd4f0ad0ac92955adbc6a8da10a0caf1900362"
@@ -13044,10 +13044,10 @@
       "data_hash": "0x87c083fadb4ec6e5823e9bd76b000f7b98f4b374cea82ed6a528915317d8a59e"
     },
     "0x99bd2cc55653377b2109baa3f88393a406c039e1fdf0703dcb782552e3ac16eb:0x0": {
-      "data_hash": "0x9da2791f3f0a46790e4b187a1d1dd15813f2c14883138631255c58b495a845d8"
+      "data_hash": "0xac0a11b468099e7db4224bbf946583b2faaa04906c5df81132fb6f79ba3f18c7"
     },
     "0x9b6af43c1c3e7556bbb8d2b570bf4c0c29bfc13989a59bc601a05810d7a78d85:0x0": {
-      "data_hash": "0x9da2791f3f0a46790e4b187a1d1dd15813f2c14883138631255c58b495a845d8"
+      "data_hash": "0xac0a11b468099e7db4224bbf946583b2faaa04906c5df81132fb6f79ba3f18c7"
     },
     "0x9f02df0a573644347b6f73102ec88a9c6be51b35fb36c6305e17048c3f13ec0d:0x0": {
       "data_hash": "0x078a625eb933f34dee98290d89c9cd6b57ab95d8bb1a89f254f422649a972954"
@@ -14125,7 +14125,7 @@
     {
       "name": "multisig.cell:create_wallet",
       "action": "create_wallet",
-      "artifact_data_hash": "0x67c60bfc34958c28b1d5277be6995af9920d480f60ded40806eaf173c704d10d",
+      "artifact_data_hash": "0x7d05007ce1c760d839d72084651963bfaee9a0ed4aff6fb6c7c85be84eb4cf95",
       "initial_tx": "0x0cba9e700c8a662884ab05066a027cc22b03e79ac0facfcbe0d002acd391bc7f",
       "valid_tx": "0xb74d691e2b3b09ba70b33cae3a78c04ab723fede031598d5ebbb30f3f79c8442",
       "acceptance_harness_name": "multisig-action-builder-v1",
@@ -14308,7 +14308,7 @@
     {
       "name": "multisig.cell:propose_change_threshold",
       "action": "propose_change_threshold",
-      "artifact_data_hash": "0x9da2791f3f0a46790e4b187a1d1dd15813f2c14883138631255c58b495a845d8",
+      "artifact_data_hash": "0xac0a11b468099e7db4224bbf946583b2faaa04906c5df81132fb6f79ba3f18c7",
       "initial_tx": "0x1213c894962b0b93e2fd49eb38ba5121b5df709d1d78ee888b4a060534f99ab9",
       "valid_tx": "0xdfb65c7699a692c39bdba73ec0647d99c56398310465d1db372c8a63369c0c93",
       "acceptance_harness_name": "multisig-action-builder-v1",

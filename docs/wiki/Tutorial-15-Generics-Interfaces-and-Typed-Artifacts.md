@@ -27,6 +27,8 @@ private fn internal_identity(value: u64) -> u64 {
 CellScript monomorphizes concrete value uses before IR lowering. The compiler
 records every instantiation and applies fixed nesting, count, and identity-size
 budgets. Ordinary generic containers cannot hide a Cell-backed value.
+Public templates may be imported from dependencies; specializations remain in
+the owning module and do not become public-interface entries in the consumer.
 
 Value abilities are not Cell authority. `copy`, `drop`, `fixed`,
 `serializable`, and `non_linear` describe ordinary values; `create`, `consume`,
@@ -88,15 +90,16 @@ cellc build --target riscv64-elf --target-profile ckb
 cellc verify-artifact build/main.elf --json
 ```
 
-Metadata schema 60 includes:
+Metadata schema 61 includes:
 
 - `public_interface` and `interface_hash`;
 - `typed_semantics` and `typed_semantics_hash`;
 - generic instantiation records; and
 - the existing verified lowering and source-map bindings for ELF output.
 
-The independent checker recomputes typed locals, calls, effects, layouts,
-control-flow joins, ownership/borrow records, and their machine ABI link. It
+The independent checker validates exact typed constants and operations and
+recomputes layout/identity, definite-definition joins, ownership/borrow state,
+and the machine ABI link. It does not reconstruct semantics from source. It
 uses `V2419` for an invalid typed semantic record and `V2420` for a typed-to-
 machine mismatch.
 
@@ -108,5 +111,6 @@ evidence distinct.
 
 The browser compiler remains metadata-only: it emits no ELF. The Playground
 now highlights generics, abilities, visibility, bitwise/shift operations, and
-loop control, and its project Inspector shows shortened public-interface and
-typed-semantics hashes. Use the raw Metadata tab to copy the complete records.
+loop control. The project Inspector shows full copyable public-interface and
+typed-semantics hashes and labels the result as structural metadata evidence,
+not semantic equivalence or CKB-VM execution.

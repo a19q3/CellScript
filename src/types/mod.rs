@@ -32,6 +32,14 @@ struct MatchPatternAnalysis {
 }
 
 #[derive(Debug, Clone)]
+struct MatchConstructor {
+    name: String,
+    fields: Vec<(Option<String>, Type)>,
+}
+
+const MATCH_EXHAUSTIVENESS_BUDGET: usize = 4096;
+
+#[derive(Debug, Clone)]
 struct FlowSpec {
     type_name: String,
     field_name: String,
@@ -2472,14 +2480,17 @@ impl<'a> TypeChecker<'a> {
                 {
                     return true;
                 }
-                if !visiting.insert(base_name.to_string()) {
+                if !visiting.insert(name.clone()) {
                     return false;
                 }
-                let contains = self.resolve_enum_variant_fields(base_name).is_some_and(|variants| {
+                let contains_struct = self.resolve_named_type_fields(name).is_some_and(|fields| {
+                    fields.values().any(|field| self.type_contains_cell_backed_value_with_seen(field, visiting))
+                });
+                let contains_enum = self.resolve_enum_variant_fields(name).is_some_and(|variants| {
                     variants.values().flatten().any(|field| self.type_contains_cell_backed_value_with_seen(field, visiting))
                 });
-                visiting.remove(base_name);
-                contains
+                visiting.remove(name);
+                contains_struct || contains_enum
             }
             Type::Ref(_) | Type::MutRef(_) => false,
             _ => false,
@@ -4562,6 +4573,7 @@ impl<'a> TypeChecker<'a> {
         let mut seen = HashSet::new();
         let mut has_catch_all = false;
         let mut payloads = Vec::with_capacity(match_expr.arms.len());
+        let mut coverage_rows = Vec::with_capacity(match_expr.arms.len());
 
         for arm in &match_expr.arms {
             if has_catch_all {
@@ -4580,10 +4592,13 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             has_catch_all = analysis.irrefutable;
+            coverage_rows.push(vec![arm.pattern.clone()]);
             payloads.push(MatchPayloadBindings { bindings: analysis.bindings });
         }
 
-        if !has_catch_all {
+        let matrix_exhaustive = has_catch_all
+            || self.match_pattern_matrix_is_exhaustive(std::slice::from_ref(scrutinee_ty), coverage_rows, MATCH_EXHAUSTIVENESS_BUDGET);
+        if !matrix_exhaustive {
             if let Some((enum_name, variants)) = enum_shape {
                 if seen.len() != variants.len() {
                     let missing = variants.iter().filter(|variant| !seen.contains(*variant)).cloned().collect::<Vec<_>>().join(", ");
@@ -4723,13 +4738,17 @@ impl<'a> TypeChecker<'a> {
                         span,
                     ));
                 }
+                let covered_variants =
+                    alternatives.iter().flat_map(|alternative| alternative.covered_variants.iter().cloned()).collect::<Vec<_>>();
                 MatchPatternAnalysis {
                     bindings: Vec::new(),
-                    covered_variants: alternatives
-                        .iter()
-                        .flat_map(|alternative| alternative.covered_variants.iter().cloned())
-                        .collect(),
-                    irrefutable: alternatives.iter().any(|alternative| alternative.irrefutable),
+                    covered_variants,
+                    irrefutable: alternatives.iter().any(|alternative| alternative.irrefutable)
+                        || self.match_pattern_matrix_is_exhaustive(
+                            std::slice::from_ref(expected),
+                            patterns.iter().cloned().map(|pattern| vec![pattern]).collect(),
+                            MATCH_EXHAUSTIVENESS_BUDGET,
+                        ),
                 }
             }
         };
@@ -4753,6 +4772,126 @@ impl<'a> TypeChecker<'a> {
             irrefutable &= child.irrefutable;
         }
         Ok(MatchPatternAnalysis { bindings, covered_variants: Vec::new(), irrefutable })
+    }
+
+    fn match_pattern_matrix_is_exhaustive(&self, types: &[Type], rows: Vec<Vec<MatchPattern>>, budget: usize) -> bool {
+        if budget == 0 {
+            return false;
+        }
+        if types.is_empty() {
+            return !rows.is_empty();
+        }
+
+        let mut expanded = Vec::new();
+        for row in rows {
+            let Some((head, tail)) = row.split_first() else {
+                continue;
+            };
+            match head {
+                MatchPattern::Or(alternatives) => {
+                    for alternative in alternatives {
+                        let mut next = Vec::with_capacity(row.len());
+                        next.push(alternative.clone());
+                        next.extend_from_slice(tail);
+                        expanded.push(next);
+                    }
+                }
+                _ => expanded.push(row),
+            }
+        }
+
+        let head_ty = &types[0];
+        let tail_types = &types[1..];
+        let Some(constructors) = self.match_constructors_for_type(head_ty) else {
+            let default_rows = expanded
+                .into_iter()
+                .filter_map(|row| {
+                    matches!(row.first(), Some(MatchPattern::Wildcard | MatchPattern::Binding(_))).then(|| row[1..].to_vec())
+                })
+                .collect();
+            return self.match_pattern_matrix_is_exhaustive(tail_types, default_rows, budget - 1);
+        };
+
+        constructors.into_iter().all(|constructor| {
+            let mut specialized_rows = Vec::new();
+            for row in &expanded {
+                let Some((head, tail)) = row.split_first() else {
+                    continue;
+                };
+                let fields = match head {
+                    MatchPattern::Wildcard | MatchPattern::Binding(_) => {
+                        vec![MatchPattern::Wildcard; constructor.fields.len()]
+                    }
+                    _ => {
+                        let Some(fields) = self.specialize_match_pattern(head_ty, &constructor, head) else {
+                            continue;
+                        };
+                        fields
+                    }
+                };
+                let mut specialized = Vec::with_capacity(fields.len() + tail.len());
+                specialized.extend(fields);
+                specialized.extend_from_slice(tail);
+                specialized_rows.push(specialized);
+            }
+
+            let mut specialized_types = constructor.fields.iter().map(|(_, ty)| ty.clone()).collect::<Vec<_>>();
+            specialized_types.extend_from_slice(tail_types);
+            self.match_pattern_matrix_is_exhaustive(&specialized_types, specialized_rows, budget - 1)
+        })
+    }
+
+    fn match_constructors_for_type(&self, ty: &Type) -> Option<Vec<MatchConstructor>> {
+        match ty {
+            Type::Tuple(items) => Some(vec![MatchConstructor {
+                name: "tuple".to_string(),
+                fields: items.iter().cloned().map(|ty| (None, ty)).collect(),
+            }]),
+            Type::Named(name) => {
+                if let (Some(variants), Some(fields)) = (self.resolve_enum_variants(name), self.resolve_enum_variant_fields(name)) {
+                    return Some(
+                        variants
+                            .into_iter()
+                            .map(|variant| MatchConstructor {
+                                fields: fields.get(&variant).cloned().unwrap_or_default().into_iter().map(|ty| (None, ty)).collect(),
+                                name: variant,
+                            })
+                            .collect(),
+                    );
+                }
+                let fields = self.resolve_named_type_fields(name)?;
+                let mut fields = fields.into_iter().collect::<Vec<_>>();
+                fields.sort_by(|left, right| left.0.cmp(&right.0));
+                Some(vec![MatchConstructor {
+                    name: name.clone(),
+                    fields: fields.into_iter().map(|(name, ty)| (Some(name), ty)).collect(),
+                }])
+            }
+            _ => None,
+        }
+    }
+
+    fn specialize_match_pattern(
+        &self,
+        expected: &Type,
+        constructor: &MatchConstructor,
+        pattern: &MatchPattern,
+    ) -> Option<Vec<MatchPattern>> {
+        match (expected, pattern) {
+            (Type::Tuple(_), MatchPattern::Tuple(items)) if constructor.name == "tuple" => Some(items.clone()),
+            (Type::Named(enum_name), MatchPattern::Variant { path, fields })
+                if match_pattern_variant(enum_name, path) == Some(constructor.name.as_str()) =>
+            {
+                Some(fields.clone())
+            }
+            (Type::Named(type_name), MatchPattern::Struct { path, fields })
+                if path == type_name || path.rsplit_once("::").map(|(_, name)| name) == Some(type_name.as_str()) =>
+            {
+                let fields = fields.iter().cloned().collect::<HashMap<_, _>>();
+                constructor.fields.iter().map(|(name, _)| name.as_ref().and_then(|name| fields.get(name)).cloned()).collect()
+            }
+            _ => None,
+        }
     }
 
     fn resolve_enum_variants(&self, enum_name: &str) -> Option<Vec<String>> {
@@ -7801,14 +7940,17 @@ impl<'a> TypeChecker<'a> {
                 {
                     return true;
                 }
-                if !visiting.insert(base_name.to_string()) {
+                if !visiting.insert(name.clone()) {
                     return false;
                 }
-                let linear = self
-                    .resolve_enum_variant_fields(base_name)
+                let linear_struct = self
+                    .resolve_named_type_fields(name)
+                    .is_some_and(|fields| fields.values().any(|field| self.is_linear_type_with_seen(field, visiting)));
+                let linear_enum = self
+                    .resolve_enum_variant_fields(name)
                     .is_some_and(|variants| variants.values().flatten().any(|field| self.is_linear_type_with_seen(field, visiting)));
-                visiting.remove(base_name);
-                linear
+                visiting.remove(name);
+                linear_struct || linear_enum
             }
             _ => false,
         }

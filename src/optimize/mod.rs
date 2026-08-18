@@ -430,9 +430,13 @@ fn fold_binary(op: BinaryOp, left: &ConstValue, right: &ConstValue) -> Option<Co
     use ConstValue::*;
 
     match (op, left, right) {
-        (BinaryOp::Add, U64(left), U64(right)) => Some(U64(left.wrapping_add(*right))),
-        (BinaryOp::Sub, U64(left), U64(right)) => Some(U64(left.wrapping_sub(*right))),
-        (BinaryOp::Mul, U64(left), U64(right)) => Some(U64(left.wrapping_mul(*right))),
+        // Integer literals are optimized before contextual type inference.  If
+        // syntax-local arithmetic exceeds u64, leave it for typed lowering:
+        // the same literals may be a checked u128 expression rather than a
+        // wrapping u64 expression.
+        (BinaryOp::Add, U64(left), U64(right)) => left.checked_add(*right).map(U64),
+        (BinaryOp::Sub, U64(left), U64(right)) => left.checked_sub(*right).map(U64),
+        (BinaryOp::Mul, U64(left), U64(right)) => left.checked_mul(*right).map(U64),
         (BinaryOp::Div, U64(_), U64(0)) | (BinaryOp::Mod, U64(_), U64(0)) => None,
         (BinaryOp::Div, U64(left), U64(right)) => Some(U64(left / right)),
         (BinaryOp::Mod, U64(left), U64(right)) => Some(U64(left % right)),
@@ -447,9 +451,12 @@ fn fold_binary(op: BinaryOp, left: &ConstValue, right: &ConstValue) -> Option<Co
         (BinaryOp::BitXor, U64(left), U64(right)) => Some(U64(left ^ right)),
         (BinaryOp::Shl, U64(left), U64(right)) if *right < 64 => Some(U64(left << right)),
         (BinaryOp::Shr, U64(left), U64(right)) if *right < 64 => Some(U64(left >> right)),
-        (BinaryOp::Add, U128(left), U128(right)) => Some(U128(left.wrapping_add(*right))),
-        (BinaryOp::Sub, U128(left), U128(right)) => Some(U128(left.wrapping_sub(*right))),
-        (BinaryOp::Mul, U128(left), U128(right)) => Some(U128(left.wrapping_mul(*right))),
+        // Runtime u128 arithmetic traps on overflow.  Folding must preserve
+        // that behavior instead of replacing the expression with a wrapped
+        // constant that can pass production code generation.
+        (BinaryOp::Add, U128(left), U128(right)) => left.checked_add(*right).map(U128),
+        (BinaryOp::Sub, U128(left), U128(right)) => left.checked_sub(*right).map(U128),
+        (BinaryOp::Mul, U128(left), U128(right)) => left.checked_mul(*right).map(U128),
         (BinaryOp::Div, U128(_), U128(0)) | (BinaryOp::Mod, U128(_), U128(0)) => None,
         (BinaryOp::Div, U128(left), U128(right)) => Some(U128(left / right)),
         (BinaryOp::Mod, U128(left), U128(right)) => Some(U128(left % right)),
@@ -999,6 +1006,31 @@ mod tests {
         });
 
         assert!(matches!(optimizer.optimize_expr(&expr).unwrap(), Expr::Integer(5)));
+    }
+
+    #[test]
+    fn leaves_overflowing_integer_arithmetic_for_contextual_typed_lowering() {
+        for (op, left, right) in [
+            (BinaryOp::Add, u64::MAX as u128, 1),
+            (BinaryOp::Sub, 0, 1),
+            (BinaryOp::Mul, u64::MAX as u128, 2),
+            (BinaryOp::Add, u128::MAX, u128::MAX),
+            (BinaryOp::Sub, u64::MAX as u128 + 1, u128::MAX),
+            (BinaryOp::Mul, u128::MAX, u128::MAX),
+        ] {
+            let mut optimizer = Optimizer::new(1);
+            let expr = Expr::Binary(BinaryExpr {
+                op,
+                left: Box::new(Expr::Integer(left)),
+                right: Box::new(Expr::Integer(right)),
+                span: Span::default(),
+            });
+
+            assert!(
+                matches!(optimizer.optimize_expr(&expr).unwrap(), Expr::Binary(_)),
+                "overflowing {left:?} {op:?} {right:?} must remain for typed runtime semantics"
+            );
+        }
     }
 
     #[test]

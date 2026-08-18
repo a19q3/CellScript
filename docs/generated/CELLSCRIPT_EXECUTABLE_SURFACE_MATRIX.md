@@ -28,6 +28,14 @@ Production compilation means `--production` or `--deny-fail-closed`; both stop b
 | `semantic:value-pattern` | semantic | bounded | accepted | Recursive fixed enum, tuple, and struct patterns plus binding-free or-patterns with exhaustiveness and linear wildcard checks. | `none` |
 | `semantic:borrow-region` | semantic | compile-time-only | not materialized as a runtime value | Field-path and reborrow regions retain one canonical Cell root and cannot materialize, escape, or cross a lifecycle operation. | `none` |
 | `semantic:loop-control` | semantic | complete | accepted | Nearest and labeled break/continue targets lower to explicit CFG jumps after compile-time target validation. | `none` |
+| `ir-item:type-def` | ir-item | bounded | accepted only when the shape classifier reports no fail-closed feature | Concrete fixed-layout type definition. | `none` |
+| `ir-item:invariant` | ir-item | compile-time-only | not materialized as a runtime value | Proof-planning invariant record. | `none` |
+| `ir-item:action` | ir-item | bounded | accepted only when the shape classifier reports no fail-closed feature | Executable transaction action entry. | `none` |
+| `ir-item:pure-fn` | ir-item | bounded | accepted only when the shape classifier reports no fail-closed feature | Resolved helper callable. | `none` |
+| `ir-item:lock` | ir-item | bounded | accepted only when the shape classifier reports no fail-closed feature | Executable lock predicate entry. | `none` |
+| `ir-terminator:return` | terminator | complete | accepted | Typed return with an optional value. | `none` |
+| `ir-terminator:jump` | terminator | complete | accepted | Validated direct CFG edge. | `none` |
+| `ir-terminator:branch` | terminator | complete | accepted | Validated boolean conditional CFG edge. | `none` |
 | `ir:load-const` | instruction | complete | accepted | Materializes supported scalar and fixed-byte constants. | `none` |
 | `ir:load-var` | instruction | complete | accepted | Loads a checked local binding. | `none` |
 | `ir:store-var` | instruction | complete | accepted | Stores a checked local binding without changing Cell authority. | `none` |

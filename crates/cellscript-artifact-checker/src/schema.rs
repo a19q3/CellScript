@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-pub const LOWERING_RECORD_SCHEMA: &str = "cellscript-verified-lowering-record-v2";
-pub const TYPED_SEMANTICS_SCHEMA: &str = "cellscript-typed-semantics-v1";
+pub const LOWERING_RECORD_SCHEMA: &str = "cellscript-verified-lowering-record-v3";
+pub const TYPED_SEMANTICS_SCHEMA: &str = "cellscript-typed-semantics-v2";
 pub const SOURCE_MAP_SCHEMA: &str = "cellscript-source-artifact-map-v1";
 pub const CHECKER_POLICY_SCHEMA: &str = "cellscript-artifact-checker-policy-v1";
 pub const CHECKER_REPORT_SCHEMA: &str = "cellscript-artifact-checker-report-v1";
-pub const LOWERING_RECORD_VERSION: u32 = 2;
+pub const LOWERING_RECORD_VERSION: u32 = 3;
+pub const TYPED_SEMANTICS_VERSION: u32 = 2;
 pub const SOURCE_MAP_VERSION: u32 = 1;
 pub const CHECKER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -68,6 +69,11 @@ impl VerifiedLoweringRecord {
             entry.proof_ids.dedup();
             entry.capabilities.sort();
             entry.capabilities.dedup();
+            entry.typed_blocks.sort_by_key(|block| block.id);
+            for block in &mut entry.typed_blocks {
+                block.machine_block_ids.sort();
+                block.machine_block_ids.dedup();
+            }
         }
         self.blocks.sort_by(|a, b| a.id.cmp(&b.id));
         for block in &mut self.blocks {
@@ -104,6 +110,10 @@ impl TypedSemanticRecord {
         self.types.sort_by(|left, right| left.name.cmp(&right.name));
         for ty in &mut self.types {
             ty.fields.sort_by(|left, right| left.offset.cmp(&right.offset).then(left.name.cmp(&right.name)));
+            ty.variants.sort_by(|left, right| left.tag.cmp(&right.tag).then(left.name.cmp(&right.name)));
+            for variant in &mut ty.variants {
+                variant.fields.sort_by_key(|field| field.index);
+            }
             ty.capabilities.sort();
             ty.capabilities.dedup();
         }
@@ -133,7 +143,10 @@ pub struct TypedSemanticType {
     pub kind: String,
     pub encoded_size: Option<u32>,
     pub fields: Vec<TypedSemanticField>,
+    pub tag_width_bytes: Option<u32>,
+    pub variants: Vec<TypedSemanticVariant>,
     pub capabilities: Vec<String>,
+    pub identity_policy: String,
     pub layout_hash: String,
 }
 
@@ -148,6 +161,25 @@ pub struct TypedSemanticField {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct TypedSemanticVariant {
+    pub name: String,
+    pub tag: u32,
+    pub payload_width_bytes: u32,
+    pub fields: Vec<TypedSemanticVariantField>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticVariantField {
+    pub index: u32,
+    pub ty: String,
+    pub offset: u32,
+    pub width_bytes: u32,
+    pub linear: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TypedSemanticEntry {
     pub id: String,
     pub kind: String,
@@ -155,6 +187,7 @@ pub struct TypedSemanticEntry {
     pub params: Vec<TypedSemanticParam>,
     pub return_type: String,
     pub effect: String,
+    pub entry_block: u32,
     pub locals: Vec<TypedSemanticLocal>,
     pub blocks: Vec<TypedSemanticBlock>,
     pub borrows: Vec<TypedSemanticBorrow>,
@@ -178,6 +211,7 @@ pub struct TypedSemanticParam {
 #[serde(deny_unknown_fields)]
 pub struct TypedSemanticLocal {
     pub id: u32,
+    pub source_id: u64,
     pub name: String,
     pub ty: String,
 }
@@ -189,14 +223,24 @@ pub struct TypedSemanticBlock {
     pub operations: Vec<TypedSemanticOperation>,
     pub successors: Vec<u32>,
     pub terminator: String,
+    pub runtime_error: Option<TypedSemanticRuntimeError>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticRuntimeError {
+    pub code: u64,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TypedSemanticOperation {
+    pub index: u32,
     pub opcode: String,
     pub destinations: Vec<u32>,
     pub operands: Vec<TypedSemanticOperand>,
+    pub detail: TypedSemanticOperationDetail,
     pub call: Option<TypedSemanticCall>,
 }
 
@@ -205,6 +249,90 @@ pub struct TypedSemanticOperation {
 pub struct TypedSemanticOperand {
     pub local: Option<u32>,
     pub ty: String,
+    pub constant: Option<TypedSemanticConstant>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TypedSemanticOperationDetail {
+    #[default]
+    None,
+    Constant {
+        value: TypedSemanticConstant,
+    },
+    Binding {
+        name: String,
+    },
+    BinaryOperator {
+        operator: String,
+    },
+    UnaryOperator {
+        operator: String,
+    },
+    Field {
+        name: String,
+    },
+    Collection {
+        declared_type: String,
+    },
+    Reference {
+        declared_type: String,
+    },
+    EnumConstruct {
+        enum_name: String,
+        variant: String,
+    },
+    EnumTag {
+        enum_name: String,
+    },
+    EnumPayload {
+        enum_name: String,
+        variant: String,
+        field_index: u32,
+    },
+    Create {
+        pattern: TypedSemanticCreatePattern,
+    },
+    Destroy {
+        policy: String,
+    },
+    CreateUnique {
+        pattern: TypedSemanticCreatePattern,
+        identity: String,
+    },
+    ReplaceUnique {
+        pattern: TypedSemanticCreatePattern,
+        identity: String,
+    },
+    CellMetadata {
+        field: String,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticCreatePattern {
+    pub operation: String,
+    pub ty: String,
+    pub binding: String,
+    pub field_names: Vec<String>,
+    pub has_lock: bool,
+    pub identity: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TypedSemanticConstant {
+    Unit,
+    U8(String),
+    U16(String),
+    U32(String),
+    U64(String),
+    U128(String),
+    Bool(bool),
+    Address(String),
+    Hash(String),
+    Array(Vec<TypedSemanticConstant>),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +353,10 @@ pub struct TypedSemanticBorrow {
     pub binding: String,
     pub root_type: String,
     pub view_type: String,
+    pub start_block: u32,
+    pub start_operation: u32,
+    pub end_block: Option<u32>,
+    pub end_operation: Option<u32>,
     pub escapes: bool,
 }
 
@@ -242,10 +374,16 @@ pub struct TypedSemanticOwnership {
 #[serde(deny_unknown_fields)]
 pub struct TypedSemanticInstantiation {
     pub kind: String,
+    pub module: String,
     pub template: String,
+    pub concrete_name: String,
     pub identity: String,
     pub type_arguments: Vec<String>,
+    pub value_ability_registry_version: u32,
     pub constraints_verified: bool,
+    pub fixed_layout_required: bool,
+    pub cell_backed_layout_rejected: bool,
+    pub identity_includes_phantom_arguments: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +400,15 @@ pub struct LoweringEntry {
     pub proof_ids: Vec<String>,
     pub frame_size_bytes: u32,
     pub outgoing_argument_bytes: u32,
+    pub typed_blocks: Vec<TypedBlockBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedBlockBinding {
+    pub id: u32,
+    pub hash: String,
+    pub machine_block_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -302,6 +449,7 @@ pub struct LoweringBlock {
     pub owner_entry: String,
     pub reachable: bool,
     pub lowering_block_id: Option<u32>,
+    pub typed_block_hash: Option<String>,
     pub machine_label: Option<String>,
     pub terminator: MachineTerminator,
     pub range: MachineRange,

@@ -1,0 +1,14 @@
+// dynamic-layout struct forces Molecule-table field decoding for u128 limbs
+module audit::dyn_struct_u128
+
+struct Entry {
+    amount: u128,
+    note: Vec<u8>,
+}
+
+action verify(e1: Entry, e2: Entry) -> u64 {
+    verification
+        let masked: u128 = e1.amount & e2.amount
+        let shifted: u128 = e1.amount << 3
+        0
+}

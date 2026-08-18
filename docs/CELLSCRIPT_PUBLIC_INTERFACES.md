@@ -2,7 +2,7 @@
 
 **Status**: implemented on `nightly-0.25`
 
-**Schemas**: `cellscript-package-interface-v1` and
+**Schemas**: `cellscript-package-interface-v2` and
 `cellscript-interface-compatibility-v1`
 
 ## What The Interface Represents
@@ -21,7 +21,8 @@ consumer or Registry upgrade must preserve:
 - fields, enum variants, fixed layouts, and type identities;
 - callable parameters, source qualifiers, outputs, return types, effects, and
   entry witness ABI;
-- concrete generic instantiations;
+- source generic templates and applied types in exported signatures, without
+  implementation-only monomorphizations;
 - target, VM, witness, lock-args, source-encoding, Spawn/IPC, and compatibility
   profile identities; and
 - generated-builder and deployment-contract hashes.
@@ -50,6 +51,14 @@ private fn implementation_detail(value: u64) -> u64 {
 
 `public(package)` items are visible to modules in the same package but are not emitted
 as dependency-facing exports. `private` items are local to their module.
+Imported public generic templates may be specialized across package boundaries;
+the specialization is generated in the template's owning module and linked by
+a compiler-internal import. It is never a source-level export.
+
+Edition 2026 compatibility remains public-by-default. When a module mixes an
+explicit modifier with declarations that still rely on that default, compiler,
+CLI metadata, and editor diagnostics emit `W2500` and list the declarations to
+classify.
 
 ## Emit An Interface
 
@@ -92,8 +101,10 @@ consumer can choose whether it accepts a new exact identity.
 
 CellScript source publication includes the canonical interface and hash in the
 signed publish payload. The Registry API recomputes the hash, rejects a
-mismatch, and compares a candidate release with the latest admitted interface.
-An incompatible upgrade is rejected before release admission. The standalone
+mismatch, requires monotonically increasing SemVer, and compares a candidate
+with the greatest predecessor on the same compatibility line. A new major
+version (or new `0.minor` line before 1.0) may intentionally break the old
+interface; an incompatible change within a line is rejected. The standalone
 Registry verifier also checks that the stored interface and `interface_hash`
 agree.
 
@@ -104,7 +115,7 @@ deployment evidence, and chain commitment remain separate states.
 ## Typed Semantics Relationship
 
 The public interface answers “what can a dependency rely on?” The
-`cellscript-typed-semantics-v1` record answers “what typed operations and
+`cellscript-typed-semantics-v2` record answers “what typed operations and
 control-flow facts were lowered?” Both hashes are bound into metadata. ELF
 builds additionally bind the typed record to the verified lowering and machine
 records described in

@@ -6347,25 +6347,6 @@ impl CodeGenerator {
         }
     }
 
-    fn emit_fixed_byte_source_scalar_to(
-        &mut self,
-        dest_reg: &str,
-        scratch_reg: &str,
-        base_reg: &str,
-        source: &ExpectedFixedByteSource,
-        start: usize,
-        width: usize,
-    ) {
-        self.emit(format!("li {}, 0", dest_reg));
-        for byte_index in 0..width {
-            self.emit_fixed_byte_source_byte_to(scratch_reg, base_reg, source, start + byte_index);
-            if byte_index != 0 {
-                self.emit(format!("slli {}, {}, {}", scratch_reg, scratch_reg, byte_index * 8));
-            }
-            self.emit(format!("or {}, {}, {}", dest_reg, dest_reg, scratch_reg));
-        }
-    }
-
     fn operand_is_u128(&self, operand: &IrOperand) -> bool {
         match operand {
             IrOperand::Const(IrConst::U128(_)) => true,
@@ -6388,9 +6369,9 @@ impl CodeGenerator {
             BinaryOp::Sub if self.operand_is_u128(left) => (left, right),
             _ => return false,
         };
-        let Some(source) = self.expected_fixed_byte_source(wide_operand, 16) else {
+        if self.expected_fixed_byte_source(wide_operand, 16).is_none() {
             return false;
-        };
+        }
         let Some(delta) = self.prelude_u64_operand_source(delta_operand) else {
             return false;
         };
@@ -6400,18 +6381,30 @@ impl CodeGenerator {
             BinaryOp::Sub => self.emit("# cellscript abi: u128 sub with borrow"),
             _ => unreachable!("guarded u128 binary op"),
         }
-        self.emit_fixed_byte_source_scalar_to("t0", "t2", "t4", &source, 0, 8);
-        self.emit_fixed_byte_source_scalar_to("t3", "t2", "t4", &source, 8, 8);
+        if !self.emit_u128_operand_limbs("t0", "t3", "t2", "t4", wide_operand, "u128 arithmetic wide operand") {
+            return true;
+        }
+        let wide_low_offset = self.runtime_expr_temp_offset(0);
+        let wide_high_offset = self.runtime_expr_temp_offset(1);
+        self.emit_stack_store("t0", wide_low_offset);
+        self.emit_stack_store("t3", wide_high_offset);
         self.emit_prelude_u64_operand_source_to_t1(&delta);
+        self.emit_stack_load("t0", wide_low_offset);
+        self.emit_stack_load("t3", wide_high_offset);
+        let overflow_label = self.fresh_label("u128_arithmetic_overflow");
+        let done_label = self.fresh_label("u128_arithmetic_done");
         match op {
             BinaryOp::Add => {
                 self.emit("add t5, t0, t1");
                 self.emit("sltu t2, t5, t0");
                 self.emit("add t6, t3, t2");
+                self.emit("sltu a6, t6, t3");
+                self.emit(format!("bnez a6, {}", overflow_label));
             }
             BinaryOp::Sub => {
                 self.emit("sub t5, t0, t1");
                 self.emit("sltu t2, t0, t1");
+                self.emit(format!("bltu t3, t2, {}", overflow_label));
                 self.emit("sub t6, t3, t2");
             }
             _ => unreachable!("guarded u128 binary op"),
@@ -6420,6 +6413,12 @@ impl CodeGenerator {
         self.emit_stack_store("t6", dest_offset + 8);
         self.emit_sp_addi("t0", dest_offset);
         self.emit_stack_store("t0", dest.id * 8);
+        self.emit(format!("j {}", done_label));
+        self.emit_label(&overflow_label);
+        self.emit_runtime_error_comment(CellScriptRuntimeError::AggregateAmountMismatch);
+        self.emit(format!("li a0, {}", CellScriptRuntimeError::AggregateAmountMismatch.code()));
+        self.emit_epilogue();
+        self.emit_label(&done_label);
         true
     }
 
@@ -7619,17 +7618,12 @@ impl CodeGenerator {
                 return true;
             }
         }
-        let Some(source) = self.expected_u128_source(src) else {
-            self.emit("# cellscript abi: u128 source is not addressable; fail closed");
-            self.emit_fail(CellScriptRuntimeError::FixedByteComparisonUnresolved);
-            return true;
-        };
-        self.emit_prepare_fixed_byte_source(&source, 16, "u128 materialize");
         self.emit(format!("# cellscript abi: materialize u128 operand into var{}", dest.id));
-        for byte_index in 0..16 {
-            self.emit_fixed_byte_source_byte_to("t0", "t4", &source, byte_index);
-            self.emit_store_byte_to_stack_offset("t0", dest_offset + byte_index);
+        if !self.emit_u128_operand_limbs("t0", "t1", "t6", "t4", src, "u128 materialize") {
+            return true;
         }
+        self.emit_stack_store("t0", dest_offset);
+        self.emit_stack_store("t1", dest_offset + 8);
         self.emit_store_u128_pointer_for_var(dest.id, dest_offset);
         true
     }
@@ -7667,8 +7661,37 @@ impl CodeGenerator {
             return false;
         };
         self.emit_prepare_fixed_byte_source(&source, 16, context);
-        self.emit_u64_le_from_fixed_byte_source(low_reg, scratch_reg, base_reg, &source, 0);
-        self.emit_u64_le_from_fixed_byte_source(high_reg, scratch_reg, base_reg, &source, 8);
+        if self.emit_fixed_byte_source_pointer_to(base_reg, &source) {
+            // Resolve schema-backed pointers once before either accumulator is
+            // live. Dynamic Molecule bounds checks use t0..t5 internally, so
+            // resolving the pointer for every byte would overwrite the limb
+            // being assembled.
+            self.emit_unaligned_scalar_load(base_reg, low_reg, scratch_reg, 0, 8);
+            self.emit_unaligned_scalar_load(base_reg, high_reg, scratch_reg, 8, 8);
+        } else {
+            // Constants intentionally have no addressable storage.
+            self.emit_u64_le_from_fixed_byte_source(low_reg, scratch_reg, base_reg, &source, 0);
+            self.emit_u64_le_from_fixed_byte_source(high_reg, scratch_reg, base_reg, &source, 8);
+        }
+        true
+    }
+
+    fn emit_u128_binary_operand_limbs(&mut self, left: &IrOperand, right: &IrOperand, context: &str) -> bool {
+        if !self.emit_u128_operand_limbs("t0", "t1", "t6", "t4", left, &format!("{} left", context)) {
+            return false;
+        }
+        let left_low_offset = self.runtime_expr_temp_offset(0);
+        let left_high_offset = self.runtime_expr_temp_offset(1);
+        self.emit_stack_store("t0", left_low_offset);
+        self.emit_stack_store("t1", left_high_offset);
+        if !self.emit_u128_operand_limbs("t2", "t3", "t6", "t5", right, &format!("{} right", context)) {
+            return false;
+        }
+        // Loading a dynamic schema field runs Molecule validation that uses
+        // t0/t1. Restore the left limbs only after the right operand is fully
+        // materialized.
+        self.emit_stack_load("t0", left_low_offset);
+        self.emit_stack_load("t1", left_high_offset);
         true
     }
 
@@ -7936,10 +7959,7 @@ impl CodeGenerator {
             self.emit_fail(CellScriptRuntimeError::FixedByteComparisonUnresolved);
             return;
         };
-        if !self.emit_u128_operand_limbs("t0", "t1", "t6", "t4", left, "u128 bitwise left") {
-            return;
-        }
-        if !self.emit_u128_operand_limbs("t2", "t3", "t6", "t5", right, "u128 bitwise right") {
+        if !self.emit_u128_binary_operand_limbs(left, right, "u128 bitwise") {
             return;
         }
         let mnemonic = match op {
@@ -7962,11 +7982,17 @@ impl CodeGenerator {
             self.emit_fail(CellScriptRuntimeError::FixedByteComparisonUnresolved);
             return;
         };
-        self.emit_expected_operand_to_t1(right);
-        self.emit("addi t2, t1, 0");
         if !self.emit_u128_operand_limbs("t0", "t1", "t6", "t4", left, "u128 shift left") {
             return;
         }
+        let left_low_offset = self.runtime_expr_temp_offset(0);
+        let left_high_offset = self.runtime_expr_temp_offset(1);
+        self.emit_stack_store("t0", left_low_offset);
+        self.emit_stack_store("t1", left_high_offset);
+        self.emit_expected_operand_to_t1(right);
+        self.emit("addi t2, t1, 0");
+        self.emit_stack_load("t0", left_low_offset);
+        self.emit_stack_load("t1", left_high_offset);
         let amount_ok = self.fresh_label("u128_shift_amount_ok");
         let zero = self.fresh_label("u128_shift_zero");
         let under_64 = self.fresh_label("u128_shift_under_64");
@@ -8034,10 +8060,7 @@ impl CodeGenerator {
             self.emit_fail(CellScriptRuntimeError::FixedByteComparisonUnresolved);
             return;
         };
-        if !self.emit_u128_operand_limbs("t0", "t1", "t6", "t4", left, "u128 arithmetic left") {
-            return;
-        }
-        if !self.emit_u128_operand_limbs("t2", "t3", "t6", "t5", right, "u128 arithmetic right") {
+        if !self.emit_u128_binary_operand_limbs(left, right, "u128 arithmetic") {
             return;
         }
         let ok_label = self.fresh_label("u128_arithmetic_ok");
@@ -8081,10 +8104,7 @@ impl CodeGenerator {
     }
 
     fn emit_u128_compare(&mut self, dest: &IrVar, op: BinaryOp, left: &IrOperand, right: &IrOperand) {
-        if !self.emit_u128_operand_limbs("t0", "t1", "t6", "t4", left, "u128 compare left") {
-            return;
-        }
-        if !self.emit_u128_operand_limbs("t2", "t3", "t6", "t5", right, "u128 compare right") {
+        if !self.emit_u128_binary_operand_limbs(left, right, "u128 compare") {
             return;
         }
         self.emit("# cellscript abi: u128 compare high limb first");
@@ -8136,10 +8156,7 @@ impl CodeGenerator {
             self.emit_fail(CellScriptRuntimeError::FixedByteComparisonUnresolved);
             return;
         };
-        if !self.emit_u128_operand_limbs("t0", "t1", "t6", "t4", left, "u128 multiplication left") {
-            return;
-        }
-        if !self.emit_u128_operand_limbs("t2", "t3", "t6", "t5", right, "u128 multiplication right") {
+        if !self.emit_u128_binary_operand_limbs(left, right, "u128 multiplication") {
             return;
         }
         self.emit("# cellscript abi: checked u128 multiplication");
@@ -8199,10 +8216,7 @@ impl CodeGenerator {
             self.emit_fail(CellScriptRuntimeError::FixedByteComparisonUnresolved);
             return;
         };
-        if !self.emit_u128_operand_limbs("t0", "t1", "t6", "t4", left, "u128 division/remainder numerator") {
-            return;
-        }
-        if !self.emit_u128_operand_limbs("t2", "t3", "t6", "t5", right, "u128 division/remainder denominator") {
+        if !self.emit_u128_binary_operand_limbs(left, right, "u128 division/remainder") {
             return;
         }
         self.emit(if quotient_result {

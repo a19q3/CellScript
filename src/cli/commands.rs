@@ -2800,11 +2800,22 @@ impl CommandExecutor {
             for instantiation in &value_instantiations {
                 human_lines.push(format!("  {} {} -> {}", instantiation.kind, instantiation.identity, instantiation.concrete_name));
                 human_lines.push(format!("    type arguments: {}", instantiation.type_arguments.join(", ")));
+                human_lines.push(format!("    value abilities: passed (registry v{})", instantiation.value_ability_registry_version));
                 human_lines.push(format!(
-                    "    constraints: verified (value-ability registry v{}, fixed-layout={}, Cell-backed-layout-rejected={})",
-                    instantiation.value_ability_registry_version,
-                    instantiation.fixed_layout_required,
-                    instantiation.cell_backed_layout_rejected
+                    "    layout policy: {}",
+                    if instantiation.fixed_layout_required {
+                        "fixed value layout required"
+                    } else {
+                        "callable specialization; no container layout"
+                    }
+                ));
+                human_lines.push(format!(
+                    "    Cell argument policy: {}",
+                    if instantiation.cell_backed_layout_rejected {
+                        "passed; hidden Cell-backed values are forbidden in this layout"
+                    } else {
+                        "passed; Cell-backed arguments require an explicit cell constraint"
+                    }
                 ));
             }
         }
@@ -2827,11 +2838,39 @@ impl CommandExecutor {
                 human_lines.push(format!("    helpers: {}", instantiation.helpers.join(", ")));
             }
         }
+        let value_instantiation_view = value_instantiations
+            .iter()
+            .map(|instantiation| {
+                serde_json::json!({
+                    "kind": instantiation.kind,
+                    "module": instantiation.module,
+                    "template": instantiation.template,
+                    "concrete_name": instantiation.concrete_name,
+                    "identity": instantiation.identity,
+                    "type_arguments": instantiation.type_arguments,
+                    "verification": {
+                        "value_abilities": "passed",
+                        "value_ability_registry_version": instantiation.value_ability_registry_version,
+                        "layout_policy": if instantiation.fixed_layout_required {
+                            "fixed-value-layout-required"
+                        } else {
+                            "callable-specialization-no-container-layout"
+                        },
+                        "cell_argument_policy": if instantiation.cell_backed_layout_rejected {
+                            "passed-hidden-cell-values-forbidden"
+                        } else {
+                            "passed-explicit-cell-constraint-required"
+                        },
+                        "phantom_arguments_in_identity": instantiation.identity_includes_phantom_arguments,
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
         CommandOutcome {
             machine: serde_json::json!({
                 "status": "ok",
                 "count": value_instantiations.len() + collection_instantiations.len(),
-                "value_instantiations": value_instantiations,
+                "value_instantiations": value_instantiation_view,
                 "collection_instantiations": collection_instantiations,
             }),
             human_lines,

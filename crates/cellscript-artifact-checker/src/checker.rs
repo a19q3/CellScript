@@ -408,7 +408,10 @@ fn validate_metadata_binding(
 
 fn validate_typed_semantics(record: &VerifiedLoweringRecord) -> Result<(), CheckerError> {
     let typed = &record.typed_semantics;
-    if typed.schema != TYPED_SEMANTICS_SCHEMA || typed.version != 1 || typed.module != record.module || typed.interface_hash.is_empty()
+    if typed.schema != TYPED_SEMANTICS_SCHEMA
+        || typed.version != TYPED_SEMANTICS_VERSION
+        || typed.module != record.module
+        || typed.interface_hash.is_empty()
     {
         return Err(CheckerError::new(
             CheckerRejectionCode::V2419TypedSemanticsInvalid,
@@ -419,6 +422,8 @@ fn validate_typed_semantics(record: &VerifiedLoweringRecord) -> Result<(), Check
     ensure_sorted_unique(&typed.entries, |item| item.id.as_str(), "typed entry")?;
     ensure_sorted_unique(&typed.instantiations, |item| item.identity.as_str(), "typed instantiation")?;
     let lowering_entries = record.entries.iter().map(|entry| (entry.id.as_str(), entry)).collect::<BTreeMap<_, _>>();
+    let typed_types = typed.types.iter().map(|ty| (ty.name.as_str(), ty)).collect::<BTreeMap<_, _>>();
+    let typed_entries_by_name = typed.entries.iter().map(|entry| (entry.name.as_str(), entry)).collect::<BTreeMap<_, _>>();
     let called_targets = typed
         .entries
         .iter()
@@ -429,31 +434,26 @@ fn validate_typed_semantics(record: &VerifiedLoweringRecord) -> Result<(), Check
         .collect::<BTreeSet<_>>();
     let proof_ids = record.proof_records.iter().map(|proof| proof.id.as_str()).collect::<BTreeSet<_>>();
     for ty in &typed.types {
-        if ty.name.is_empty() || ty.kind.is_empty() || ty.layout_hash.is_empty() {
-            return typed_error(format!("typed type '{}' has an empty kind or layout identity", ty.name));
-        }
-        let fixed_layout = ty.encoded_size.is_some() && ty.fields.iter().all(|field| field.width_bytes.is_some());
-        let mut previous_end = 0u32;
-        for field in &ty.fields {
-            if field.name.is_empty() || field.ty.is_empty() || (fixed_layout && ty.kind != "enum" && field.offset < previous_end) {
-                return typed_error(format!("typed type '{}' has overlapping or incomplete field layout", ty.name));
-            }
-            previous_end = field.offset.saturating_add(field.width_bytes.unwrap_or(0));
-        }
-        if fixed_layout && ty.kind != "enum" && ty.encoded_size.is_some_and(|size| previous_end > size) {
-            return typed_error(format!("typed type '{}' fields exceed its encoded size", ty.name));
-        }
-        if !strictly_sorted(&ty.capabilities) && !ty.capabilities.is_empty() {
-            return typed_error(format!("typed type '{}' capabilities are not canonical", ty.name));
-        }
+        validate_typed_type(ty)?;
     }
     for instantiation in &typed.instantiations {
         if instantiation.identity.is_empty()
+            || instantiation.module.is_empty()
             || instantiation.template.is_empty()
             || instantiation.type_arguments.is_empty()
             || !instantiation.constraints_verified
+            || !matches!(instantiation.kind.as_str(), "struct" | "enum" | "function")
+            || instantiation.value_ability_registry_version != 1
+            || !instantiation.identity_includes_phantom_arguments
+            || instantiation.cell_backed_layout_rejected != instantiation.fixed_layout_required
         {
             return typed_error(format!("generic instantiation '{}' is incomplete or unchecked", instantiation.identity));
+        }
+        let canonical_arguments = instantiation.type_arguments.join(",");
+        let expected_concrete = format!("{}__mono__{}", instantiation.template, hex_encode(canonical_arguments.as_bytes()));
+        let expected_identity = format!("{}::{}<{}>", instantiation.module, instantiation.template, canonical_arguments);
+        if instantiation.concrete_name != expected_concrete || instantiation.identity != expected_identity {
+            return typed_error(format!("generic instantiation '{}' has a non-canonical identity", instantiation.identity));
         }
     }
     for entry in &typed.entries {
@@ -467,6 +467,7 @@ fn validate_typed_semantics(record: &VerifiedLoweringRecord) -> Result<(), Check
             ));
         };
         if entry.name != lowering.name
+            || entry.kind != lowering_entry_kind(lowering.kind)
             || canonical_abi_type(&entry.return_type) != canonical_abi_type(&lowering.return_type)
             || normalize_effect(&entry.effect) != normalize_effect(&lowering.effect)
             || entry.params.len() != lowering.params.len()
@@ -500,11 +501,17 @@ fn validate_typed_semantics(record: &VerifiedLoweringRecord) -> Result<(), Check
         if block_ids.len() != entry.blocks.len() || entry.blocks.windows(2).any(|pair| pair[0].id >= pair[1].id) {
             return typed_error(format!("typed entry '{}' blocks are not strictly ordered and unique", entry.id));
         }
+        if !block_ids.contains(&entry.entry_block) {
+            return typed_error(format!("typed entry '{}' references a missing entry block", entry.id));
+        }
         for block in &entry.blocks {
             if block.successors.iter().any(|successor| !block_ids.contains(successor)) {
                 return typed_error(format!("typed entry '{}' block {} references a missing successor", entry.id, block.id));
             }
-            for operation in &block.operations {
+            for (index, operation) in block.operations.iter().enumerate() {
+                if operation.index != u32::try_from(index).unwrap_or(u32::MAX) {
+                    return typed_error(format!("typed entry '{}' block {} has non-canonical operation indices", entry.id, block.id));
+                }
                 for destination in &operation.destinations {
                     if !locals.contains_key(destination) {
                         return typed_error(format!("typed operation '{}' defines unknown local {}", operation.opcode, destination));
@@ -512,11 +519,14 @@ fn validate_typed_semantics(record: &VerifiedLoweringRecord) -> Result<(), Check
                 }
                 for operand in &operation.operands {
                     if operand.ty.is_empty()
+                        || (operand.local.is_some() == operand.constant.is_some())
                         || operand.local.is_some_and(|local_id| locals.get(&local_id).is_none_or(|local| local.ty != operand.ty))
+                        || operand.constant.as_ref().is_some_and(|constant| constant_type(constant).is_none_or(|ty| ty != operand.ty))
                     {
                         return typed_error(format!("typed operation '{}' uses an unknown local or wrong type", operation.opcode));
                     }
                 }
+                validate_typed_operation(operation, &locals, &typed_types, &typed_entries_by_name, entry, block)?;
                 if let Some(call) = &operation.call
                     && (call.target.is_empty()
                         || call.contract.is_empty()
@@ -525,7 +535,7 @@ fn validate_typed_semantics(record: &VerifiedLoweringRecord) -> Result<(), Check
                             .params
                             .iter()
                             .zip(&operation.operands)
-                            .any(|(param, operand)| canonical_abi_type(param) != canonical_abi_type(&operand.ty)))
+                            .any(|(param, operand)| !typed_call_operand_matches(entry, param, operand)))
                 {
                     return typed_error(format!("typed call '{}' has an invalid signature contract", call.target));
                 }
@@ -545,12 +555,37 @@ fn validate_typed_semantics(record: &VerifiedLoweringRecord) -> Result<(), Check
                 }
             }
         }
+        validate_typed_cfg_and_dataflow(entry, &locals)?;
+        validate_typed_effect(entry)?;
         for borrow in &entry.borrows {
+            let root_matches =
+                locals.values().any(|local| local.name == borrow.root && strip_reference(&local.ty) == borrow.root_type);
+            let binding_matches = locals.values().any(|local| local.name == borrow.binding && local.ty == borrow.view_type);
+            let path_type = typed_borrow_path_type(&borrow.root_type, &borrow.path, &typed_types);
+            let start_valid = entry
+                .blocks
+                .iter()
+                .find(|block| block.id == borrow.start_block)
+                .is_some_and(|block| usize::try_from(borrow.start_operation).is_ok_and(|index| index <= block.operations.len()));
+            let end_valid = match (borrow.end_block, borrow.end_operation) {
+                (Some(block_id), Some(operation)) => entry
+                    .blocks
+                    .iter()
+                    .find(|block| block.id == block_id)
+                    .is_some_and(|block| usize::try_from(operation).is_ok_and(|index| index <= block.operations.len())),
+                (None, None) => true,
+                _ => false,
+            };
             if borrow.root.is_empty()
                 || borrow.binding.is_empty()
                 || borrow.root_type.is_empty()
                 || !borrow.view_type.starts_with('&')
                 || borrow.escapes
+                || !root_matches
+                || !binding_matches
+                || path_type.as_deref() != Some(strip_reference(&borrow.view_type))
+                || !start_valid
+                || !end_valid
             {
                 return typed_error(format!("typed borrow '{} -> {}' is invalid or escaping", borrow.root, borrow.binding));
             }
@@ -559,9 +594,25 @@ fn validate_typed_semantics(record: &VerifiedLoweringRecord) -> Result<(), Check
             let valid = match ownership.operation.as_str() {
                 "read_ref" | "mutate" => ownership.initial_state == "available" && ownership.final_state == "available",
                 "consume" => ownership.initial_state == "available" && ownership.final_state == "consumed",
+                "input" => ownership.initial_state == "available" && ownership.final_state == "consumed",
                 "destroy" => ownership.initial_state == "available" && ownership.final_state == "destroyed",
-                "transfer" => ownership.initial_state == "available" && ownership.final_state == "transferred",
-                "create" => ownership.initial_state == "unbound" && ownership.final_state == "available",
+                "transfer" => {
+                    (ownership.initial_state == "available" && ownership.final_state == "transferred")
+                        || (ownership.initial_state == "unbound" && ownership.final_state == "available")
+                }
+                "replace_unique" => {
+                    (ownership.initial_state == "available" && ownership.final_state == "replaced")
+                        || (ownership.initial_state == "unbound" && ownership.final_state == "available")
+                }
+                "claim" => {
+                    (ownership.initial_state == "available" && ownership.final_state == "claimed")
+                        || (ownership.initial_state == "unbound" && ownership.final_state == "available")
+                }
+                "settle" => {
+                    (ownership.initial_state == "available" && ownership.final_state == "settled")
+                        || (ownership.initial_state == "unbound" && ownership.final_state == "available")
+                }
+                "create" | "create_unique" | "output" => ownership.initial_state == "unbound" && ownership.final_state == "available",
                 _ => false,
             };
             if !valid || ownership.binding.is_empty() || ownership.ty.is_empty() {
@@ -570,6 +621,1094 @@ fn validate_typed_semantics(record: &VerifiedLoweringRecord) -> Result<(), Check
         }
         if entry.obligations.iter().any(|obligation| !proof_ids.contains(obligation.as_str())) {
             return typed_error(format!("typed entry '{}' references an undischarged obligation", entry.id));
+        }
+        validate_ownership_bindings(entry, &locals)?;
+
+        if lowering.typed_blocks.len() != entry.blocks.len() || lowering.typed_blocks.windows(2).any(|pair| pair[0].id >= pair[1].id) {
+            return Err(CheckerError::new(
+                CheckerRejectionCode::V2420TypedMachineBindingInvalid,
+                format!("typed entry '{}' does not have one canonical lowering binding per typed block", entry.id),
+            ));
+        }
+        for typed_block in &entry.blocks {
+            let expected_hash = canonical_hash("cellscript-typed-block-v1", typed_block)?;
+            let mapped = record
+                .blocks
+                .iter()
+                .filter(|block| block.owner_entry == entry.id && block.lowering_block_id == Some(typed_block.id))
+                .collect::<Vec<_>>();
+            let Some(binding) = lowering.typed_blocks.iter().find(|binding| binding.id == typed_block.id) else {
+                return Err(CheckerError::new(
+                    CheckerRejectionCode::V2420TypedMachineBindingInvalid,
+                    format!("typed entry '{}' block {} has no lowering binding", entry.id, typed_block.id),
+                ));
+            };
+            let mapped_ids = mapped.iter().map(|block| block.id.as_str()).collect::<Vec<_>>();
+            if binding.hash != expected_hash
+                || binding.machine_block_ids.iter().map(String::as_str).ne(mapped_ids)
+                || mapped.iter().any(|block| block.typed_block_hash.as_deref() != Some(expected_hash.as_str()))
+            {
+                return Err(CheckerError::new(
+                    CheckerRejectionCode::V2420TypedMachineBindingInvalid,
+                    format!("typed entry '{}' block {} has an invalid machine lowering binding", entry.id, typed_block.id),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_typed_type(ty: &TypedSemanticType) -> Result<(), CheckerError> {
+    if ty.name.is_empty()
+        || ty.layout_hash.is_empty()
+        || !matches!(ty.kind.as_str(), "resource" | "shared" | "receipt" | "struct" | "enum")
+        || ty.identity_policy.is_empty()
+    {
+        return typed_error(format!("typed type '{}' has an invalid kind or layout identity", ty.name));
+    }
+    if !strictly_sorted(&ty.capabilities) && !ty.capabilities.is_empty() {
+        return typed_error(format!("typed type '{}' capabilities are not canonical", ty.name));
+    }
+    if !matches!(ty.identity_policy.as_str(), "none" | "ckb-type-id" | "script-args" | "singleton-type")
+        && !ty.identity_policy.starts_with("field:")
+    {
+        return typed_error(format!("typed type '{}' has an invalid identity policy", ty.name));
+    }
+
+    if ty.kind == "enum" {
+        if !ty.fields.is_empty() || ty.tag_width_bytes.is_none_or(|width| width == 0) || ty.variants.is_empty() {
+            return typed_error(format!("typed enum '{}' has an incomplete tagged layout", ty.name));
+        }
+        let mut names = BTreeSet::new();
+        let mut tags = BTreeSet::new();
+        for variant in &ty.variants {
+            if variant.name.is_empty() || !names.insert(variant.name.as_str()) || !tags.insert(variant.tag) {
+                return typed_error(format!("typed enum '{}' has duplicate or empty variants", ty.name));
+            }
+            for (index, field) in variant.fields.iter().enumerate() {
+                if field.index != u32::try_from(index).unwrap_or(u32::MAX)
+                    || field.ty.is_empty()
+                    || field.width_bytes == 0
+                    || ty.encoded_size.is_none_or(|size| field.offset.saturating_add(field.width_bytes) > size)
+                {
+                    return typed_error(format!("typed enum '{}::{}' has an invalid payload layout", ty.name, variant.name));
+                }
+            }
+        }
+    } else {
+        if ty.tag_width_bytes.is_some() || !ty.variants.is_empty() {
+            return typed_error(format!("non-enum typed type '{}' carries enum layout state", ty.name));
+        }
+        let fixed_layout = ty.encoded_size.is_some() && ty.fields.iter().all(|field| field.width_bytes.is_some());
+        let mut previous_end = 0u32;
+        for field in &ty.fields {
+            if field.name.is_empty() || field.ty.is_empty() || (fixed_layout && field.offset < previous_end) {
+                return typed_error(format!("typed type '{}' has overlapping or incomplete field layout", ty.name));
+            }
+            previous_end = field.offset.saturating_add(field.width_bytes.unwrap_or(0));
+        }
+        if fixed_layout && ty.encoded_size.is_some_and(|size| previous_end > size) {
+            return typed_error(format!("typed type '{}' fields exceed its encoded size", ty.name));
+        }
+    }
+
+    let expected_layout_hash = canonical_hash(
+        "cellscript-typed-layout-v2",
+        &(ty.kind.as_str(), ty.encoded_size, &ty.fields, ty.tag_width_bytes, &ty.variants, &ty.capabilities, &ty.identity_policy),
+    )?;
+    if ty.layout_hash != expected_layout_hash {
+        return typed_error(format!("typed type '{}' layout hash does not match its canonical layout", ty.name));
+    }
+    Ok(())
+}
+
+fn lowering_entry_kind(kind: EntryKind) -> &'static str {
+    match kind {
+        EntryKind::Action => "action",
+        EntryKind::Lock => "lock",
+        EntryKind::Helper => "helper",
+        EntryKind::Runtime => "runtime",
+        EntryKind::Wrapper => "wrapper",
+    }
+}
+
+fn constant_type(constant: &TypedSemanticConstant) -> Option<String> {
+    let scalar = |value: &String, max: u128, ty: &str| {
+        value.parse::<u128>().ok().filter(|parsed| *parsed <= max && parsed.to_string() == *value).map(|_| ty.to_string())
+    };
+    match constant {
+        TypedSemanticConstant::Unit => Some("unit".to_string()),
+        TypedSemanticConstant::U8(value) => scalar(value, u8::MAX.into(), "u8"),
+        TypedSemanticConstant::U16(value) => scalar(value, u16::MAX.into(), "u16"),
+        TypedSemanticConstant::U32(value) => scalar(value, u32::MAX.into(), "u32"),
+        TypedSemanticConstant::U64(value) => scalar(value, u64::MAX.into(), "u64"),
+        TypedSemanticConstant::U128(value) => scalar(value, u128::MAX, "u128"),
+        TypedSemanticConstant::Bool(_) => Some("bool".to_string()),
+        TypedSemanticConstant::Address(value) | TypedSemanticConstant::Hash(value)
+            if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) =>
+        {
+            Some(if matches!(constant, TypedSemanticConstant::Address(_)) { "address" } else { "hash" }.to_string())
+        }
+        TypedSemanticConstant::Address(_) | TypedSemanticConstant::Hash(_) => None,
+        TypedSemanticConstant::Array(values) => {
+            let first = match values.first() {
+                Some(value) => constant_type(value)?,
+                None => "unit".to_string(),
+            };
+            if values.iter().all(|value| constant_type(value).as_deref() == Some(first.as_str())) {
+                Some(format!("[{first}; {}]", values.len()))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn validate_typed_operation(
+    operation: &TypedSemanticOperation,
+    locals: &BTreeMap<u32, &TypedSemanticLocal>,
+    types: &BTreeMap<&str, &TypedSemanticType>,
+    entries: &BTreeMap<&str, &TypedSemanticEntry>,
+    entry: &TypedSemanticEntry,
+    block: &TypedSemanticBlock,
+) -> Result<(), CheckerError> {
+    let shape =
+        |destinations: usize, operands: usize| operation.destinations.len() == destinations && operation.operands.len() == operands;
+    let destination_type =
+        |index: usize| operation.destinations.get(index).and_then(|id| locals.get(id)).map(|local| local.ty.as_str());
+    let operand_type = |index: usize| operation.operands.get(index).map(|operand| operand.ty.as_str());
+    let none_detail = matches!(operation.detail, TypedSemanticOperationDetail::None);
+    let fail = || typed_error(format!("typed operation '{}' has an invalid shape, detail, or type rule", operation.opcode));
+
+    match operation.opcode.as_str() {
+        "load-const" => {
+            let TypedSemanticOperationDetail::Constant { value } = &operation.detail else { return fail() };
+            let constant_type = constant_type(value);
+            let destination_type = destination_type(0);
+            let encoded_unit_enum = destination_type.and_then(|ty| types.get(ty)).is_some_and(|layout| {
+                layout.kind == "enum"
+                    && matches!(value, TypedSemanticConstant::U64(tag) if tag.parse::<u32>().ok().is_some_and(|tag| {
+                        layout.variants.iter().any(|variant| variant.tag == tag && variant.fields.is_empty())
+                    }))
+            });
+            let context_typed_empty_array = matches!(value, TypedSemanticConstant::Array(values) if values.is_empty())
+                && destination_type.is_some_and(is_zero_length_array_type);
+            if !shape(1, 0)
+                || operation.call.is_some()
+                || (constant_type.as_deref() != destination_type && !encoded_unit_enum && !context_typed_empty_array)
+            {
+                return typed_error(format!(
+                    "typed load-const has an invalid shape or type: constant type {:?}, destination type {:?}",
+                    constant_type, destination_type
+                ));
+            }
+        }
+        "load-var" => {
+            let TypedSemanticOperationDetail::Binding { name } = &operation.detail else { return fail() };
+            if !shape(1, 0) || name.is_empty() || operation.call.is_some() {
+                return fail();
+            }
+        }
+        "store-var" => {
+            let TypedSemanticOperationDetail::Binding { name } = &operation.detail else { return fail() };
+            if !shape(0, 1) || name.is_empty() || operation.call.is_some() {
+                return fail();
+            }
+        }
+        "binary" => {
+            let TypedSemanticOperationDetail::BinaryOperator { operator } = &operation.detail else { return fail() };
+            let encoded_unit_enum_comparison = matches!(operator.as_str(), "eq" | "ne")
+                && destination_type(0) == Some("bool")
+                && operation.operands.iter().enumerate().any(|(enum_index, operand)| {
+                    let Some(layout) = types.get(operand.ty.as_str()).filter(|layout| layout.kind == "enum") else {
+                        return false;
+                    };
+                    let Some(TypedSemanticConstant::U64(tag)) =
+                        operation.operands.get(1_usize.saturating_sub(enum_index)).and_then(|operand| operand.constant.as_ref())
+                    else {
+                        return false;
+                    };
+                    tag.parse::<u32>()
+                        .ok()
+                        .is_some_and(|tag| layout.variants.iter().any(|variant| variant.tag == tag && variant.fields.is_empty()))
+                });
+            if !shape(1, 2)
+                || operation.call.is_some()
+                || (!validate_binary_types(operator, operand_type(0), operand_type(1), destination_type(0))
+                    && !encoded_unit_enum_comparison)
+            {
+                return fail();
+            }
+        }
+        "unary" => {
+            let TypedSemanticOperationDetail::UnaryOperator { operator } = &operation.detail else { return fail() };
+            if !shape(1, 1) || operation.call.is_some() || !validate_unary_types(operator, operand_type(0), destination_type(0)) {
+                return fail();
+            }
+        }
+        "field-access" => {
+            let TypedSemanticOperationDetail::Field { name } = &operation.detail else { return fail() };
+            let owner_type = operand_type(0).map(strip_reference).unwrap_or_default();
+            let owner = types.get(owner_type);
+            let named_field_type =
+                owner.and_then(|owner| owner.fields.iter().find(|field| field.name == *name)).map(|field| field.ty.as_str());
+            let tuple_field_type = tuple_field_type(owner_type, name);
+            let builtin_bytes_field_type =
+                (name == "0" && matches!(canonical_abi_type(owner_type).as_str(), "address" | "hash")).then_some("[u8; 32]");
+            let field_type = named_field_type.or(tuple_field_type.as_deref()).or(builtin_bytes_field_type);
+            if !shape(1, 1) || !optional_types_equivalent(field_type, destination_type(0)) || operation.call.is_some() {
+                return fail();
+            }
+        }
+        "index" => {
+            let element = collection_element_type(operand_type(0).unwrap_or_default());
+            if !shape(1, 2)
+                || !none_detail
+                || operation.call.is_some()
+                || !is_integer_type(operand_type(1).unwrap_or_default())
+                || !optional_types_equivalent(element.as_deref(), destination_type(0))
+            {
+                return fail();
+            }
+        }
+        "length" | "collection-capacity" => {
+            if !shape(1, 1) || !none_detail || destination_type(0) != Some("u64") || operation.call.is_some() {
+                return fail();
+            }
+        }
+        "type-hash" => {
+            if !shape(1, 1) || !none_detail || destination_type(0) != Some("hash") || operation.call.is_some() {
+                return fail();
+            }
+        }
+        "collection-new" => {
+            let TypedSemanticOperationDetail::Collection { declared_type } = &operation.detail else { return fail() };
+            if operation.destinations.len() != 1
+                || operation.operands.len() > 1
+                || !declared_collection_type_matches(declared_type, destination_type(0).unwrap_or_default())
+                || operation.operands.first().is_some_and(|operand| !is_integer_type(&operand.ty))
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "collection-push" | "collection-contains" => {
+            let expected_destinations = usize::from(operation.opcode == "collection-contains");
+            let element = collection_element_type(operand_type(0).unwrap_or_default());
+            if !shape(expected_destinations, 2)
+                || !none_detail
+                || !optional_types_equivalent(element.as_deref(), operand_type(1))
+                || (operation.opcode == "collection-contains" && destination_type(0) != Some("bool"))
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "collection-extend" => {
+            let collection_element = collection_element_type(operand_type(0).unwrap_or_default());
+            let slice_element = collection_element_type(operand_type(1).unwrap_or_default());
+            if !shape(0, 2)
+                || !none_detail
+                || !optional_types_equivalent(collection_element.as_deref(), slice_element.as_deref())
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "collection-clear" | "collection-reverse" => {
+            if !shape(0, 1) || !none_detail || operation.call.is_some() {
+                return fail();
+            }
+        }
+        "collection-remove" => {
+            if !shape(1, 2)
+                || !none_detail
+                || !is_integer_type(operand_type(1).unwrap_or_default())
+                || !optional_types_equivalent(
+                    collection_element_type(operand_type(0).unwrap_or_default()).as_deref(),
+                    destination_type(0),
+                )
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "collection-insert" | "collection-set" => {
+            if !shape(0, 3)
+                || !none_detail
+                || !is_integer_type(operand_type(1).unwrap_or_default())
+                || !optional_types_equivalent(collection_element_type(operand_type(0).unwrap_or_default()).as_deref(), operand_type(2))
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "collection-pop" => {
+            if !shape(1, 1)
+                || !none_detail
+                || !optional_types_equivalent(
+                    collection_element_type(operand_type(0).unwrap_or_default()).as_deref(),
+                    destination_type(0),
+                )
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "collection-truncate" => {
+            if !shape(0, 2) || !none_detail || !is_integer_type(operand_type(1).unwrap_or_default()) || operation.call.is_some() {
+                return fail();
+            }
+        }
+        "collection-swap" => {
+            if !shape(0, 3)
+                || !none_detail
+                || !is_integer_type(operand_type(1).unwrap_or_default())
+                || !is_integer_type(operand_type(2).unwrap_or_default())
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "call" => {
+            if !none_detail {
+                return fail();
+            }
+            let Some(call) = &operation.call else { return fail() };
+            if call.contract == "typed-local" {
+                let Some(callee) = entries.get(call.target.as_str()) else { return fail() };
+                if call.params != callee.params.iter().map(|param| param.ty.clone()).collect::<Vec<_>>()
+                    || call.return_type != callee.return_type
+                    || normalize_effect(&call.effect) != normalize_effect(&callee.effect)
+                {
+                    return fail();
+                }
+            } else if call.contract != "versioned-runtime-helper" {
+                return fail();
+            }
+        }
+        "read-ref" => {
+            let TypedSemanticOperationDetail::Reference { declared_type } = &operation.detail else { return fail() };
+            if !shape(1, 0)
+                || strip_reference(destination_type(0).unwrap_or_default()) != strip_reference(declared_type)
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "move" => {
+            let zero_sized_aggregate_sentinel = matches!(
+                operation.operands.first().and_then(|operand| operand.constant.as_ref()),
+                Some(TypedSemanticConstant::U64(value)) if value == "0"
+            ) && destination_type(0).is_some_and(is_zero_length_array_type);
+            let move_types_match = operand_type(0)
+                .zip(destination_type(0))
+                .is_some_and(|(source, destination)| typed_value_assignable(source, destination))
+                || (operand_type(0) == Some("Vec")
+                    && destination_type(0).is_some_and(|destination| collection_element_type(destination).is_some()))
+                || checked_unsigned_narrowing_move(entry, block, operation, locals)
+                || zero_sized_aggregate_sentinel;
+            if !shape(1, 1) || !none_detail || !move_types_match || operation.call.is_some() {
+                return fail();
+            }
+        }
+        "tuple" => {
+            let expected =
+                format!("({})", operation.operands.iter().map(|operand| operand.ty.as_str()).collect::<Vec<_>>().join(", "));
+            let named_layout_matches = destination_type(0).and_then(|name| types.get(name)).is_some_and(|layout| {
+                operation.operands.iter().map(|operand| operand.ty.as_str()).eq(layout.fields.iter().map(|field| field.ty.as_str()))
+            });
+            let builtin_layout_matches =
+                destination_type(0).is_some_and(|destination| builtin_tuple_contract_matches(destination, &operation.operands));
+            if operation.destinations.len() != 1
+                || !none_detail
+                || (destination_type(0) != Some(expected.as_str()) && !named_layout_matches && !builtin_layout_matches)
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "enum-construct" => {
+            let TypedSemanticOperationDetail::EnumConstruct { enum_name, variant } = &operation.detail else { return fail() };
+            let Some(layout) = types.get(enum_name.as_str()).filter(|ty| ty.kind == "enum") else { return fail() };
+            let Some(variant) = layout.variants.iter().find(|item| item.name == *variant) else { return fail() };
+            if operation.destinations.len() != 1
+                || destination_type(0) != Some(enum_name.as_str())
+                || operation
+                    .operands
+                    .iter()
+                    .map(|operand| operand.ty.as_str())
+                    .ne(variant.fields.iter().map(|field| field.ty.as_str()))
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "enum-tag" => {
+            let TypedSemanticOperationDetail::EnumTag { enum_name } = &operation.detail else { return fail() };
+            if !shape(1, 1)
+                || operand_type(0).map(strip_reference) != Some(enum_name.as_str())
+                || destination_type(0) != Some("u8")
+                || !types.get(enum_name.as_str()).is_some_and(|ty| ty.kind == "enum")
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "enum-payload" => {
+            let TypedSemanticOperationDetail::EnumPayload { enum_name, variant, field_index } = &operation.detail else {
+                return fail();
+            };
+            let field_type = types
+                .get(enum_name.as_str())
+                .and_then(|ty| ty.variants.iter().find(|item| item.name == *variant))
+                .and_then(|variant| variant.fields.iter().find(|field| field.index == *field_index))
+                .map(|field| field.ty.as_str());
+            if !shape(1, 1)
+                || operand_type(0).map(strip_reference) != Some(enum_name.as_str())
+                || destination_type(0) != field_type
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "consume" | "destroy" => {
+            if !shape(0, 1) || operation.call.is_some() {
+                return fail();
+            }
+            match (&*operation.opcode, &operation.detail) {
+                ("consume", TypedSemanticOperationDetail::None) => {}
+                ("destroy", TypedSemanticOperationDetail::Destroy { policy }) if valid_destruction_policy(policy) => {}
+                _ => return fail(),
+            }
+        }
+        "create" | "create-unique" | "replace-unique" => {
+            validate_create_operation(operation, locals, types)?;
+        }
+        "transfer" => {
+            if !shape(1, 2) || !none_detail || destination_type(0) != operand_type(0) || operation.call.is_some() {
+                return fail();
+            }
+        }
+        "claim" | "settle" => {
+            if !shape(1, 1) || !none_detail || operation.call.is_some() {
+                return fail();
+            }
+        }
+        "cell-metadata-equality" => {
+            let TypedSemanticOperationDetail::CellMetadata { field } = &operation.detail else { return fail() };
+            if !shape(0, 2)
+                || !matches!(field.as_str(), "lock-hash" | "capacity")
+                || operand_type(0) != operand_type(1)
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "return" => {
+            let valid_return = match operation.operands.as_slice() {
+                [] => canonical_abi_type(&entry.return_type) == "unit",
+                [operand] => {
+                    canonical_abi_type(&operand.ty) == canonical_abi_type(&entry.return_type)
+                        || (operand.ty == "u64" && matches!(operand.constant, Some(TypedSemanticConstant::U64(_))))
+                }
+                _ => false,
+            };
+            if !operation.destinations.is_empty() || !none_detail || !valid_return || operation.call.is_some() {
+                return fail();
+            }
+        }
+        "branch-condition" => {
+            if !shape(0, 1) || !none_detail || operand_type(0) != Some("bool") || operation.call.is_some() {
+                return fail();
+            }
+        }
+        _ => return typed_error(format!("typed operation uses unknown opcode '{}'", operation.opcode)),
+    }
+    Ok(())
+}
+
+fn validate_create_operation(
+    operation: &TypedSemanticOperation,
+    locals: &BTreeMap<u32, &TypedSemanticLocal>,
+    types: &BTreeMap<&str, &TypedSemanticType>,
+) -> Result<(), CheckerError> {
+    let (pattern, identity, source_offset) = match (&*operation.opcode, &operation.detail) {
+        ("create", TypedSemanticOperationDetail::Create { pattern }) => (pattern, None, 0usize),
+        ("create-unique", TypedSemanticOperationDetail::CreateUnique { pattern, identity }) => (pattern, Some(identity.as_str()), 0),
+        ("replace-unique", TypedSemanticOperationDetail::ReplaceUnique { pattern, identity }) => (pattern, Some(identity.as_str()), 1),
+        _ => return typed_error(format!("typed operation '{}' has mismatched create detail", operation.opcode)),
+    };
+    if operation.destinations.len() != 1 || operation.call.is_some() || pattern.binding.is_empty() || pattern.operation.is_empty() {
+        return typed_error(format!("typed operation '{}' has an incomplete create pattern", operation.opcode));
+    }
+    let destination = locals.get(&operation.destinations[0]).map(|local| local.ty.as_str());
+    let Some(layout) = types.get(pattern.ty.as_str()) else {
+        return typed_error(format!("typed operation '{}' creates unknown type '{}'", operation.opcode, pattern.ty));
+    };
+    if destination != Some(pattern.ty.as_str())
+        || identity.is_some_and(|identity| identity != pattern.identity)
+        || pattern.field_names.len() + usize::from(pattern.has_lock) + source_offset != operation.operands.len()
+    {
+        return typed_error(format!("typed operation '{}' create identity or operand shape is invalid", operation.opcode));
+    }
+    if source_offset == 1 && operation.operands.first().map(|operand| strip_reference(&operand.ty)) != Some(pattern.ty.as_str()) {
+        return typed_error("typed replace-unique source type differs from its create pattern");
+    }
+    let mut names = BTreeSet::new();
+    for (field_index, field_name) in pattern.field_names.iter().enumerate() {
+        let Some(field) = layout.fields.iter().find(|field| field.name == *field_name) else {
+            return typed_error(format!("typed create pattern names unknown field '{}::{}'", pattern.ty, field_name));
+        };
+        let operand = operation.operands.get(source_offset + field_index);
+        let encoded_unit_enum = operand.is_some_and(|operand| {
+            types.get(field.ty.as_str()).is_some_and(|layout| {
+                layout.kind == "enum"
+                    && matches!(&operand.constant, Some(TypedSemanticConstant::U64(tag)) if tag.parse::<u32>().ok().is_some_and(
+                        |tag| layout.variants.iter().any(|variant| variant.tag == tag && variant.fields.is_empty())
+                    ))
+            })
+        });
+        if !names.insert(field_name.as_str())
+            || (!operand.is_some_and(|operand| typed_value_assignable(&operand.ty, &field.ty)) && !encoded_unit_enum)
+        {
+            return typed_error(format!("typed create pattern field '{}::{}' has an invalid type", pattern.ty, field_name));
+        }
+    }
+    if pattern.field_names.len() != layout.fields.len() {
+        return typed_error(format!("typed create pattern for '{}' does not initialize every field", pattern.ty));
+    }
+    Ok(())
+}
+
+fn validate_binary_types(operator: &str, left: Option<&str>, right: Option<&str>, destination: Option<&str>) -> bool {
+    let (Some(left), Some(right), Some(destination)) = (left, right, destination) else { return false };
+    match operator {
+        "add" | "sub" | "mul" | "div" | "mod" | "bit-and" | "bit-or" | "bit-xor" => {
+            arithmetic_result_type(left, right).as_deref() == Some(destination)
+        }
+        "shl" | "shr" => is_integer_type(left) && is_integer_type(right) && destination == left,
+        "eq" | "ne" => left == right && destination == "bool",
+        "lt" | "le" | "gt" | "ge" => arithmetic_result_type(left, right).is_some() && destination == "bool",
+        "and" | "or" => left == "bool" && right == "bool" && destination == "bool",
+        _ => false,
+    }
+}
+
+fn arithmetic_result_type(left: &str, right: &str) -> Option<String> {
+    if left == right && is_integer_type(left) {
+        return Some(left.to_string());
+    }
+    let unsigned_width = |ty: &str| match ty {
+        "u8" => Some(8_u16),
+        "u16" => Some(16),
+        "u32" => Some(32),
+        "u64" => Some(64),
+        "u128" => Some(128),
+        _ => None,
+    };
+    let width = unsigned_width(left)?.max(unsigned_width(right)?);
+    Some(format!("u{width}"))
+}
+
+fn validate_unary_types(operator: &str, operand: Option<&str>, destination: Option<&str>) -> bool {
+    let (Some(operand), Some(destination)) = (operand, destination) else { return false };
+    match operator {
+        "neg" => operand == destination && is_integer_type(operand),
+        "not" => operand == "bool" && destination == "bool",
+        // Reference conversions are pointer-preserving no-ops in the current IR
+        // and machine ABI. The opcode retains the semantic coercion so calls can
+        // still prove that a reference parameter did not receive an uncoerced
+        // value.
+        "ref" | "deref" => operand == destination,
+        _ => false,
+    }
+}
+
+fn typed_call_operand_matches(entry: &TypedSemanticEntry, param: &str, operand: &TypedSemanticOperand) -> bool {
+    if canonical_abi_type(param) == canonical_abi_type(&operand.ty) {
+        return true;
+    }
+    let Some(local_id) = operand.local else { return false };
+    let param_pointee = strip_reference(param);
+    let operand_pointee = strip_reference(&operand.ty);
+    let coercion = if param_pointee != param && canonical_abi_type(param_pointee) == canonical_abi_type(&operand.ty) {
+        "ref"
+    } else if operand_pointee != operand.ty && canonical_abi_type(param) == canonical_abi_type(operand_pointee) {
+        "deref"
+    } else {
+        return false;
+    };
+    entry.blocks.iter().flat_map(|block| &block.operations).any(|operation| {
+        operation.destinations.as_slice() == [local_id]
+            && matches!(
+                &operation.detail,
+                TypedSemanticOperationDetail::UnaryOperator { operator } if operator == coercion
+            )
+    })
+}
+
+fn is_integer_type(ty: &str) -> bool {
+    matches!(ty, "u8" | "u16" | "u32" | "i32" | "u64" | "u128")
+}
+
+fn strip_reference(ty: &str) -> &str {
+    ty.strip_prefix("&mut ").or_else(|| ty.strip_prefix('&')).unwrap_or(ty)
+}
+
+fn collection_element_type(ty: &str) -> Option<String> {
+    let ty = strip_reference(ty);
+    if let Some(inner) = ty.strip_prefix("Vec<").and_then(|value| value.strip_suffix('>')) {
+        return Some(inner.to_string());
+    }
+    if let Some(inner) = ty.strip_prefix('[').and_then(|value| value.strip_suffix(']')) {
+        return inner.rsplit_once(';').map(|(element, _)| element.trim().to_string());
+    }
+    None
+}
+
+fn is_zero_length_array_type(ty: &str) -> bool {
+    ty.strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .and_then(|value| value.rsplit_once(';'))
+        .is_some_and(|(element, len)| !element.trim().is_empty() && len.trim() == "0")
+}
+
+fn declared_collection_type_matches(declared: &str, destination: &str) -> bool {
+    declared == destination || (declared == "Vec" && destination.starts_with("Vec<") && collection_element_type(destination).is_some())
+}
+
+fn optional_types_equivalent(left: Option<&str>, right: Option<&str>) -> bool {
+    left.zip(right).is_some_and(|(left, right)| canonical_abi_type(left) == canonical_abi_type(right))
+}
+
+fn typed_value_assignable(actual: &str, expected: &str) -> bool {
+    canonical_abi_type(actual) == canonical_abi_type(expected) || arithmetic_result_type(actual, expected).as_deref() == Some(expected)
+}
+
+fn checked_unsigned_narrowing_move(
+    entry: &TypedSemanticEntry,
+    block: &TypedSemanticBlock,
+    operation: &TypedSemanticOperation,
+    locals: &BTreeMap<u32, &TypedSemanticLocal>,
+) -> bool {
+    let Some(source) = operation.operands.first() else { return false };
+    let Some(source_id) = source.local else { return false };
+    let Some(destination_id) = operation.destinations.first() else { return false };
+    let Some(destination) = locals.get(destination_id) else { return false };
+    let Some(source_width) = unsigned_integer_width(&source.ty) else { return false };
+    let Some(destination_width) = unsigned_integer_width(&destination.ty) else { return false };
+    if source_width <= destination_width {
+        return false;
+    }
+    let maximum = (1_u128 << destination_width) - 1;
+
+    entry.blocks.iter().any(|predecessor| {
+        let [success, failure] = predecessor.successors.as_slice() else { return false };
+        if predecessor.terminator != "branch" || *success != block.id {
+            return false;
+        }
+        let Some(failure_block) = entry.blocks.iter().find(|candidate| candidate.id == *failure) else {
+            return false;
+        };
+        if !failure_block
+            .runtime_error
+            .as_ref()
+            .is_some_and(|error| error.code == 20 && error.name == "numeric-or-discriminant-invalid")
+        {
+            return false;
+        }
+        let Some(condition_id) = predecessor.operations.last().and_then(|terminator| {
+            if terminator.opcode == "branch-condition" {
+                terminator.operands.first().and_then(|operand| operand.local)
+            } else {
+                None
+            }
+        }) else {
+            return false;
+        };
+        predecessor.operations.iter().any(|candidate| {
+            matches!(
+                &candidate.detail,
+                TypedSemanticOperationDetail::BinaryOperator { operator } if operator == "le"
+            ) && candidate.destinations.as_slice() == [condition_id]
+                && candidate.operands.first().is_some_and(|operand| operand.local == Some(source_id))
+                && candidate.operands.get(1).and_then(|operand| operand.constant.as_ref()).and_then(typed_constant_unsigned_value)
+                    == Some(maximum)
+        })
+    })
+}
+
+fn unsigned_integer_width(ty: &str) -> Option<u32> {
+    match ty {
+        "u8" => Some(8),
+        "u16" => Some(16),
+        "u32" => Some(32),
+        "u64" => Some(64),
+        "u128" => Some(128),
+        _ => None,
+    }
+}
+
+fn typed_constant_unsigned_value(constant: &TypedSemanticConstant) -> Option<u128> {
+    match constant {
+        TypedSemanticConstant::U8(value)
+        | TypedSemanticConstant::U16(value)
+        | TypedSemanticConstant::U32(value)
+        | TypedSemanticConstant::U64(value)
+        | TypedSemanticConstant::U128(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
+fn tuple_field_type(ty: &str, field: &str) -> Option<String> {
+    let index = field.parse::<usize>().ok()?;
+    let inner = ty.strip_prefix('(')?.strip_suffix(')')?;
+    let mut depth = 0_u32;
+    let mut start = 0;
+    let mut fields = Vec::new();
+    for (offset, character) in inner.char_indices() {
+        match character {
+            '(' | '[' | '<' => depth = depth.checked_add(1)?,
+            ')' | ']' | '>' => depth = depth.checked_sub(1)?,
+            ',' if depth == 0 => {
+                fields.push(inner[start..offset].trim());
+                start = offset + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    fields.push(inner[start..].trim());
+    fields.get(index).filter(|field| !field.is_empty()).map(|field| (*field).to_string())
+}
+
+fn builtin_tuple_contract_matches(destination: &str, operands: &[TypedSemanticOperand]) -> bool {
+    match (destination, operands) {
+        ("ScriptArgs", [bytes, len, is_empty]) => {
+            bytes.ty.starts_with('[')
+                && collection_element_type(&bytes.ty).as_deref() == Some("u8")
+                && len.ty == "u64"
+                && is_empty.ty == "bool"
+        }
+        ("Script", [code_hash, hash_type, args]) => {
+            canonical_abi_type(&code_hash.ty) == "hash" && hash_type.ty == "u64" && args.ty == "ScriptArgs"
+        }
+        _ => false,
+    }
+}
+
+fn typed_borrow_path_type(root_type: &str, path: &[String], types: &BTreeMap<&str, &TypedSemanticType>) -> Option<String> {
+    let mut current = root_type.to_string();
+    for segment in path {
+        current = types.get(strip_reference(&current))?.fields.iter().find(|field| field.name == *segment)?.ty.clone();
+    }
+    Some(current)
+}
+
+fn valid_destruction_policy(policy: &str) -> bool {
+    matches!(policy, "default" | "singleton-type")
+        || ["unique:", "instance:", "burn-amount:"]
+            .iter()
+            .any(|prefix| policy.strip_prefix(prefix).is_some_and(|value| !value.is_empty()))
+}
+
+fn validate_typed_cfg_and_dataflow(
+    entry: &TypedSemanticEntry,
+    locals: &BTreeMap<u32, &TypedSemanticLocal>,
+) -> Result<(), CheckerError> {
+    let blocks = entry.blocks.iter().map(|block| (block.id, block)).collect::<BTreeMap<_, _>>();
+    let mut predecessors = blocks.keys().map(|id| (*id, Vec::<u32>::new())).collect::<BTreeMap<_, _>>();
+    for block in &entry.blocks {
+        let terminal_opcode = block.operations.last().map(|operation| operation.opcode.as_str());
+        let valid_terminator = match block.terminator.as_str() {
+            "return" => block.successors.is_empty() && terminal_opcode == Some("return"),
+            "jump" => block.successors.len() == 1 && terminal_opcode != Some("return") && terminal_opcode != Some("branch-condition"),
+            "branch" => block.successors.len() == 2 && terminal_opcode == Some("branch-condition"),
+            _ => false,
+        };
+        if !valid_terminator {
+            return typed_error(format!("typed entry '{}' block {} has an invalid terminator contract", entry.id, block.id));
+        }
+        if let Some(runtime_error) = &block.runtime_error {
+            let error_return = block.operations.last().and_then(|operation| operation.operands.first());
+            let encoded_code = error_return.and_then(|operand| match &operand.constant {
+                Some(TypedSemanticConstant::U64(value)) => value.parse::<u64>().ok(),
+                _ => None,
+            });
+            let predicate_failure = canonical_abi_type(&entry.return_type) == "bool"
+                && error_return.is_some_and(|operand| matches!(&operand.constant, Some(TypedSemanticConstant::Bool(false))));
+            if block.terminator != "return"
+                || runtime_error.code == 0
+                || runtime_error.name.is_empty()
+                || (encoded_code != Some(runtime_error.code) && !predicate_failure)
+            {
+                return typed_error(format!("typed entry '{}' block {} has an invalid runtime-error return", entry.id, block.id));
+            }
+        } else if block.terminator == "return" {
+            let return_type =
+                block.operations.last().and_then(|operation| operation.operands.first()).map_or("unit", |operand| operand.ty.as_str());
+            if canonical_abi_type(return_type) != canonical_abi_type(&entry.return_type) {
+                return typed_error(format!("typed entry '{}' block {} returns the wrong type", entry.id, block.id));
+            }
+        }
+        for successor in &block.successors {
+            predecessors.entry(*successor).or_default().push(block.id);
+        }
+    }
+
+    let mut reachable = BTreeSet::from([entry.entry_block]);
+    let mut pending = vec![entry.entry_block];
+    while let Some(block_id) = pending.pop() {
+        for successor in &blocks[&block_id].successors {
+            if reachable.insert(*successor) {
+                pending.push(*successor);
+            }
+        }
+    }
+    let universe = locals.keys().copied().collect::<BTreeSet<_>>();
+    let params = entry.params.iter().map(|param| param.binding_id).collect::<BTreeSet<_>>();
+    let mut borrow_starts = BTreeMap::<(u32, u32), Vec<(u32, u32)>>::new();
+    let mut borrow_ends = BTreeMap::<(u32, u32), Vec<u32>>::new();
+    for borrow in &entry.borrows {
+        let binding_id = locals
+            .iter()
+            .find_map(|(id, local)| (local.name == borrow.binding && local.ty == borrow.view_type).then_some(*id))
+            .ok_or_else(|| {
+                CheckerError::new(
+                    CheckerRejectionCode::V2419TypedSemanticsInvalid,
+                    format!("typed borrow binding '{}' has no local identity", borrow.binding),
+                )
+            })?;
+        let root_id = locals
+            .iter()
+            .find_map(|(id, local)| (local.name == borrow.root && strip_reference(&local.ty) == borrow.root_type).then_some(*id))
+            .ok_or_else(|| {
+                CheckerError::new(
+                    CheckerRejectionCode::V2419TypedSemanticsInvalid,
+                    format!("typed borrow root '{}' has no local identity", borrow.root),
+                )
+            })?;
+        borrow_starts.entry((borrow.start_block, borrow.start_operation)).or_default().push((binding_id, root_id));
+        if let (Some(block), Some(operation)) = (borrow.end_block, borrow.end_operation) {
+            borrow_ends.entry((block, operation)).or_default().push(binding_id);
+        }
+    }
+    let block_outgoing = |block_id: u32, incoming: &BTreeSet<u32>| {
+        let block = blocks[&block_id];
+        let mut available = incoming.clone();
+        for position in 0..=block.operations.len() {
+            let position = u32::try_from(position).unwrap_or(u32::MAX);
+            if let Some(bindings) = borrow_ends.get(&(block_id, position)) {
+                for binding in bindings {
+                    available.remove(binding);
+                }
+            }
+            if let Some(bindings) = borrow_starts.get(&(block_id, position)) {
+                available.extend(bindings.iter().map(|(binding, _)| *binding));
+            }
+            if let Some(operation) = usize::try_from(position).ok().and_then(|index| block.operations.get(index)) {
+                available.extend(operation.destinations.iter().copied());
+            }
+        }
+        available
+    };
+    let mut incoming = blocks
+        .keys()
+        .map(|id| {
+            let initial = if *id == entry.entry_block {
+                params.clone()
+            } else if reachable.contains(id) {
+                universe.clone()
+            } else {
+                BTreeSet::new()
+            };
+            (*id, initial)
+        })
+        .collect::<BTreeMap<_, _>>();
+    loop {
+        let mut changed = false;
+        for block_id in blocks.keys().copied().filter(|id| *id != entry.entry_block && reachable.contains(id)) {
+            let preds = predecessors.get(&block_id).into_iter().flatten().filter(|id| reachable.contains(id));
+            let mut merged = universe.clone();
+            let mut saw_predecessor = false;
+            for predecessor in preds {
+                saw_predecessor = true;
+                let outgoing = block_outgoing(*predecessor, &incoming[predecessor]);
+                merged = merged.intersection(&outgoing).copied().collect();
+            }
+            if !saw_predecessor {
+                merged.clear();
+            }
+            if incoming[&block_id] != merged {
+                incoming.insert(block_id, merged);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for block_id in reachable {
+        let mut available = incoming[&block_id].clone();
+        let block = blocks[&block_id];
+        for position in 0..=block.operations.len() {
+            let position = u32::try_from(position).unwrap_or(u32::MAX);
+            if let Some(bindings) = borrow_ends.get(&(block_id, position)) {
+                for binding in bindings {
+                    available.remove(binding);
+                }
+            }
+            if let Some(bindings) = borrow_starts.get(&(block_id, position)) {
+                for (binding, root) in bindings {
+                    if !available.contains(root) {
+                        return typed_error(format!(
+                            "typed entry '{}' borrow at block {} operation {} starts from an unavailable root",
+                            entry.id, block_id, position
+                        ));
+                    }
+                    available.insert(*binding);
+                }
+            }
+            let Some(operation) = usize::try_from(position).ok().and_then(|index| block.operations.get(index)) else {
+                continue;
+            };
+            if operation.operands.iter().filter_map(|operand| operand.local).any(|local| !available.contains(&local)) {
+                return typed_error(format!(
+                    "typed entry '{}' block {} operation {} uses a local not defined on every incoming path",
+                    entry.id, block_id, operation.index
+                ));
+            }
+            available.extend(operation.destinations.iter().copied());
+        }
+    }
+    Ok(())
+}
+
+fn validate_typed_effect(entry: &TypedSemanticEntry) -> Result<(), CheckerError> {
+    if entry.kind == "lock" {
+        return if entry.effect == "lock-predicate" {
+            Ok(())
+        } else {
+            typed_error(format!("typed lock '{}' has an invalid effect label", entry.id))
+        };
+    }
+    let mut has_read = entry.params.iter().any(|param| param.source == "read");
+    let mut has_consume = false;
+    let mut has_create = false;
+    for operation in entry.blocks.iter().flat_map(|block| &block.operations) {
+        match operation.opcode.as_str() {
+            "read-ref" | "type-hash" | "cell-metadata-equality" => has_read = true,
+            "consume" | "destroy" => has_consume = true,
+            "create" | "create-unique" => has_create = true,
+            "transfer" | "claim" | "settle" | "replace-unique" => {
+                has_consume = true;
+                has_create = true;
+            }
+            "call" => {
+                if let Some(call) = &operation.call {
+                    match normalize_effect(&call.effect).as_str() {
+                        "readonly" => has_read = true,
+                        "creating" => has_create = true,
+                        "destroying" => has_consume = true,
+                        "mutating" => {
+                            has_consume = true;
+                            has_create = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let inferred = match (has_consume, has_create, has_read) {
+        (true, true, _) => "mutating",
+        (true, false, _) => "destroying",
+        (false, true, _) => "creating",
+        (false, false, true) => "readonly",
+        (false, false, false) => "pure",
+    };
+    let declared = normalize_effect(&entry.effect);
+    let covers = matches!(
+        (declared.as_str(), inferred),
+        ("pure", "pure")
+            | ("readonly", "pure" | "readonly")
+            | ("creating", "pure" | "readonly" | "creating")
+            | ("destroying", "pure" | "readonly" | "destroying")
+            | ("mutating", _)
+    );
+    if !covers {
+        return typed_error(format!(
+            "typed entry '{}' effect '{}' does not cover inferred effect '{inferred}'",
+            entry.id, entry.effect
+        ));
+    }
+    Ok(())
+}
+
+fn validate_ownership_bindings(entry: &TypedSemanticEntry, locals: &BTreeMap<u32, &TypedSemanticLocal>) -> Result<(), CheckerError> {
+    for ownership in &entry.ownership {
+        if !locals.values().any(|local| local.name == ownership.binding)
+            && !entry.params.iter().any(|param| param.name == ownership.binding)
+        {
+            return typed_error(format!("typed ownership transition references unknown binding '{}'", ownership.binding));
+        }
+    }
+    let has_transition = |binding: &str, operation: &str, initial: &str| {
+        entry.ownership.iter().any(|item| item.binding == binding && item.operation == operation && item.initial_state == initial)
+    };
+    for operation in entry.blocks.iter().flat_map(|block| &block.operations) {
+        let local_name =
+            |operand: &TypedSemanticOperand| operand.local.and_then(|id| locals.get(&id)).map(|local| local.name.as_str());
+        match operation.opcode.as_str() {
+            "consume" | "destroy" => {
+                let Some(binding) = operation.operands.first().and_then(local_name) else { continue };
+                if !has_transition(binding, &operation.opcode, "available") {
+                    return typed_error(format!("typed {} operation for '{}' has no ownership transition", operation.opcode, binding));
+                }
+            }
+            "transfer" | "claim" | "settle" | "replace-unique" => {
+                let Some(binding) = operation.operands.first().and_then(local_name) else { continue };
+                if !has_transition(binding, &operation.opcode.replace('-', "_"), "available") {
+                    return typed_error(format!(
+                        "typed {} operation for '{}' has no consume-side ownership transition",
+                        operation.opcode, binding
+                    ));
+                }
+                if operation.opcode == "replace-unique"
+                    && let TypedSemanticOperationDetail::ReplaceUnique { pattern, .. } = &operation.detail
+                    && !has_transition(&pattern.binding, &pattern.operation, "unbound")
+                {
+                    return typed_error(format!(
+                        "typed replace-unique operation for '{}' has no create-side ownership transition",
+                        pattern.binding
+                    ));
+                }
+            }
+            "read-ref" => {
+                let Some(binding) = operation.destinations.first().and_then(|id| locals.get(id)).map(|local| local.name.as_str())
+                else {
+                    continue;
+                };
+                if !has_transition(binding, "read_ref", "available") {
+                    return typed_error(format!("typed read-ref operation for '{}' has no ownership transition", binding));
+                }
+            }
+            "create" | "create-unique" => {
+                let pattern = match &operation.detail {
+                    TypedSemanticOperationDetail::Create { pattern }
+                    | TypedSemanticOperationDetail::CreateUnique { pattern, .. }
+                    | TypedSemanticOperationDetail::ReplaceUnique { pattern, .. } => pattern,
+                    _ => continue,
+                };
+                if !has_transition(&pattern.binding, &pattern.operation, "unbound") {
+                    return typed_error(format!(
+                        "typed {} operation for '{}' has no create-side ownership transition",
+                        operation.opcode, pattern.binding
+                    ));
+                }
+            }
+            _ => {}
         }
     }
     Ok(())
@@ -580,9 +1719,10 @@ fn normalize_effect(effect: &str) -> String {
 }
 
 fn canonical_abi_type(ty: &str) -> String {
-    let ty = ty.strip_prefix("&mut ").or_else(|| ty.strip_prefix('&')).unwrap_or(ty);
-    let base = ty.split_once('<').map_or(ty, |(base, _)| base);
-    let mut canonical = String::with_capacity(base.len());
+    if ty.trim() == "()" {
+        return "unit".to_string();
+    }
+    let mut canonical = String::with_capacity(ty.len());
     let mut identifier = String::new();
     let flush_identifier = |canonical: &mut String, identifier: &mut String| {
         if identifier.is_empty() {
@@ -597,7 +1737,7 @@ fn canonical_abi_type(ty: &str) -> String {
         });
         identifier.clear();
     };
-    for character in base.chars() {
+    for character in ty.chars() {
         if character.is_ascii_alphanumeric() || character == '_' {
             identifier.push(character);
         } else {
@@ -1341,7 +2481,8 @@ mod tests {
     #[test]
     fn canonical_abi_types_normalize_nested_builtin_names() {
         assert_eq!(canonical_abi_type("[(Address, u64); 2]"), canonical_abi_type("[(address, u64); 2]"));
-        assert_eq!(canonical_abi_type("&[Hash; 4]"), canonical_abi_type("[hash; 4]"));
+        assert_ne!(canonical_abi_type("&[Hash; 4]"), canonical_abi_type("[hash; 4]"));
+        assert_ne!(canonical_abi_type("Pair<u64>"), canonical_abi_type("Pair<u128>"));
         assert_ne!(canonical_abi_type("AddressBook"), canonical_abi_type("addressBook"));
     }
 }

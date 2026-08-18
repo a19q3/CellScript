@@ -25,6 +25,7 @@ non-overlapping `E2xxx` range.
 | `E2400` | `external-toolchain` | An explicitly configured RISC-V toolchain failed. | Check the toolchain environment variables, executable paths, and stderr. |
 | `E2501` | `public-interface-breaking` | `cellc interface-diff` found a breaking source API, serialized layout, runtime ABI, effect/capability, builder, or deployment change. | Inspect every reported compatibility dimension and intentionally version or reverse the incompatible change before Registry publication. |
 | `E2900` | `backend-invariant` | An internal backend invariant failed after semantic checking. | Retain the source and compiler version and report a compiler defect. |
+| `W2500` | `implicit-legacy-public` | A module mixes explicit visibility with Edition 2026 declarations that still default to public. | Add `public`, `public(package)`, or `private` to every declaration listed by the warning. |
 
 The CLI exposes these codes in human diagnostics and in the `diagnostics[].code`
 field of `--json` failures. The language server publishes them through the LSP

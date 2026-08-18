@@ -1,0 +1,14 @@
+// audit: payload or-pattern covering all variants should be accepted
+module audit::or_pattern
+
+enum Inner { None, Some((u64, u64)) }
+enum Outer { Empty, Wrapped(Inner) }
+
+action verify() -> u64 {
+    verification
+        let outer: Outer = Outer::Wrapped(Inner::None)
+        match outer {
+            Outer::Empty => { 0 }
+            Outer::Wrapped(Inner::None | Inner::Some(_)) => { 1 }
+        }
+}
