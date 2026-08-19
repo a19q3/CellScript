@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.24.0 - 2026-08-19
+
+- Align the complete 0.24 release identity across every workspace and verifier
+  crate, the independent checker dependency, lockfiles, Registry Type Script,
+  Myelin handoff, VS Code extension, website WASM bundle, README, and release
+  documentation. Restore the 0.23 release hardening that propagates one pinned
+  CKB checkout through backend scenarios and transaction-measure tooling.
 
 - Remove the unreachable external RISC-V toolchain fallback and make the
   audited internal assembler the sole ELF-emission path. Reassign `E2400` to
@@ -26,13 +32,13 @@
   package records into Manage or artifact-detail fallbacks. Network-specific
   origins, chain selection, sandbox expiry, no-index policy, and storage remain
   isolated.
-- Correct the 0.24 website release lineage after the first production build
-  retained stale 0.22 release metadata and Playground assets. The homepage now
-  advertises the official `v0.23.0` stable release and its 2026-08-11 date, the
-  Playground loads the released 0.23 WASM bundle, and distribution checks bind
-  the exact release URL, displayed tag, compiler asset identity, compiler
-  version, and WASM SHA-256. Rebuild and redeploy the immutable static site from
-  the corrected parent website gitlink.
+- Preserve the corrected website release lineage that removed stale 0.22
+  metadata, then advance the homepage and Playground to `v0.24.0`. The
+  canonical WASM bundle uses asset identity
+  `20260819-v0.24.0-19ce8898` and SHA-256
+  `19ce8898e8161f100edebf6f982d856f3e59bfac31572642b53f2e01c70a1a17`;
+  distribution checks bind the exact release URL, displayed tag, compiler
+  version, asset identity, and digest.
 - Add first-class LS-IDL publication and discovery for CKB Lock Scripts.
   `cellc artifact ls-idl` validates the bounded 0.1 schema, appends
   `SHA-256(raw idl.json)` to an executable, generates a publish-ready bundle,
@@ -104,6 +110,9 @@
   roadmap for an independent bounded artifact checker, executable package
   tests, source maps, the Myelin adapter handoff, and conditional ecosystem
   evidence promotion.
+
+## 0.23.0 - 2026-08-11
+
 - Make Registry chain confirmation compatible with the standard CKB v0.207.0
   RPC schema by resolving a live Cell's committed block through
   `get_transaction.tx_status` instead of depending on a proxy-specific
@@ -111,7 +120,12 @@
   methods while historical evidence identifiers remain readable. Make the
   tooling-release gate parse website scripts structurally and enforce the
   stable build steps in order, so adding intermediate regression checks no
-  longer breaks CI through an obsolete exact-string comparison.
+  longer breaks CI through an obsolete exact-string comparison. Let the full
+  backend stateful audit use an explicit isolated pinned CKB checkout through
+  `CELLSCRIPT_CKB_REPO`, avoiding any need to modify an unrelated sibling CKB
+  worktree during release validation. Propagate the release gate's existing
+  `--ckb-repo` selection to its independent `ckb-tx-measure` workspace as
+  well, so every CKB-dependent release check resolves against the same pin.
 - Turn the browser Playground into a recoverable Cell-oriented workbench.
   Browser-local workspace snapshots now retain source files, entry selection,
   active panels, and an honest saved/dirty state across refreshes. Failed
@@ -353,7 +367,9 @@
 - Close the 0.23 syntax-audit consistency gaps: canonical type declarations
   now use comma-terminated fields, syntax-combination gates cover canonical and
   comma-free compatibility input, checked example mirrors use named `U64_MAX`
-  overflow expressions, and `dev` / `ci` reject regressions. CKB-VM crypto
+  overflow expressions, and `dev` / `ci` reject regressions. Rebind the three
+  affected timelock transaction recipes to the deterministic scoped ELF data
+  hashes produced by those equivalent named expressions. CKB-VM crypto
   primitive fixtures now place `CSARGv1` through the current
   `WitnessArgs.input_type` adapter path instead of the retired raw-witness
   alias.
@@ -391,9 +407,11 @@
   and emitted `source_provenance` CKB boundaries plus the Rust-backed NovaSeal
   acceptance summary instead of retired temporary-directory, helper, and shell
   field names, and refresh the NovaSeal external TCB review template to the
-  current Rust-migrated verifier source-tree hash. CKB transaction-recipe
-  replay now tops up fresh devnet funding when a fixture has no disposable
-  change output and its replacement input cannot fund every typed output.
+  current Rust-migrated verifier source-tree hash. Refresh the RWA legal-review
+  template's profile source-tree hash after its manifest declares Edition
+  2026. CKB transaction-recipe replay now tops up fresh devnet funding when a
+  fixture has no disposable change output and its replacement input cannot
+  fund every typed output.
   Rebuild the website WASM bundle with the witness-placement-v2 compiler so the
   playground and native release artifacts expose the same ABI.
 - Add the explicit `cellscript-witnessargs-input-type-v2` placement ABI for

@@ -1,9 +1,10 @@
-# CellScript 0.24 Development Release Notes
+# CellScript 0.24 Release Notes
 
-**Status**: implementation-complete merge candidate; `dev`, `ci`, and
-`backend` passed on 2026-08-10. The refreshed iCKB evidence submodule commit
-`0e18ccd97bd75cac7de9211dc8d344c0bc08942f` is published and bound by the
-parent gitlink; the full release gate remains required before production claims
+**Status**: stable-release candidate; final `dev`, `ci`, `backend`, and
+`release` evidence is recorded in the validation section. The refreshed iCKB
+evidence submodule commit `0e18ccd97bd75cac7de9211dc8d344c0bc08942f` is
+published and bound by the parent gitlink. External ecosystem claims remain
+limited to the explicit integration status below.
 
 **Source edition**: 2026
 
@@ -132,6 +133,23 @@ and isolated records. Its LS-IDL form and copied API example default to
 records. Production continues to default to mainnet. The environment control
 is the intended visible distinction between otherwise matching interfaces.
 
+## Registry Type Script Release Identity
+
+The independently versioned Registry Type Script has a reproducible 0.24.0
+artifact at
+`contracts/registry-type-script/artifacts/v0.24.0/cellscript-registry-type-script`.
+The 3,352-byte ELF has SHA-256
+`0f48a8736360c121f6ae0f04ab4b0496834f6715d47e3284a0a07add609dede9`
+and CKB data hash
+`0x0dd596ade29e06e5bcc00f56abf36ecbe9afaa09f1b26a64436aa37854da622b`.
+The canonical Linux x86_64 rebuild matches the tracked bytes exactly, and the
+Registry API's production configuration gate binds this identity.
+
+This artifact identity is release evidence, not a claim of mainnet
+deployment. Production chain commitments remain disabled until the artifact
+and all required Script/CellDep values are deployed, confirmed, and explicitly
+configured.
+
 ## Playground Experience Upgrade
 
 The browser Playground is now a recoverable Cell-oriented workbench rather
@@ -148,32 +166,21 @@ the same workbench but expands it to the viewport; mobile retains a compact
 panel switcher. The WASM boundary remains metadata-only: the Playground does
 not claim to emit or execute a production ELF.
 
-## Website Release Integrity Correction
+## Website Release Identity
 
-A production review on 2026-08-13 found that the first 0.24 website deployment
-had been built from a feature branch that diverged before the 0.23 website
-release synchronization. The deployed homepage therefore still labelled
-`v0.22.0` as the latest release, the Playground still loaded the 0.22 WASM
-bundle, and the distribution regression test incorrectly asserted those stale
-values. The server was serving the requested new directory; the error was in
-the source lineage and its matching test expectation.
+The 0.24 website is built from the corrected 0.23 release lineage and now
+binds the new release identity throughout the homepage, Playground worker,
+compiler sample, and distribution regression checks. The canonical Playground
+asset is `20260819-v0.24.0-19ce8898`; its WASM SHA-256 is
+`19ce8898e8161f100edebf6f982d856f3e59bfac31572642b53f2e01c70a1a17`.
+The raw module is 1,485,936 bytes and 567,048 bytes under the gate's gzip
+measurement, below the 600 KiB budget.
 
-The corrected website now:
-
-- links the homepage release card to the official
-  [CellScript v0.23.0 release](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.23.0),
-  published on 2026-08-11;
-- loads the released 0.23 Playground asset identified by
-  `20260811-v0.23.0-fa369818`, with WASM SHA-256
-  `fa369818631532c657e73e970b6138e3a231d532a073d428dfe7f61686135dd5`;
-- asserts the release URL, displayed tag, compiler version, cache-busting asset
-  identity, and exact WASM digest during the website build; and
-- remains explicit that `nightly-0.24` is a development line. Advertising the
-  latest stable `v0.23.0` release does not claim that 0.24 itself has shipped.
-
-The corrected parent commit is
-`1aeea3cc2e41644873ec31b12ef5e2dc8138f230`, which pins website commit
-`00f0e2cb184c1343d2c6b57aa6a413028976a3e0`.
+The Node 22 website build validates both production and Pudge Testnet outputs,
+the six-route byte-identical asset parity boundary, the release URL and tag,
+the compiler asset identity, and the exact WASM digest. The parent repository
+pins website commit
+`0a9a6dbd38d417b6da7e65c96e9c9a4a8498af94`.
 
 ## Integration Status
 

@@ -129,6 +129,9 @@ not byte-equivalent and therefore does not preserve the commitment.
 
 ## CLI Workflow
 
+For a complete publisher-to-consumer walkthrough, see
+[Tutorial 15: LS-IDL for CKB Lock Scripts](wiki/Tutorial-15-LS-IDL-for-CKB-Lock-Scripts.md).
+
 Validate a document and optionally its existing executable binding:
 
 ```bash

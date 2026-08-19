@@ -36,13 +36,13 @@ drafts. Released versions should use non-draft filenames.
 - `docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md` is the final stable 0.22
   record for its typed language, diagnostics, metadata schema 55, and bounded
   Fiber boundary.
-- `docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md` is the active development
+- `docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md` is the final stable 0.23
   record for Edition 2026, resolved compatibility profiles, metadata schema
   57, recoverable browser tooling, and the Registry publisher-session flow.
-- `docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md` is the implementation
-  candidate record for metadata schema 58, independently checked ELF/lowering
-  evidence, executable package scenarios, and the least-privilege Registry
-  artifact worker.
+- `docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md` is the stable 0.24 record
+  for metadata schema 58, independently checked ELF/lowering evidence,
+  executable package scenarios, and the least-privilege Registry artifact
+  worker.
 
 Release candidates and planning notes should not live here unless they are the
 final release record.

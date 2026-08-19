@@ -234,8 +234,9 @@ POST /v1/artifacts/acme/vault-lock/releases/1.0.0/deployments
 ```
 
 It includes the published `artifact_hash`, equal `data_hash`, `code_hash`,
-`hash_type`, `dep_type`, and the environment's OutPoint. The API requires the same
-namespace capability used for publishing and prior verified-build evidence.
+`hash_type`, `dep_type`, and the environment's OutPoint. The API requires a
+separately granted `deployment:` capability for the same coordinate and prior
+verified-build evidence; a `publish:` scope alone is insufficient.
 
 The API first verifies the configured RPC chain identity. It calls
 `get_live_cell` to prove that the OutPoint remains live and reads
@@ -298,6 +299,8 @@ The compatibility route `/idl/:code_hash` returns the same original bytes.
 The Registry proves the document schema, raw-byte digest, executable suffix,
 and deployment identity. It does not prove that the Lock Script correctly
 implements the interface, and it is not a security audit. See the
+[LS-IDL tutorial](Tutorial-15-LS-IDL-for-CKB-Lock-Scripts.md) for the complete
+`cellc` workflow and the
 [LS-IDL Registry profile](../CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md) for the
 closed schema and trust boundary.
 

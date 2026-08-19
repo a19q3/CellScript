@@ -6,7 +6,7 @@
   "source_revision_policy": "exact-40-hex-release-commit-required",
   "compiler": {
     "package": "cellscript",
-    "package_version": "0.22.0",
+    "package_version": "0.24.0",
     "rust_toolchain": "1.97.1",
     "edition": "2026",
     "target_profile": "ckb"

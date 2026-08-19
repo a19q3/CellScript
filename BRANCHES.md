@@ -8,13 +8,13 @@ discussions. Do not use that historical baseline to describe the current
 
 ## nightly-0.24
 
-`nightly-0.24` is the active development line for independently verified
+`nightly-0.24` is the closed implementation line for independently verified
 artifacts and executable package evidence. It builds on the closed 0.23
-Edition 2026 and native-tooling boundary. Treat the line as merge-ready only
-when compiler, checker, Registry worker, executable tests, source maps, docs,
-and the `dev`, `ci`, and `backend` gates agree. A passing merge gate is not a
-stable-release or production CKB claim; those still require the release gate
-and the external evidence named in the 0.24 release notes.
+Edition 2026 and native-tooling boundary. The stable release boundary is the
+exact `v0.24.0` tag after the compiler, checker, Registry worker, executable
+tests, source maps, docs, and the `dev`, `ci`, `backend`, and `release` gates
+agree. External Myelin, Fiber, and RGB++ claims remain separately evidence
+gated as described in the 0.24 release notes.
 
 ## nightly-0.23
 
@@ -37,11 +37,17 @@ nightly branch name.
 comparisons and an exact nightly branch for development-scope comparisons;
 do not infer release evidence from `main` alone.
 
+## v0.24.0
+
+`v0.24.0` is the current stable release baseline. Use the exact tag ref
+`refs/tags/v0.24.0` for stable comparisons; the release does not promote the
+separately pending Myelin, Fiber, or RGB++ external evidence boundaries.
+
 ## v0.23.0
 
-`v0.23.0` is the current stable release baseline. Use the exact tag ref
-`refs/tags/v0.23.0` for stable comparisons; later nightly branches describe
-development work and do not supersede that stable boundary by themselves.
+`v0.23.0` is the historical stable baseline for Edition 2026, the Registry,
+and native release tooling. Use the exact tag ref `refs/tags/v0.23.0` when
+reproducing that release.
 
 ## v0.22.0
 
