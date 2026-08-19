@@ -308,24 +308,33 @@ or conversion of executable/copy artifacts into source dependencies.
 
 ## Validation
 
-The package/Registry closure passed `dev` and `ci` on 2026-08-10, with the CI
-website phase using the required Node 22 toolchain. The complete `backend` gate
-then passed from an isolated clean checkout containing the refreshed iCKB
-differential evidence, pinned CKB revision
-`f7fa4436737756f97a24e254f22c13a36316ecea`, and CKB SDK `v5.1.0`. This
-covered the compiler tests, Clippy, full strict backend audit, all 218 iCKB
-differential cases, and the production stateful CKB scenario harness:
+All five canonical gates passed on 2026-08-19 from an isolated clean release
+candidate. The environment used Rust `1.97.1`, Node `22.23.2`, CKB revision
+`f7fa4436737756f97a24e254f22c13a36316ecea`, CKB SDK `v5.1.0`, the
+`riscv64imac-unknown-none-elf` target, and the pinned Docker base
+`rust:1.97.1-slim-bookworm@sha256:99e09cb2284e2ddbb73a995deee3e91783fd04d177602ccf6eab326d778ee777`:
 
 ```bash
 ./scripts/cellscript_gate.sh dev
 ./scripts/cellscript_gate.sh ci
 ./scripts/cellscript_gate.sh backend
+./scripts/cellscript_gate.sh release-quick --ckb-repo /path/to/pinned/ckb
+./scripts/cellscript_gate.sh release --ckb-repo /path/to/pinned/ckb
 ```
 
-`release`/`release-quick` still require the pinned CKB, CKB SDK, NovaSeal,
-Docker, Node 22, and RISC-V tooling described in the gate policy. Passing the
-three merge gates is not a substitute for the release gate or public-chain
-evidence; neither release mode has been run for this merge candidate.
+The run covered compiler and workspace tests, Clippy, the full strict backend
+audit, all 218 iCKB differential cases, simulator and CKB-VM package scenarios,
+Registry API and independent-verifier tests, package construction, website
+production/testnet parity, VS Code packaging, the canonical Docker WASM build,
+NovaSeal RISC-V reproducibility and pinning, and the non-compile-only production
+stateful CKB acceptance harness. The Registry Type Script rebuilt byte-for-byte
+to the 3,352-byte artifact recorded above. The NovaSeal verifier rebuilt to
+100,912 bytes with SHA-256
+`be66f22507b734c8a432c4c85f0079cc7461caaa92ee3277d50ea8f62ce95ff7`
+and CKB data hash
+`0x988bab12eab02ebfccc2d2a84da46f4119c5343797ada24104683e61cd07d26e`.
+Its RWA profile source binding is
+`0x779dad4139b1ffbbfa774d9e9d82b9765d4c23b62a86accd395e0b15bef4db47`.
 
 The refreshed iCKB matrix is versioned in the benchmark submodule rather than
 copied into the parent repository. Commit
@@ -333,15 +342,12 @@ copied into the parent repository. Commit
 `main` branch, and the parent repository binds the same gitlink, so a clean
 clone can reconstruct the exact evidence tree that passed `backend`.
 
-After the website release-integrity correction, `npm run build` passed with
-Node 22 in a clean parent worktree. That run covered the Registry and
-Playground tests, Astro checks and production build, homepage and LS-IDL
-regressions, documentation links, exact distribution identities, and the
-production deployment contract. The resulting static site was deployed at
-`https://cellscript.dev/` from the immutable server directory
-`/data/cellscript/releases/release-023-00f0e2c-1aeea3cc`; the unmodified public
-homepage returned HTTP 200 with the `v0.23.0` link and date, and the site
-container returned `running healthy`.
+The canonical website build produced the 0.24 WASM identity recorded above and
+passed the 600 KiB gzip budget. This validation did not push the new submodule
+commits, create or push `v0.24.0`, publish either crates.io package, deploy the
+Registry Type Script, or deploy the 0.24 website. Those remain explicit
+release-operator steps and must preserve the validated source and artifact
+identities.
 
 ## Detailed References
 
