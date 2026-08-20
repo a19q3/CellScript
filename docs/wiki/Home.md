@@ -71,6 +71,8 @@ If you already know what you need, jump directly:
 - driving `cellc` from an agent: read [Agentic Loops and cellscript-mcp](Tutorial-13-Agentic-Loops-and-cellscript-mcp.md).
 - checking structural artifacts and executable scenarios: read
   [Verified Artifacts and Executable Tests](Tutorial-14-Verified-Artifacts-and-Executable-Tests.md).
+- publishing or resolving an LS-IDL Lock Script interface: read
+  [LS-IDL for CKB Lock Scripts](Tutorial-15-LS-IDL-for-CKB-Lock-Scripts.md).
 - using CellScript fungible assets with Fiber: read the
   [bounded Fiber interoperability guide](https://github.com/CellScript-Labs/CellScript/blob/nightly-0.24/examples/fiber/README.md).
 - evaluating Spore or RGB++ integration: read
@@ -116,6 +118,10 @@ If you already know what you need, jump directly:
 14. [Verified Artifacts and Executable Tests](Tutorial-14-Verified-Artifacts-and-Executable-Tests.md):
    independently check a CKB ELF bundle, run simulator and CKB-VM package
    scenarios, and keep structural, runtime, and chain evidence separate.
+15. [LS-IDL for CKB Lock Scripts](Tutorial-15-LS-IDL-for-CKB-Lock-Scripts.md):
+   validate exact IDL bytes, bind them to a Lock Script executable, publish
+   the Registry bundle, record deployment evidence, and resolve the interface
+   with `cellc`.
 
 After the numbered path, use [Cookbook Recipes](Cookbook-Recipes.md) for small
 patterns and keep [CKB Glossary](CKB-Glossary.md) nearby for terminology.

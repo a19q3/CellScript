@@ -201,7 +201,7 @@ export function registryRuntimeConfig(env: Env): RegistryRuntimeConfig {
   throw new ApiError(503, "invalid_registry_environment", "REGISTRY_ENVIRONMENT must be production or testnet-sandbox");
 }
 export const CANONICAL_REGISTRY_TYPE_SCRIPT = Object.freeze({
-  code_hash: "0x8b6de99567accdca438818a55c16534ed10fc335f117709b1487fd2666808bfb",
+  code_hash: "0x0dd596ade29e06e5bcc00f56abf36ecbe9afaa09f1b26a64436aa37854da622b",
   hash_type: "data1",
 });
 export const CKB_MAINNET_SIGHASH_LOCK = Object.freeze({

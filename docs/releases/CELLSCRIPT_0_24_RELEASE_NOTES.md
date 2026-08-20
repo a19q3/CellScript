@@ -1,9 +1,10 @@
-# CellScript 0.24 Development Release Notes
+# CellScript 0.24 Release Notes
 
-**Status**: implementation-complete merge candidate; `dev`, `ci`, and
-`backend` passed on 2026-08-10. The refreshed iCKB evidence submodule commit
-`0e18ccd97bd75cac7de9211dc8d344c0bc08942f` is published and bound by the
-parent gitlink; the full release gate remains required before production claims
+**Status**: stable-release candidate; final `dev`, `ci`, `backend`, and
+`release` evidence is recorded in the validation section. The refreshed iCKB
+evidence submodule commit `0e18ccd97bd75cac7de9211dc8d344c0bc08942f` is
+published and bound by the parent gitlink. External ecosystem claims remain
+limited to the explicit integration status below.
 
 **Source edition**: 2026
 
@@ -132,6 +133,23 @@ and isolated records. Its LS-IDL form and copied API example default to
 records. Production continues to default to mainnet. The environment control
 is the intended visible distinction between otherwise matching interfaces.
 
+## Registry Type Script Release Identity
+
+The independently versioned Registry Type Script has a reproducible 0.24.0
+artifact at
+`contracts/registry-type-script/artifacts/v0.24.0/cellscript-registry-type-script`.
+The 3,352-byte ELF has SHA-256
+`0f48a8736360c121f6ae0f04ab4b0496834f6715d47e3284a0a07add609dede9`
+and CKB data hash
+`0x0dd596ade29e06e5bcc00f56abf36ecbe9afaa09f1b26a64436aa37854da622b`.
+The canonical Linux x86_64 rebuild matches the tracked bytes exactly, and the
+Registry API's production configuration gate binds this identity.
+
+This artifact identity is release evidence, not a claim of mainnet
+deployment. Production chain commitments remain disabled until the artifact
+and all required Script/CellDep values are deployed, confirmed, and explicitly
+configured.
+
 ## Playground Experience Upgrade
 
 The browser Playground is now a recoverable Cell-oriented workbench rather
@@ -148,32 +166,21 @@ the same workbench but expands it to the viewport; mobile retains a compact
 panel switcher. The WASM boundary remains metadata-only: the Playground does
 not claim to emit or execute a production ELF.
 
-## Website Release Integrity Correction
+## Website Release Identity
 
-A production review on 2026-08-13 found that the first 0.24 website deployment
-had been built from a feature branch that diverged before the 0.23 website
-release synchronization. The deployed homepage therefore still labelled
-`v0.22.0` as the latest release, the Playground still loaded the 0.22 WASM
-bundle, and the distribution regression test incorrectly asserted those stale
-values. The server was serving the requested new directory; the error was in
-the source lineage and its matching test expectation.
+The 0.24 website is built from the corrected 0.23 release lineage and now
+binds the new release identity throughout the homepage, Playground worker,
+compiler sample, and distribution regression checks. The canonical Playground
+asset is `20260819-v0.24.0-19ce8898`; its WASM SHA-256 is
+`19ce8898e8161f100edebf6f982d856f3e59bfac31572642b53f2e01c70a1a17`.
+The raw module is 1,485,936 bytes and 567,048 bytes under the gate's gzip
+measurement, below the 600 KiB budget.
 
-The corrected website now:
-
-- links the homepage release card to the official
-  [CellScript v0.23.0 release](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.23.0),
-  published on 2026-08-11;
-- loads the released 0.23 Playground asset identified by
-  `20260811-v0.23.0-fa369818`, with WASM SHA-256
-  `fa369818631532c657e73e970b6138e3a231d532a073d428dfe7f61686135dd5`;
-- asserts the release URL, displayed tag, compiler version, cache-busting asset
-  identity, and exact WASM digest during the website build; and
-- remains explicit that `nightly-0.24` is a development line. Advertising the
-  latest stable `v0.23.0` release does not claim that 0.24 itself has shipped.
-
-The corrected parent commit is
-`1aeea3cc2e41644873ec31b12ef5e2dc8138f230`, which pins website commit
-`00f0e2cb184c1343d2c6b57aa6a413028976a3e0`.
+The Node 22 website build validates both production and Pudge Testnet outputs,
+the six-route byte-identical asset parity boundary, the release URL and tag,
+the compiler asset identity, and the exact WASM digest. The parent repository
+pins website commit
+`0a9a6dbd38d417b6da7e65c96e9c9a4a8498af94`.
 
 ## Integration Status
 
@@ -301,24 +308,33 @@ or conversion of executable/copy artifacts into source dependencies.
 
 ## Validation
 
-The package/Registry closure passed `dev` and `ci` on 2026-08-10, with the CI
-website phase using the required Node 22 toolchain. The complete `backend` gate
-then passed from an isolated clean checkout containing the refreshed iCKB
-differential evidence, pinned CKB revision
-`f7fa4436737756f97a24e254f22c13a36316ecea`, and CKB SDK `v5.1.0`. This
-covered the compiler tests, Clippy, full strict backend audit, all 218 iCKB
-differential cases, and the production stateful CKB scenario harness:
+All five canonical gates passed on 2026-08-19 from an isolated clean release
+candidate. The environment used Rust `1.97.1`, Node `22.23.2`, CKB revision
+`f7fa4436737756f97a24e254f22c13a36316ecea`, CKB SDK `v5.1.0`, the
+`riscv64imac-unknown-none-elf` target, and the pinned Docker base
+`rust:1.97.1-slim-bookworm@sha256:99e09cb2284e2ddbb73a995deee3e91783fd04d177602ccf6eab326d778ee777`:
 
 ```bash
 ./scripts/cellscript_gate.sh dev
 ./scripts/cellscript_gate.sh ci
 ./scripts/cellscript_gate.sh backend
+./scripts/cellscript_gate.sh release-quick --ckb-repo /path/to/pinned/ckb
+./scripts/cellscript_gate.sh release --ckb-repo /path/to/pinned/ckb
 ```
 
-`release`/`release-quick` still require the pinned CKB, CKB SDK, NovaSeal,
-Docker, Node 22, and RISC-V tooling described in the gate policy. Passing the
-three merge gates is not a substitute for the release gate or public-chain
-evidence; neither release mode has been run for this merge candidate.
+The run covered compiler and workspace tests, Clippy, the full strict backend
+audit, all 218 iCKB differential cases, simulator and CKB-VM package scenarios,
+Registry API and independent-verifier tests, package construction, website
+production/testnet parity, VS Code packaging, the canonical Docker WASM build,
+NovaSeal RISC-V reproducibility and pinning, and the non-compile-only production
+stateful CKB acceptance harness. The Registry Type Script rebuilt byte-for-byte
+to the 3,352-byte artifact recorded above. The NovaSeal verifier rebuilt to
+100,912 bytes with SHA-256
+`be66f22507b734c8a432c4c85f0079cc7461caaa92ee3277d50ea8f62ce95ff7`
+and CKB data hash
+`0x988bab12eab02ebfccc2d2a84da46f4119c5343797ada24104683e61cd07d26e`.
+Its RWA profile source binding is
+`0x779dad4139b1ffbbfa774d9e9d82b9765d4c23b62a86accd395e0b15bef4db47`.
 
 The refreshed iCKB matrix is versioned in the benchmark submodule rather than
 copied into the parent repository. Commit
@@ -326,15 +342,12 @@ copied into the parent repository. Commit
 `main` branch, and the parent repository binds the same gitlink, so a clean
 clone can reconstruct the exact evidence tree that passed `backend`.
 
-After the website release-integrity correction, `npm run build` passed with
-Node 22 in a clean parent worktree. That run covered the Registry and
-Playground tests, Astro checks and production build, homepage and LS-IDL
-regressions, documentation links, exact distribution identities, and the
-production deployment contract. The resulting static site was deployed at
-`https://cellscript.dev/` from the immutable server directory
-`/data/cellscript/releases/release-023-00f0e2c-1aeea3cc`; the unmodified public
-homepage returned HTTP 200 with the `v0.23.0` link and date, and the site
-container returned `running healthy`.
+The canonical website build produced the 0.24 WASM identity recorded above and
+passed the 600 KiB gzip budget. This validation did not push the new submodule
+commits, create or push `v0.24.0`, publish either crates.io package, deploy the
+Registry Type Script, or deploy the 0.24 website. Those remain explicit
+release-operator steps and must preserve the validated source and artifact
+identities.
 
 ## Detailed References
 

@@ -4,7 +4,7 @@
 </p>
 
 [![CellScript CI](https://github.com/CellScript-Labs/CellScript/actions/workflows/ci.yml/badge.svg)](https://github.com/CellScript-Labs/CellScript/actions/workflows/ci.yml)
-[![Release: v0.22.0](https://img.shields.io/badge/release-v0.22.0-2f6f4e.svg)](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.22.0)
+[![Release: v0.24.0](https://img.shields.io/badge/release-v0.24.0-2f6f4e.svg)](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.24.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE-MIT)
 [![Rust 1.97.1](https://img.shields.io/badge/rust-1.97.1-orange.svg)](Cargo.toml)
 [![Targets: CKB](https://img.shields.io/badge/targets-CKB-2f6f4e.svg)](#target-profiles)
@@ -20,15 +20,11 @@ artifacts, together with typed metadata for auditing, policy checks, schema
 binding, and scheduler-aware execution.
 
 The current stable release is
-[CellScript v0.22.0](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.22.0).
-See the [0.22 release notes](docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md)
-for its shipped surface, evidence boundaries, and migration checklist.
-The completed 0.23 implementation scope is tracked in the
-[0.23 release notes](docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md); those
-notes are not a stable-release claim. Development on `nightly-0.24` implements
-the independently checked artifact and executable-test boundary described in
-the [0.24 release notes](docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md) and
-[0.24 roadmap](roadmap/CELLSCRIPT_0_24_ROADMAP.md).
+[CellScript v0.24.0](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.24.0).
+See the [0.24 release notes](docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md)
+for its shipped surface, evidence boundaries, and migration checklist. The
+[0.24 roadmap](roadmap/CELLSCRIPT_0_24_ROADMAP.md) records the independently
+checked artifact, executable-test, and explicitly deferred ecosystem boundaries.
 
 In this README, metadata means machine-readable semantic facts emitted by the
 compiler: schema layout, Cell effects, access summaries, source hashes,
@@ -122,7 +118,7 @@ curl -fsSL https://raw.githubusercontent.com/CellScript-Labs/CellScript/main/scr
 Or pin a specific version:
 
 ```bash
-CELLSCRIPT_VERSION=0.22.0 curl -fsSL https://raw.githubusercontent.com/CellScript-Labs/CellScript/main/scripts/install.sh | sh
+CELLSCRIPT_VERSION=0.24.0 curl -fsSL https://raw.githubusercontent.com/CellScript-Labs/CellScript/main/scripts/install.sh | sh
 ```
 
 The release page publishes `SHA256SUMS` alongside all four platform archives.
@@ -130,7 +126,7 @@ The release page publishes `SHA256SUMS` alongside all four platform archives.
 Build the exact published source instead:
 
 ```bash
-git clone --branch v0.22.0 --depth 1 https://github.com/CellScript-Labs/CellScript.git
+git clone --branch v0.24.0 --depth 1 https://github.com/CellScript-Labs/CellScript.git
 cd CellScript
 cargo install --locked --path .
 ```
@@ -537,9 +533,12 @@ or CellFabric intent engine.
 - [0.20 release notes](docs/releases/CELLSCRIPT_0_20_RELEASE_NOTES.md)
 - [0.21 release notes](docs/releases/CELLSCRIPT_0_21_RELEASE_NOTES.md)
 - [0.22 release notes](docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md)
+- [0.23 release notes](docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md)
+- [0.24 release notes](docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md)
 - [0.22 type and set theory roadmap](roadmap/CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md)
 - [0.22 bounded Fiber interoperability guide](examples/fiber/README.md)
 - [Agentic Loops and cellscript-mcp tutorial](docs/wiki/Tutorial-13-Agentic-Loops-and-cellscript-mcp.md)
+- [LS-IDL for CKB Lock Scripts tutorial](docs/wiki/Tutorial-15-LS-IDL-for-CKB-Lock-Scripts.md)
 
 ---
 
@@ -732,7 +731,7 @@ policy defaults:
 [package]
 edition = "2026"
 name = "token"
-version = "0.22.0"
+version = "0.24.0"
 entry = "src/main.cell"
 source_roots = ["src"]
 
