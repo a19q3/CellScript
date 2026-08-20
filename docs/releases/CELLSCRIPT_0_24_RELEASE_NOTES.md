@@ -1,10 +1,13 @@
 # CellScript 0.24 Release Notes
 
-**Status**: stable-release candidate; final `dev`, `ci`, `backend`, and
-`release` evidence is recorded in the validation section. The refreshed iCKB
+**Status**: stable release; the exact source boundary is `refs/tags/v0.24.0`,
+and final `dev`, `ci`, `backend`, and `release` evidence is recorded in the
+validation section. The refreshed iCKB
 evidence submodule commit `0e18ccd97bd75cac7de9211dc8d344c0bc08942f` is
 published and bound by the parent gitlink. External ecosystem claims remain
 limited to the explicit integration status below.
+
+**Release date**: 2026-08-20
 
 **Source edition**: 2026
 
@@ -14,7 +17,7 @@ limited to the explicit integration status below.
 
 ## Highlights
 
-The 0.24 line closes two trust gaps without adding a new language edition:
+The 0.24 line closes four trust gaps without adding a new language edition:
 
 1. CKB ELF builds emit a canonical verified lowering record and source map,
    and a smaller compiler-independent checker recomputes bounded structural
@@ -168,10 +171,12 @@ not claim to emit or execute a production ELF.
 
 ## Website Release Identity
 
-The 0.24 website is built from the corrected 0.23 release lineage and now
+The 0.24 website carries forward the corrected 0.23 release boundary and now
 binds the new release identity throughout the homepage, Playground worker,
-compiler sample, and distribution regression checks. The canonical Playground
-asset is `20260819-v0.24.0-19ce8898`; its WASM SHA-256 is
+compiler sample, and distribution regression checks. Its final tree removes
+the forward-looking 0.25-only package-interface, typed-semantics, and syntax-
+highlighting presentation fields; those remain outside the 0.24 release. The
+canonical Playground asset is `20260819-v0.24.0-19ce8898`; its WASM SHA-256 is
 `19ce8898e8161f100edebf6f982d856f3e59bfac31572642b53f2e01c70a1a17`.
 The raw module is 1,485,936 bytes and 567,048 bytes under the gate's gzip
 measurement, below the 600 KiB budget.
@@ -180,14 +185,39 @@ The Node 22 website build validates both production and Pudge Testnet outputs,
 the six-route byte-identical asset parity boundary, the release URL and tag,
 the compiler asset identity, and the exact WASM digest. The parent repository
 pins website commit
-`0a9a6dbd38d417b6da7e65c96e9c9a4a8498af94`.
+`ca7cb3fa45b778953ae2db8ab57bc489981efdf4`.
+
+## Compatibility And Migration
+
+The CKB adapter no longer exports the deprecated, permanently fail-closed
+`deploy_artifact` and `build_deploy` methods. Integrations must construct a
+verified unsigned transaction with `build_deploy_transaction`, hand signing to
+an external wallet, and submit the signed transaction explicitly.
+
+CKB ELF generation now always uses the audited internal assembler. The
+unreachable external RISC-V toolchain fallback and its environment-controlled
+paths have been removed. Diagnostic `E2400` now identifies failure at the
+verified lowering/source-map boundary; assembler layout, encoding, and ELF
+failures retain the `E220x`/`E2300` families.
+
+The code generator has been split along its documented ABI, assembler, call,
+collection, expression, frame, runtime, schema, and Cell-operation boundaries.
+This is an internal ownership refactor, not a new source-language or ABI claim.
+The Fiber configuration renderer replaces the deprecated `serde_yaml` crate
+with the maintained `serde_yaml_ng` continuation without promoting a Fiber
+target profile.
+
+The Registry website refresh adds route-specific headers, a shared content
+grid, clearer evidence hierarchy, refined substrate material, and the restored
+homepage brand animation. These presentation changes do not alter Registry
+evidence semantics or the mainnet/testnet isolation boundary.
 
 ## Integration Status
 
-- The CellScript side of the Myelin 0.24 handoff is versioned and tested. The
-  external Myelin lock update remains pending until this branch has a clean
-  exact release revision. No raw-witness alias or Myelin target profile is
-  added.
+- The CellScript side of the Myelin 0.24 handoff is versioned and tested, and
+  `v0.24.0` supplies the exact CellScript source revision for that handoff. The
+  external Myelin lock update remains separately pending. No raw-witness alias
+  or Myelin target profile is added.
 - Fiber remains no-profile. Static compiler/CKB-VM evidence is retained, but
   the complete external lifecycle and negative matrix has no complete evidence
   bundle and remains pending.
@@ -308,8 +338,8 @@ or conversion of executable/copy artifacts into source dependencies.
 
 ## Validation
 
-All five canonical gates passed on 2026-08-19 from an isolated clean release
-candidate. The environment used Rust `1.97.1`, Node `22.23.2`, CKB revision
+All five canonical gates passed on 2026-08-20 from an isolated clean release
+tree. The environment used Rust `1.97.1`, Node `22.23.2`, CKB revision
 `f7fa4436737756f97a24e254f22c13a36316ecea`, CKB SDK `v5.1.0`, the
 `riscv64imac-unknown-none-elf` target, and the pinned Docker base
 `rust:1.97.1-slim-bookworm@sha256:99e09cb2284e2ddbb73a995deee3e91783fd04d177602ccf6eab326d778ee777`:
@@ -343,11 +373,10 @@ copied into the parent repository. Commit
 clone can reconstruct the exact evidence tree that passed `backend`.
 
 The canonical website build produced the 0.24 WASM identity recorded above and
-passed the 600 KiB gzip budget. This validation did not push the new submodule
-commits, create or push `v0.24.0`, publish either crates.io package, deploy the
-Registry Type Script, or deploy the 0.24 website. Those remain explicit
-release-operator steps and must preserve the validated source and artifact
-identities.
+passed the 600 KiB gzip budget. Gates establish source and artifact evidence;
+they do not publish either crates.io package or deploy the Registry Type
+Script. Publication and deployment remain explicit release-operator actions
+and must preserve the validated source and artifact identities.
 
 ## Detailed References
 
