@@ -592,7 +592,20 @@ pub fn run(root: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::require_ordered_script_steps;
+    use super::{changelog_head, require_ordered_script_steps};
+
+    #[test]
+    fn changelog_head_accepts_versioned_unreleased_candidate() {
+        let captures = changelog_head()
+            .captures("# Changelog\n\n## 0.24.0 - Unreleased\n")
+            .expect("a versioned undated candidate heading must be accepted");
+        assert_eq!(captures.get(1).map(|capture| capture.as_str()), Some("0.24.0"));
+    }
+
+    #[test]
+    fn changelog_head_does_not_treat_unversioned_unreleased_as_release_boundary() {
+        assert!(changelog_head().captures("# Changelog\n\n## Unreleased\n").is_none());
+    }
 
     #[test]
     fn website_build_contract_accepts_additional_ordered_checks() {

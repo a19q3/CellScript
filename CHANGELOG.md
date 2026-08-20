@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.24.0 - 2026-08-20
+## 0.24.0 - Unreleased
 
 - Align the complete 0.24 release identity across every workspace and verifier
   crate, the independent checker dependency, lockfiles, Registry Type Script,
@@ -33,14 +33,17 @@
   origins, chain selection, sandbox expiry, no-index policy, and storage remain
   isolated.
 - Preserve the corrected website release lineage that removed stale 0.22
-  metadata, then advance the homepage and Playground to `v0.24.0`. The
-  canonical WASM bundle uses asset identity
+  metadata. While 0.24 remains untagged, keep the homepage on the published
+  `v0.23.0` release and prepare the Playground with the 0.24 candidate
+  compiler. The canonical WASM bundle uses asset identity
   `20260819-v0.24.0-19ce8898` and SHA-256
   `19ce8898e8161f100edebf6f982d856f3e59bfac31572642b53f2e01c70a1a17`;
-  distribution checks bind the exact release URL, displayed tag, compiler
-  version, asset identity, and digest. Remove inherited 0.25-only package-
-  interface, typed-semantics, and future-syntax presentation fields from the
-  final 0.24 website tree while retaining the 0.24 LS-IDL surface.
+  distribution checks bind the current stable release URL and displayed tag
+  separately from the candidate compiler version, asset identity, and digest.
+  Remove inherited 0.25-only package-interface, typed-semantics, and future-
+  syntax presentation fields from the 0.24 website branch while retaining the
+  0.24 LS-IDL surface. Publish the exact 0.24 and 0.25 website gitlinks on
+  separate release branches so both parent lines clone without hidden commits.
 - Add first-class LS-IDL publication and discovery for CKB Lock Scripts.
   `cellc artifact ls-idl` validates the bounded 0.1 schema, appends
   `SHA-256(raw idl.json)` to an executable, generates a publish-ready bundle,
