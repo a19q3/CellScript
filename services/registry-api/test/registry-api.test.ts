@@ -33,6 +33,7 @@ import {
   sha256Hex,
   validatePublishPayload,
   validateArtifactDescriptor,
+  validateVersion,
   type CapabilityAuthorisationPayload,
   type CapabilityRevocationPayload,
   type AvailabilityPayload,
@@ -93,6 +94,20 @@ describe("capability scopes", () => {
     expect(scopeAllows(scopes, "availability", "cellscript", "demo")).toBe(false);
     expect(scopeAllows(scopes, "publish", "cellscript", "other")).toBe(false);
   });
+});
+
+describe("SemVer admission", () => {
+  it("accepts canonical release, prerelease, and build metadata forms", () => {
+    expect(validateVersion("0.24.0")).toBe("0.24.0");
+    expect(validateVersion("1.2.3-rc.1+build.7")).toBe("1.2.3-rc.1+build.7");
+  });
+
+  it.each(["01.2.3", "1.02.3", "1.2.03", "1.2.3-01", "1.2.3-rc..1", "1.2.3+"])(
+    "rejects non-canonical version %s",
+    (version) => {
+      expect(() => validateVersion(version)).toThrow(ApiError);
+    },
+  );
 });
 
 function bytesHex(value: Uint8Array): string {

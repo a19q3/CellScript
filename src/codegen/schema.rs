@@ -732,25 +732,6 @@ impl CodeGenerator {
         }
     }
 
-    pub(super) fn emit_fixed_byte_source_scalar_to(
-        &mut self,
-        dest_reg: &str,
-        scratch_reg: &str,
-        base_reg: &str,
-        source: &ExpectedFixedByteSource,
-        start: usize,
-        width: usize,
-    ) {
-        self.emit(format!("li {}, 0", dest_reg));
-        for byte_index in 0..width {
-            self.emit_fixed_byte_source_byte_to(scratch_reg, base_reg, source, start + byte_index);
-            if byte_index != 0 {
-                self.emit(format!("slli {}, {}, {}", scratch_reg, scratch_reg, byte_index * 8));
-            }
-            self.emit(format!("or {}, {}, {}", dest_reg, dest_reg, scratch_reg));
-        }
-    }
-
     pub(super) fn operand_is_u128(&self, operand: &IrOperand) -> bool {
         match operand {
             IrOperand::Const(IrConst::U128(_)) => true,
@@ -773,9 +754,9 @@ impl CodeGenerator {
             BinaryOp::Sub if self.operand_is_u128(left) => (left, right),
             _ => return false,
         };
-        let Some(source) = self.expected_fixed_byte_source(wide_operand, 16) else {
+        if self.expected_fixed_byte_source(wide_operand, 16).is_none() {
             return false;
-        };
+        }
         let Some(delta) = self.prelude_u64_operand_source(delta_operand) else {
             return false;
         };
@@ -785,18 +766,30 @@ impl CodeGenerator {
             BinaryOp::Sub => self.emit("# cellscript abi: u128 sub with borrow"),
             _ => unreachable!("guarded u128 binary op"),
         }
-        self.emit_fixed_byte_source_scalar_to("t0", "t2", "t4", &source, 0, 8);
-        self.emit_fixed_byte_source_scalar_to("t3", "t2", "t4", &source, 8, 8);
+        if !self.emit_u128_operand_limbs("t0", "t3", "t2", "t4", wide_operand, "u128 arithmetic wide operand") {
+            return true;
+        }
+        let wide_low_offset = self.runtime_expr_temp_offset(0);
+        let wide_high_offset = self.runtime_expr_temp_offset(1);
+        self.emit_stack_store("t0", wide_low_offset);
+        self.emit_stack_store("t3", wide_high_offset);
         self.emit_prelude_u64_operand_source_to_t1(&delta);
+        self.emit_stack_load("t0", wide_low_offset);
+        self.emit_stack_load("t3", wide_high_offset);
+        let overflow_label = self.fresh_label("u128_arithmetic_overflow");
+        let done_label = self.fresh_label("u128_arithmetic_done");
         match op {
             BinaryOp::Add => {
                 self.emit("add t5, t0, t1");
                 self.emit("sltu t2, t5, t0");
                 self.emit("add t6, t3, t2");
+                self.emit("sltu a6, t6, t3");
+                self.emit(format!("bnez a6, {}", overflow_label));
             }
             BinaryOp::Sub => {
                 self.emit("sub t5, t0, t1");
                 self.emit("sltu t2, t0, t1");
+                self.emit(format!("bltu t3, t2, {}", overflow_label));
                 self.emit("sub t6, t3, t2");
             }
             _ => unreachable!("guarded u128 binary op"),
@@ -805,6 +798,12 @@ impl CodeGenerator {
         self.emit_stack_store("t6", dest_offset + 8);
         self.emit_sp_addi("t0", dest_offset);
         self.emit_stack_store("t0", dest.id * 8);
+        self.emit(format!("j {}", done_label));
+        self.emit_label(&overflow_label);
+        self.emit_runtime_error_comment(CellScriptRuntimeError::AggregateAmountMismatch);
+        self.emit(format!("li a0, {}", CellScriptRuntimeError::AggregateAmountMismatch.code()));
+        self.emit_epilogue();
+        self.emit_label(&done_label);
         true
     }
 

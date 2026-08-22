@@ -378,8 +378,13 @@ export function validatePackageIdent(value: string, field: string): string {
 
 export function validateVersion(value: string): string {
   const trimmed = value.trim();
-  if (!/^[0-9]+[.][0-9]+[.][0-9]+(?:[-+][0-9A-Za-z.-]+)?$/.test(trimmed)) {
-    throw new ApiError(400, "invalid_version", "version must be semver-like");
+  const match = /^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:[.][0-9A-Za-z-]+)*))?(?:[+]([0-9A-Za-z-]+(?:[.][0-9A-Za-z-]+)*))?$/.exec(trimmed);
+  if (!match) {
+    throw new ApiError(400, "invalid_version", "version must be valid SemVer");
+  }
+  const prerelease = match[4]?.split(".") ?? [];
+  if (prerelease.some((identifier) => /^[0-9]+$/.test(identifier) && identifier.length > 1 && identifier.startsWith("0"))) {
+    throw new ApiError(400, "invalid_version", "numeric SemVer prerelease identifiers must not contain leading zeroes");
   }
   return trimmed;
 }

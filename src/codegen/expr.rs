@@ -190,10 +190,7 @@ impl CodeGenerator {
             self.emit_fail(CellScriptRuntimeError::FixedByteComparisonUnresolved);
             return;
         };
-        if !self.emit_u128_operand_limbs("t0", "t1", "t6", "t4", left, "u128 arithmetic left") {
-            return;
-        }
-        if !self.emit_u128_operand_limbs("t2", "t3", "t6", "t5", right, "u128 arithmetic right") {
+        if !self.emit_u128_binary_operand_limbs(left, right, "u128 arithmetic") {
             return;
         }
         let ok_label = self.fresh_label("u128_arithmetic_ok");
@@ -237,10 +234,7 @@ impl CodeGenerator {
     }
 
     fn emit_u128_compare(&mut self, dest: &IrVar, op: BinaryOp, left: &IrOperand, right: &IrOperand) {
-        if !self.emit_u128_operand_limbs("t0", "t1", "t6", "t4", left, "u128 compare left") {
-            return;
-        }
-        if !self.emit_u128_operand_limbs("t2", "t3", "t6", "t5", right, "u128 compare right") {
+        if !self.emit_u128_binary_operand_limbs(left, right, "u128 compare") {
             return;
         }
         self.emit("# cellscript abi: u128 compare high limb first");
@@ -292,10 +286,7 @@ impl CodeGenerator {
             self.emit_fail(CellScriptRuntimeError::FixedByteComparisonUnresolved);
             return;
         };
-        if !self.emit_u128_operand_limbs("t0", "t1", "t6", "t4", left, "u128 multiplication left") {
-            return;
-        }
-        if !self.emit_u128_operand_limbs("t2", "t3", "t6", "t5", right, "u128 multiplication right") {
+        if !self.emit_u128_binary_operand_limbs(left, right, "u128 multiplication") {
             return;
         }
         self.emit("# cellscript abi: checked u128 multiplication");
@@ -347,10 +338,7 @@ impl CodeGenerator {
             self.emit_fail(CellScriptRuntimeError::FixedByteComparisonUnresolved);
             return;
         };
-        if !self.emit_u128_operand_limbs("t0", "t1", "t6", "t4", left, "u128 division numerator") {
-            return;
-        }
-        if !self.emit_u128_operand_limbs("t2", "t3", "t6", "t5", right, "u128 division denominator") {
+        if !self.emit_u128_binary_operand_limbs(left, right, "u128 division") {
             return;
         }
         self.emit("# cellscript abi: checked u128 division by restoring long division");

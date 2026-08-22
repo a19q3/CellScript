@@ -44,6 +44,41 @@ action always_success() -> u64 {
 }
 "#;
 
+const U128_DYNAMIC_SCHEMA_ENTRY: &str = r#"
+module entry_witness_u128_dynamic_schema
+
+struct Entry {
+    amount: u128,
+    note: Vec<u8>,
+}
+
+action verify(witness left: Entry, witness right: Entry, witness expected_add: u128) -> u64 {
+    verification
+        require left.amount + right.amount == expected_add
+        return 0
+}
+"#;
+
+const U128_U64_ADD_ENTRY: &str = r#"
+module entry_witness_u128_u64_add
+
+action verify_add(witness wide: u128, witness delta: u64, witness expected: u128) -> u64 {
+    verification
+        require wide + delta == expected
+        return 0
+}
+"#;
+
+const U128_U64_SUB_ENTRY: &str = r#"
+module entry_witness_u128_u64_sub
+
+action verify_sub(witness wide: u128, witness delta: u64, witness expected: u128) -> u64 {
+    verification
+        require wide - delta == expected
+        return 0
+}
+"#;
+
 const SIGNED_TX_MAX_CYCLES: u64 = 70_000_000;
 
 fn canonical_multisig_v2_witness(entry_payload: Bytes) -> packed::WitnessArgs {
@@ -69,6 +104,53 @@ fn raw_entry_payload(value: u64) -> Bytes {
     let mut payload = b"CSARGv1\0".to_vec();
     payload.extend_from_slice(&value.to_le_bytes());
     Bytes::from(payload)
+}
+
+/// Encode a dynamic-layout `Entry` as the Molecule table shape the runtime
+/// decodes: `<u32 total><u32 offset amount><u32 offset note><amount><note>`.
+/// The dynamic `Vec<u8>` field forces table decoding for the `u128` field.
+fn molecule_dynamic_entry_bytes(amount: u128, note: &[u8], total_override: Option<u32>) -> Vec<u8> {
+    let amount_offset = 4 + 4 * 2;
+    let note_offset = amount_offset + 16;
+    let total = note_offset + note.len();
+    let mut bytes = Vec::with_capacity(total);
+    bytes.extend_from_slice(&total_override.unwrap_or(total as u32).to_le_bytes());
+    bytes.extend_from_slice(&(amount_offset as u32).to_le_bytes());
+    bytes.extend_from_slice(&(note_offset as u32).to_le_bytes());
+    bytes.extend_from_slice(&amount.to_le_bytes());
+    bytes.extend_from_slice(note);
+    bytes
+}
+
+fn execute_u128_dynamic_schema_add(
+    elf: &[u8],
+    left: u128,
+    right: u128,
+    expected_add: u128,
+    total_override: Option<u32>,
+) -> ckb_script_runner::CkbScriptExecutionResult {
+    let mut payload = b"CSARGv1\0".to_vec();
+    for value in [left, right] {
+        let entry = molecule_dynamic_entry_bytes(value, b"audit", total_override);
+        payload.extend_from_slice(&(entry.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&entry);
+    }
+    payload.extend_from_slice(&expected_add.to_le_bytes());
+    let witness = canonical_multisig_v2_witness(Bytes::from(payload));
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
+    fixture.witnesses = vec![witness.as_bytes()];
+    execute_cellscript_script(elf, &fixture)
+}
+
+fn execute_u128_u64_arithmetic(elf: &[u8], wide: u128, delta: u64, expected: u128) -> ckb_script_runner::CkbScriptExecutionResult {
+    let mut payload = b"CSARGv1\0".to_vec();
+    payload.extend_from_slice(&wide.to_le_bytes());
+    payload.extend_from_slice(&delta.to_le_bytes());
+    payload.extend_from_slice(&expected.to_le_bytes());
+    let witness = canonical_multisig_v2_witness(Bytes::from(payload));
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
+    fixture.witnesses = vec![witness.as_bytes()];
+    execute_cellscript_script(elf, &fixture)
 }
 
 fn execute_on_second_group_input(witness: Bytes) -> ckb_script_runner::CkbScriptExecutionResult {
@@ -232,4 +314,50 @@ fn malformed_unselected_witnessargs_field_still_fails_closed() {
 
     let result = execute_on_second_group_input(Bytes::from(encoded));
     assert_eq!(result.exit_code, 25, "the placement ABI must validate the whole WitnessArgs table: {:?}", result.captured_debug);
+}
+
+#[test]
+fn u128_add_on_dynamic_schema_fields_executes_exactly_in_ckb_vm() {
+    let elf = compile_cellscript_source_to_elf(U128_DYNAMIC_SCHEMA_ENTRY, "verify", None);
+    let vectors: [(u128, u128); 3] = [
+        (0x00ff_ffee_ddcc_bbaa_55aa_55aa_55aa_55aa, 0x55aa_55aa_55aa_55aa_aa55_aa55_aa55_aa55),
+        (0x0123_4567_89ab_cdef_fedc_ba98_7654_3210, 0xf0f0_0f0f_f0f0_0f0f_aaaa_5555_aaaa_5555),
+        (1, u128::MAX - 1),
+    ];
+    for (left, right) in vectors {
+        let expected_add = left.checked_add(right).expect("vector must not overflow");
+        let result = execute_u128_dynamic_schema_add(&elf, left, right, expected_add, None);
+        assert_eq!(
+            result.exit_code, 0,
+            "u128 addition over Molecule-table-decoded fields must execute exactly in CKB-VM: {:?}",
+            result.captured_debug
+        );
+    }
+
+    let wrong = execute_u128_dynamic_schema_add(&elf, 1, 2, 4, None);
+    assert_eq!(wrong.exit_code, 5, "a wrong expected sum must fail the assertion: {:?}", wrong.captured_debug);
+
+    let malformed = execute_u128_dynamic_schema_add(&elf, 8, 1, 9, Some(255));
+    assert_eq!(
+        malformed.exit_code, 2,
+        "a mismatched Molecule table length must fail the bounds check: {:?}",
+        malformed.captured_debug
+    );
+}
+
+#[test]
+fn u128_u64_arithmetic_checks_carry_overflow_and_underflow_in_ckb_vm() {
+    let add_elf = compile_cellscript_source_to_elf(U128_U64_ADD_ENTRY, "verify_add", None);
+    let carried = execute_u128_u64_arithmetic(&add_elf, u64::MAX as u128, 1, 1u128 << 64);
+    assert_eq!(carried.exit_code, 0, "u128 + u64 carry must execute exactly: {:?}", carried.captured_debug);
+
+    let overflow = execute_u128_u64_arithmetic(&add_elf, u128::MAX, 1, 0);
+    assert_eq!(overflow.exit_code, 49, "u128 + u64 overflow must fail closed: {:?}", overflow.captured_debug);
+
+    let sub_elf = compile_cellscript_source_to_elf(U128_U64_SUB_ENTRY, "verify_sub", None);
+    let borrowed = execute_u128_u64_arithmetic(&sub_elf, 1u128 << 64, 1, u64::MAX as u128);
+    assert_eq!(borrowed.exit_code, 0, "u128 - u64 borrow must execute exactly: {:?}", borrowed.captured_debug);
+
+    let underflow = execute_u128_u64_arithmetic(&sub_elf, 0, 1, 0);
+    assert_eq!(underflow.exit_code, 49, "u128 - u64 underflow must fail closed: {:?}", underflow.captured_debug);
 }

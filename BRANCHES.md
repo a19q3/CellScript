@@ -8,15 +8,12 @@ discussions. Do not use that historical baseline to describe the current
 
 ## nightly-0.24
 
-`nightly-0.24` is the active release-candidate line for independently verified
+`nightly-0.24` is the closed maintenance line for independently verified
 artifacts and executable package evidence. It builds on the closed 0.23
-Edition 2026 and native-tooling boundary. The stable release boundary will be
-the exact `v0.24.0` tag only after the compiler, checker, Registry worker,
-executable tests, source maps, docs, and the `dev`, `ci`, `backend`, and
-`release` gates agree on the final source. Until then, passing candidate gates
-is evidence, not a stable-release claim. External Myelin, Fiber, and RGB++
-claims remain separately evidence gated as described in the 0.24 release
-notes.
+Edition 2026 and native-tooling boundary. The stable release boundary is the
+exact `v0.24.0` tag; later commits on the branch are not implicitly part of
+that release. External Myelin, Fiber, and RGB++ claims remain separately
+evidence gated as described in the 0.24 release notes.
 
 ## nightly-0.23
 
@@ -39,18 +36,19 @@ nightly branch name.
 comparisons and an exact nightly branch for development-scope comparisons;
 do not infer release evidence from `main` alone.
 
-## v0.24.0 (reserved)
+## v0.24.0
 
-`v0.24.0` is reserved for the final 0.24 source and has not been issued. Do not
-use the name as a stable comparison until the final tag exists. The eventual
-release will not by itself promote the separately pending Myelin, Fiber, or
-RGB++ external evidence boundaries.
+`v0.24.0` is the current stable release for the verified-artifact checker,
+executable package scenarios, lock-authoritative package graph, and LS-IDL
+Registry path. Use the exact tag ref `refs/tags/v0.24.0` for stable
+comparisons. The release does not promote the separately pending Myelin,
+Fiber, or RGB++ external evidence boundaries.
 
 ## v0.23.0
 
-`v0.23.0` remains the current stable baseline for Edition 2026, the Registry,
-and native release tooling. Use the exact tag ref `refs/tags/v0.23.0` for
-stable comparisons while 0.24 remains a release candidate.
+`v0.23.0` is the historical stable baseline for Edition 2026, the Registry,
+and native release tooling. Use the exact tag ref `refs/tags/v0.23.0` when
+reproducing that release.
 
 ## v0.22.0
 

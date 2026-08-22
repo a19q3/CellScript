@@ -1063,17 +1063,12 @@ impl CodeGenerator {
             self.emit_store_u128_pointer_for_var(dest.id, dest_offset);
             return true;
         }
-        let Some(source) = self.expected_u128_source(src) else {
-            self.emit("# cellscript abi: u128 source is not addressable; fail closed");
-            self.emit_fail(CellScriptRuntimeError::FixedByteComparisonUnresolved);
-            return true;
-        };
-        self.emit_prepare_fixed_byte_source(&source, 16, "u128 materialize");
         self.emit(format!("# cellscript abi: materialize u128 operand into var{}", dest.id));
-        for byte_index in 0..16 {
-            self.emit_fixed_byte_source_byte_to("t0", "t4", &source, byte_index);
-            self.emit_store_byte_to_stack_offset("t0", dest_offset + byte_index);
+        if !self.emit_u128_operand_limbs("t0", "t1", "t6", "t4", src, "u128 materialize") {
+            return true;
         }
+        self.emit_stack_store("t0", dest_offset);
+        self.emit_stack_store("t1", dest_offset + 8);
         self.emit_store_u128_pointer_for_var(dest.id, dest_offset);
         true
     }
@@ -1111,8 +1106,37 @@ impl CodeGenerator {
             return false;
         };
         self.emit_prepare_fixed_byte_source(&source, 16, context);
-        self.emit_u64_le_from_fixed_byte_source(low_reg, scratch_reg, base_reg, &source, 0);
-        self.emit_u64_le_from_fixed_byte_source(high_reg, scratch_reg, base_reg, &source, 8);
+        if self.emit_fixed_byte_source_pointer_to(base_reg, &source) {
+            // Resolve schema-backed pointers before either accumulator is
+            // live. Dynamic Molecule bounds checks use t0..t5 internally, so
+            // resolving the pointer for every byte would overwrite the limb
+            // being assembled.
+            self.emit_unaligned_scalar_load(base_reg, low_reg, scratch_reg, 0, 8);
+            self.emit_unaligned_scalar_load(base_reg, high_reg, scratch_reg, 8, 8);
+        } else {
+            // Constants intentionally have no addressable storage.
+            self.emit_u64_le_from_fixed_byte_source(low_reg, scratch_reg, base_reg, &source, 0);
+            self.emit_u64_le_from_fixed_byte_source(high_reg, scratch_reg, base_reg, &source, 8);
+        }
+        true
+    }
+
+    pub(super) fn emit_u128_binary_operand_limbs(&mut self, left: &IrOperand, right: &IrOperand, context: &str) -> bool {
+        if !self.emit_u128_operand_limbs("t0", "t1", "t6", "t4", left, &format!("{} left", context)) {
+            return false;
+        }
+        let left_low_offset = self.runtime_expr_temp_offset(0);
+        let left_high_offset = self.runtime_expr_temp_offset(1);
+        self.emit_stack_store("t0", left_low_offset);
+        self.emit_stack_store("t1", left_high_offset);
+        if !self.emit_u128_operand_limbs("t2", "t3", "t6", "t5", right, &format!("{} right", context)) {
+            return false;
+        }
+        // Loading a dynamic schema field runs Molecule validation that uses
+        // t0/t1. Restore the left limbs only after the right operand is fully
+        // materialized.
+        self.emit_stack_load("t0", left_low_offset);
+        self.emit_stack_load("t1", left_high_offset);
         true
     }
 
