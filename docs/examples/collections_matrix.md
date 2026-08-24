@@ -14,8 +14,10 @@ Recommended authoring rule:
 - treat nested dynamic containers as schema/ABI boundary shapes unless
   metadata, constraints, and verifier evidence prove a concrete production
   helper
-- model Cell-backed collections with a source-aware `BoundedCellSet<T, N>`;
-  `Vec<Cell>` is rejected because it hides transaction source and ownership
+- use explicit fixed-arity Cell parameters and lifecycle operations for
+  deployable ownership; a source-aware `BoundedCellSet<T, N>` is currently an
+  audit-only contract and production-rejected, while `Vec<Cell>` is rejected
+  because it hides transaction source and ownership
 
 Current stack-backed local `Vec<T>` support is deliberately bounded compiler
 lowering for verifier-local fixed-width values. It is not a production

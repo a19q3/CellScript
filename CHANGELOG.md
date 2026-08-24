@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Harden bounded lifecycle collections at the production boundary. The typed
+  IR now retains `consume_each` predicates and the `create_each` output
+  template and lowers both constructs to an explicit registered fail-closed
+  call instead of silently replacing the body with `Unit`. Non-production
+  CKB artifacts reject the entry with stable runtime error 24
+  (`collection-runtime-unsupported`); `--production` and
+  `--deny-fail-closed` stop before ASM/ELF generation with E2105 and report the
+  operation, source origin, missing ProofPlan enforcement, and remediation.
+  Entry ABI metadata no longer presents either bounded collection as a
+  supported schema pointer, and ProofPlan no longer fabricates a
+  runtime-observed cardinality. Runtime Cell selection/decoding and witness
+  plan/output correspondence remain deliberately unsupported until their
+  consensus semantics are specified.
+
 - Bound local compiler and gate storage without weakening the verified-artifact
   contract. Incremental build caches now retain at most 32 recent identities
   per cache root, syntax-combination success runs discard reproducible

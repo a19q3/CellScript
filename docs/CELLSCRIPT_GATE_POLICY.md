@@ -340,17 +340,29 @@ quantifiers. It has a compile-time `1..=64` bound, emits a real resolved
 positive/missing-dependency CKB-VM cases. Out point, dep type, and original
 DepGroup identity remain manifest/builder evidence.
 
-Bounded Cell collections use the same finite-evidence rule. An action may take
-`input cells: BoundedCellSet<T, N>` and discharge its linear ownership exactly
-once with `consume_each`. A fixed-width witness plan may use
-`witness plans: BoundedList<P, N>` and exactly one `create` template per plan
-element through `create_each`. `runtime.collection_instantiations` records the
-explicit source, maximum cardinality, runtime-cardinality placeholder, vacuous
-zero policy, and ownership. Consume iteration remains
-`runtime-helper-required`; create iteration additionally emits
-`builder-evidence-required` output-count and capacity obligations. The quick
-syntax gate covers missing bounds, duplicate consumption, and
-`Vec<Resource>` rejection.
+Bounded Cell collections use the same finite-evidence rule, but are not yet an
+executable production surface. The ownership checker accepts
+`input cells: BoundedCellSet<T, N>` only when its binding is statically
+discharged once by `consume_each`. A fixed-width witness plan may describe
+`witness plans: BoundedList<P, N>` with exactly one `create` template per plan
+element. `runtime.collection_instantiations` records the declared source,
+maximum cardinality, vacuous-zero possibility, and ownership; it does not
+claim an actual runtime count. ProofPlan records
+`actual_scanned_cardinality:not-observed-no-runtime-lowering`.
+
+The IR retains the checked predicates and create template, then emits a
+registered fail-closed operation. Non-production CKB artifacts return runtime
+error 24 (`collection-runtime-unsupported`). `--production` and
+`--deny-fail-closed` reject both operations before ASM/ELF generation with
+E2105. The diagnostic names the operation, source origin, missing enforcement,
+and remediation. The quick syntax gate continues to cover missing bounds,
+duplicate static consumption, and `Vec<Resource>` rejection; CKB-VM coverage
+pins the exact-negative runtime boundary.
+
+More generally, production treats every selected consensus-relevant ProofPlan
+`gap:*` status as a hard blocker. This includes runtime-helper, builder-evidence,
+and metadata-only gaps. Builder output/capacity evidence is construction data,
+not a substitute for a verifier check.
 
 Type validity uses one evidence contract across parser, type checking, IR,
 metadata, ProofPlan, codegen, formatter, and LSP. A pure field predicate is

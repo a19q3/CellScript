@@ -141,6 +141,12 @@ Bounded collection iteration is related but not interchangeable. A
 [Resources and Cell Effects](Tutorial-03-Resources-and-Cell-Effects.md) for the
 batch movement rules.
 
+Both bounded lifecycle operations are metadata-only in the current executable
+profile. Their checked bodies are retained in IR, but codegen emits runtime
+error 24 and production stops with E2105. Do not read the static maximum `N` as
+an observed cardinality, or builder evidence as an on-chain correspondence
+check.
+
 ## Simple Invariant Assertions
 
 For boolean checks that do not need aggregate primitives, use `assert_invariant`

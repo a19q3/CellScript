@@ -1298,12 +1298,14 @@ impl CodeGenerator {
         let has_witness_payload = payload.iter().any(|arg| arg.width > 0 || arg.unsupported);
         let has_lock_args = params.iter().any(|param| param.source == ParamSource::LockArgs);
         let has_dynamic_payload = payload.iter().any(|arg| arg.schema_dynamic);
+        let has_bounded_collection_param = params.iter().any(|param| is_bounded_collection_type(&param.ty));
         let min_witness_len = ENTRY_WITNESS_HEADER_SIZE + payload_len;
         let loaded_label = self.fresh_label("entry_witness_loaded");
         let try_group_output_label = self.fresh_label("entry_witness_try_group_output");
         let buffer_ok_label = self.fresh_label("entry_witness_buffer_ok");
         let size_ok_label = self.fresh_label("entry_witness_size_ok");
         let fail_label = self.fresh_label("entry_witness_fail");
+        let bounded_collection_fail_label = self.fresh_label("entry_bounded_collection_fail");
         let done_label = self.fresh_label("entry_witness_done");
 
         self.emit_global(ENTRY_WITNESS_LABEL);
@@ -1315,6 +1317,12 @@ impl CodeGenerator {
         self.emit("# cellscript entry abi: placement profile requires CSARGv1 inside WitnessArgs.input_type");
         self.emit_large_addi("sp", "sp", -(ENTRY_WITNESS_FRAME_SIZE as i64));
         self.emit_stack_store("ra", ENTRY_WITNESS_RA_OFFSET);
+        if has_bounded_collection_param {
+            self.emit(
+                "# cellscript entry abi: bounded collection source/codec contract is unavailable; reject before decoding witness bytes",
+            );
+            self.emit(format!("j {}", bounded_collection_fail_label));
+        }
         if has_lock_args {
             self.emit_entry_load_script_args(&fail_label);
         }
@@ -1611,6 +1619,12 @@ impl CodeGenerator {
             self.emit(format!("j {}", done_label));
         }
 
+        if has_bounded_collection_param {
+            self.emit_label(&bounded_collection_fail_label);
+            self.emit_runtime_error_comment(CellScriptRuntimeError::CollectionRuntimeUnsupported);
+            self.emit(format!("li a0, {}", CellScriptRuntimeError::CollectionRuntimeUnsupported.code()));
+            self.emit(format!("j {}", done_label));
+        }
         self.emit_label(&fail_label);
         self.emit_runtime_error_comment(CellScriptRuntimeError::EntryWitnessAbiInvalid);
         self.emit(format!("li a0, {}", CellScriptRuntimeError::EntryWitnessAbiInvalid.code()));
@@ -10159,6 +10173,14 @@ impl CodeGenerator {
     }
 
     fn emit_call(&mut self, dest: Option<&IrVar>, func: &str, args: &[IrOperand]) -> Result<()> {
+        if matches!(func, crate::ir::BOUNDED_CONSUME_EACH_FAIL_CLOSED_HELPER | crate::ir::BOUNDED_CREATE_EACH_FAIL_CLOSED_HELPER) {
+            self.emit(format!(
+                "# cellscript bounded collection: {} has no executable source-selection/codec/correspondence contract; fail closed",
+                func
+            ));
+            self.emit_fail(CellScriptRuntimeError::CollectionRuntimeUnsupported);
+            return Ok(());
+        }
         if self.emit_ckb_fixed_hash_call(dest, func, args)? {
             return Ok(());
         }
@@ -19299,6 +19321,8 @@ fn entry_witness_payload_layout(
         .map(|(index, param)| {
             if !entry_param_consumes_witness_payload(param, index, runtime_bound_param_indices) {
                 EntryWitnessPayloadArg { width: 0, schema_dynamic: false, unsupported: false }
+            } else if is_bounded_collection_type(&param.ty) {
+                EntryWitnessPayloadArg { width: 0, schema_dynamic: false, unsupported: true }
             } else if let Some(layout) = match &param.ty {
                 IrType::Named(name) => enum_layouts.get(name).filter(|layout| layout.has_payload()),
                 _ => None,
@@ -19317,6 +19341,14 @@ fn entry_witness_payload_layout(
             }
         })
         .collect()
+}
+
+fn is_bounded_collection_type(ty: &IrType) -> bool {
+    matches!(
+        ty,
+        IrType::Named(name)
+            if name.starts_with("BoundedCellSet<") || name.starts_with("BoundedList<")
+    )
 }
 
 fn entry_param_consumes_witness_payload(param: &IrParam, index: usize, runtime_bound_param_indices: &BTreeSet<usize>) -> bool {

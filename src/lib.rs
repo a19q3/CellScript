@@ -2216,7 +2216,15 @@ fn entry_abi_constraints(entry_kind: &str, entry_name: &str, params: &[ParamMeta
         let mut unsupported_reason = None;
         let pointer_length_pair;
 
-        if param.lock_args_data_source {
+        if is_bounded_collection_metadata_type(&param.ty) {
+            supported = false;
+            unsupported_reason = Some(format!("bounded collection parameter '{}' has no canonical executable entry ABI", param.ty));
+            unsupported_reasons.push(format!(
+                "parameter '{}': bounded collection type '{}' is metadata-only until its source/codec runtime contract is implemented",
+                param.name, param.ty
+            ));
+            pointer_length_pair = false;
+        } else if param.lock_args_data_source {
             abi_kind =
                 if param.fixed_byte_len.is_some() { "lock-args-fixed-byte".to_string() } else { "lock-args-scalar".to_string() };
             abi_slots = if param.fixed_byte_len.is_some() { 2 } else { 1 };
@@ -2293,6 +2301,10 @@ fn entry_abi_constraints(entry_kind: &str, entry_name: &str, params: &[ParamMeta
         unsupported_reasons,
         params: param_constraints,
     }
+}
+
+fn is_bounded_collection_metadata_type(ty: &str) -> bool {
+    ty.starts_with("BoundedCellSet<") || ty.starts_with("BoundedList<")
 }
 
 fn ckb_constraints(
@@ -6400,7 +6412,13 @@ pub fn validate_executable_surface(metadata: &CompileMetadata, policy: Executabl
             .chain(metadata.functions.iter().flat_map(|item| item.fail_closed_runtime_features.iter().map(String::as_str)))
             .chain(metadata.locks.iter().flat_map(|item| item.fail_closed_runtime_features.iter().map(String::as_str))),
     )?;
-    if policy == ExecutableSurfacePolicy::AllowFailClosed || metadata.runtime.fail_closed_runtime_features.is_empty() {
+    if policy == ExecutableSurfacePolicy::AllowFailClosed {
+        return Ok(());
+    }
+
+    let consensus_gaps =
+        metadata.runtime.proof_plan.iter().filter(|plan| proof_plan_has_blocking_consensus_gap(plan)).collect::<Vec<_>>();
+    if metadata.runtime.fail_closed_runtime_features.is_empty() && consensus_gaps.is_empty() {
         return Ok(());
     }
 
@@ -6426,17 +6444,62 @@ pub fn validate_executable_surface(metadata: &CompileMetadata, policy: Executabl
         .collect::<Vec<_>>();
     let scope_detail = if scopes.is_empty() { metadata.runtime.fail_closed_runtime_features.join(", ") } else { scopes.join("; ") };
 
-    Err(CompileError::without_span(format!(
-        "executable surface is incomplete under deny-fail-closed; production artifact generation stopped before codegen ({scope_detail})"
-    ))
-    .with_code("E2105")
-    .with_details(serde_json::json!({
+    let remediation = "use metadata-only analysis, or replace the operation with explicitly lowered fixed-arity checks until its runtime selection, codec, and correspondence semantics are implemented";
+    let message = if let Some(gap) = consensus_gaps.first() {
+        let fail_closed_context = if metadata.runtime.fail_closed_runtime_features.is_empty() {
+            String::new()
+        } else {
+            format!("; fail-closed executable surface: {scope_detail}")
+        };
+        format!(
+            "production artifact generation stopped before codegen: unresolved consensus ProofPlan enforcement for operation '{}', origin '{}', missing enforcement '{}'{}. Remediation: {}",
+            gap.feature, gap.origin, gap.codegen_coverage_status, fail_closed_context, remediation
+        )
+    } else {
+        format!(
+            "executable surface is incomplete under deny-fail-closed; production artifact generation stopped before codegen ({scope_detail})"
+        )
+    };
+    let consensus_gap_details = consensus_gaps
+        .iter()
+        .map(|gap| {
+            serde_json::json!({
+                "operation": gap.feature,
+                "origin": gap.origin,
+                "category": gap.category,
+                "missing_enforcement": gap.codegen_coverage_status,
+                "evidence_tier": gap.evidence_tier.as_str(),
+                "remediation": remediation,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Err(CompileError::without_span(message).with_code("E2105").with_details(serde_json::json!({
         "policy": "deny-fail-closed",
         "phase": "pre-codegen",
         "module": metadata.module,
         "features": metadata.runtime.fail_closed_runtime_features,
         "scopes": scopes,
+        "consensus_gaps": consensus_gap_details,
+        "remediation": remediation,
     })))
+}
+
+/// A ProofPlan gap blocks production when it describes a consensus-relevant
+/// source promise that the selected artifact does not enforce. Compile-time
+/// borrow markers are deliberately not runtime promises. An unused validity
+/// predicate is likewise not selected until a create or update path exists.
+pub(crate) fn proof_plan_has_blocking_consensus_gap(plan: &ProofPlanMetadata) -> bool {
+    if !plan.codegen_coverage_status.starts_with("gap:") || plan.category == "borrow-region" {
+        return false;
+    }
+    if plan.category == "type-validity"
+        && plan.coverage.iter().any(|item| item == "create_paths_selected:0")
+        && !plan.coverage.iter().any(|item| item.starts_with("update_paths_selected:") && item != "update_paths_selected:0")
+    {
+        return false;
+    }
+    true
 }
 
 fn compile_ast_with_build(
@@ -14415,6 +14478,12 @@ fn body_fail_closed_runtime_features(
     pure_const_returns: &HashMap<String, ir::IrConst>,
 ) -> Vec<String> {
     let mut features = BTreeSet::new();
+    for operation in &body.bounded_collection_ops {
+        features.insert(
+            if operation.operation == "create_each" { "bounded-create-each-runtime" } else { "bounded-consume-each-runtime" }
+                .to_string(),
+        );
+    }
     let prelude_availability = metadata_prelude_availability(body, param_schema_vars, type_layouts, params, pure_const_returns);
     if body.create_set.iter().any(|pattern| {
         pattern.operation != "output" && !metadata_can_verify_create_output_fields(pattern, type_layouts, &prelude_availability)
@@ -33864,6 +33933,10 @@ action batch(input inputs: BoundedCellSet<Token, 16>, witness plans: BoundedList
         assert_eq!(consume_plan.evidence_tier, crate::EvidenceTier::RuntimeHelperRequired);
         assert!(consume_plan.coverage.contains(&"maximum_cardinality:16".to_string()));
         assert!(consume_plan.coverage.contains(&"vacuous:true-when-cardinality-zero".to_string()));
+        assert!(consume_plan.coverage.contains(&"actual_scanned_cardinality:not-observed-no-runtime-lowering".to_string()));
+        assert!(consume_plan.coverage.iter().any(|item| item == "predicate-retained-not-executed:token.amount > 0"));
+        assert!(consume_plan.input_output_relation_checks.is_empty());
+        assert!(!consume_plan.on_chain_checked);
 
         let create_plan = result
             .metadata
@@ -33875,7 +33948,82 @@ action batch(input inputs: BoundedCellSet<Token, 16>, witness plans: BoundedList
         assert_eq!(create_plan.evidence_tier, crate::EvidenceTier::BuilderEvidenceRequired);
         assert!(create_plan.coverage.contains(&"output_cardinality_max:16".to_string()));
         assert!(create_plan.coverage.contains(&"capacity_builder_evidence_required:true".to_string()));
+        assert!(create_plan.coverage.iter().any(|item| item == "create_template_output_type:Token"));
+        assert!(create_plan.coverage.iter().any(|item| item == "create_template_field:amount=plan.amount"));
+        assert!(create_plan.input_output_relation_checks.is_empty());
         assert!(!create_plan.on_chain_checked);
+
+        let action = result.metadata.actions.iter().find(|action| action.name == "batch").expect("batch action metadata");
+        assert!(action.fail_closed_runtime_features.contains(&"bounded-consume-each-runtime".to_string()));
+        assert!(action.fail_closed_runtime_features.contains(&"bounded-create-each-runtime".to_string()));
+        let entry = result.metadata.constraints.entry_abi.iter().find(|entry| entry.entry_name == "batch").expect("batch entry ABI");
+        assert!(entry.unsupported);
+        assert!(entry.params.iter().all(|param| !param.supported && param.abi_kind == "unsupported"));
+
+        let asm = String::from_utf8(result.artifact_bytes).unwrap();
+        assert!(asm.contains(crate::ir::BOUNDED_CONSUME_EACH_FAIL_CLOSED_HELPER));
+        assert!(asm.contains(crate::ir::BOUNDED_CREATE_EACH_FAIL_CLOSED_HELPER));
+        assert!(asm.contains("cellscript runtime error 24 collection-runtime-unsupported"));
+    }
+
+    #[test]
+    fn bounded_collection_ir_is_explicitly_fail_closed_and_production_is_rejected() {
+        let source = r#"
+module bounded::fail_closed
+
+struct Plan { amount: u64 }
+resource Token has store, create, consume { amount: u64 }
+
+action batch(input inputs: BoundedCellSet<Token, 2>, witness plans: BoundedList<Plan, 2>) -> u64 {
+    verification
+        consume_each token in inputs {
+            require false
+            require token.amount > 100
+        }
+        create_each plan in plans {
+            require false
+            create Token { amount: plan.amount }
+        }
+        return 0
+}
+"#;
+        let ast = parse_module_for_test(source);
+        crate::types::check(&ast).unwrap();
+        let module = ir::generate(&ast).unwrap();
+        let action = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ir::IrItem::Action(action) if action.name == "batch" => Some(action),
+                _ => None,
+            })
+            .expect("batch IR action");
+        for helper in [crate::ir::BOUNDED_CONSUME_EACH_FAIL_CLOSED_HELPER, crate::ir::BOUNDED_CREATE_EACH_FAIL_CLOSED_HELPER] {
+            assert!(action.body.blocks.iter().any(|block| {
+                block
+                    .instructions
+                    .iter()
+                    .any(|instruction| matches!(instruction, ir::IrInstruction::Call { func, .. } if func == helper))
+            }));
+        }
+        assert_eq!(action.body.bounded_collection_ops.len(), 2);
+        assert_eq!(action.body.bounded_collection_ops[0].predicates, ["false", "token.amount > 100"]);
+        assert!(action.body.bounded_collection_ops[1].create_template.is_some());
+
+        let error = compile_with_executable_surface_policy(
+            source,
+            CompileOptions { target_profile: Some("ckb".to_string()), ..CompileOptions::default() },
+            ExecutableSurfacePolicy::DenyFailClosed,
+        )
+        .unwrap_err();
+        assert_eq!(error.code.as_deref(), Some("E2105"));
+        assert!(error.message.contains("consume_each:inputs:BoundedCellSet<Token, 2>"));
+        assert!(error.message.contains("action:batch#bounded-collection:0"));
+        assert!(error.message.contains("gap:runtime-helper-required"));
+        assert!(error.message.contains("Remediation:"));
+        let details = error.details.as_ref().expect("E2105 details");
+        assert_eq!(details["consensus_gaps"].as_array().map(Vec::len), Some(2));
+        assert_eq!(details["consensus_gaps"][1]["missing_enforcement"], "gap:builder-evidence-required");
     }
 
     #[test]

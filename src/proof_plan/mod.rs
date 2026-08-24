@@ -259,10 +259,11 @@ fn plan_for_bounded_collection(
         format!("element:{}", operation.element_type),
         format!("source:{source}"),
         format!("maximum_cardinality:{}", operation.max_elements),
-        "actual_scanned_cardinality:runtime-recorded".to_string(),
+        "actual_scanned_cardinality:not-observed-no-runtime-lowering".to_string(),
         "vacuous:true-when-cardinality-zero".to_string(),
         format!("runtime_helper:{helper}"),
     ];
+    coverage.extend(operation.predicates.iter().map(|predicate| format!("predicate-retained-not-executed:{predicate}")));
     let mut builder_assumptions = vec![format!("declared(runtime-helper-required:{helper})")];
     if is_create {
         coverage.extend([
@@ -274,6 +275,11 @@ fn plan_for_bounded_collection(
             "declared(builder must provide exactly one output per plan element)".to_string(),
             "declared(builder must prove aggregate output capacity and occupied-capacity floors)".to_string(),
         ]);
+        if let Some(template) = &operation.create_template {
+            coverage.push(format!("create_template_output_type:{}", template.output_type));
+            coverage.extend(template.fields.iter().map(|(field, value)| format!("create_template_field:{field}={value}")));
+            coverage.push(format!("create_template_lock:{}", template.lock.as_deref().unwrap_or("not-specified")));
+        }
     }
     let feature = format!("{}:{}:{}", operation.operation, operation.collection_binding, operation.collection_type);
     ProofPlanMetadata {
@@ -292,24 +298,14 @@ fn plan_for_bounded_collection(
         scope: if is_create { "transaction".to_string() } else { "selected_cells".to_string() },
         reads: reads.clone(),
         coverage,
-        input_output_relation_checks: if is_create {
-            vec![format!(
-                "output_count({})=plan_count({})<= {}",
-                operation.output_type.as_deref().unwrap_or("unknown"),
-                operation.collection_binding,
-                operation.max_elements
-            )]
-        } else {
-            vec![format!(
-                "consumed_count({})=input_set_count({})<= {}",
-                operation.element_type, operation.collection_binding, operation.max_elements
-            )]
-        },
-        group_cardinality: format!("runtime-cardinality:0..={}", operation.max_elements),
+        input_output_relation_checks: Vec::new(),
+        group_cardinality: format!("declared-maximum:0..={}; actual:not-observed-no-runtime-lowering", operation.max_elements),
         identity_lifecycle_policy: if is_create {
-            "bounded witness plan has no Cell identity; create template produces fresh output Cells".to_string()
+            "required but not enforced: define fresh-output identity, output ordering, and one-output-per-plan correspondence"
+                .to_string()
         } else {
-            "linear input Cell set is consumed exactly once; per-element binding cannot escape".to_string()
+            "checked statically only: the collection binding is linearly discharged; runtime Cell selection and per-element consumption are not emitted"
+                .to_string()
         },
         preserved_fields: Vec::new(),
         witness_fields: if source == "witness" { vec![format!("witness.{}", operation.collection_binding)] } else { Vec::new() },
@@ -331,12 +327,14 @@ fn plan_for_bounded_collection(
             )
         },
         diagnostics: vec![ProofPlanDiagnosticMetadata {
-            severity: "info".to_string(),
+            severity: "warning".to_string(),
             message: if is_create {
-                "bounded create_each is not considered checked until runtime helper coverage and matching builder evidence are attached"
+                "bounded create_each is non-deployable until a canonical witness codec, output correspondence/order, identity, capacity, and runtime predicate contract are implemented"
                     .to_string()
             } else {
-                format!("bounded consume_each has a known {helper} contract but no emitted helper for this selected entry")
+                format!(
+                    "bounded consume_each is non-deployable: {helper} is only a planned helper name; source selection, decoding, cardinality, and per-element predicate execution are not emitted"
+                )
             },
         }],
     }

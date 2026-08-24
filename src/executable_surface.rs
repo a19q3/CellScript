@@ -355,6 +355,22 @@ pub static EXECUTABLE_SURFACE: &[ExecutableSurfaceEntry] = &[
         "Returning a hidden Cell-backed collection has no linear ownership ABI.",
         ["cell-backed-collection-return"]
     ),
+    entry!(
+        "artifact:bounded-consume-each-runtime",
+        "artifact-policy",
+        "reserved",
+        "rejected by production policy",
+        "BoundedCellSet source selection, element decoding, and per-element predicate execution are not yet an executable contract.",
+        ["bounded-consume-each-runtime"]
+    ),
+    entry!(
+        "artifact:bounded-create-each-runtime",
+        "artifact-policy",
+        "reserved",
+        "rejected by production policy",
+        "BoundedList witness codec, output correspondence, ordering, identity, and capacity enforcement are not yet an executable contract.",
+        ["bounded-create-each-runtime"]
+    ),
 ];
 
 pub fn validate_ir_module(module: &IrModule) -> Result<()> {

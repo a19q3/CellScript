@@ -12860,17 +12860,17 @@ fn validate_check_policy(metadata: &crate::CompileMetadata, args: &CheckArgs) ->
     }
 
     if args.production {
-        let metadata_only_executable_claims = metadata
+        let blocking_consensus_gaps = metadata
             .runtime
             .proof_plan
             .iter()
-            .filter(|plan| plan.evidence_tier == crate::EvidenceTier::MetadataOnly && proof_plan_claims_executable_enforcement(plan))
+            .filter(|plan| crate::proof_plan_has_blocking_consensus_gap(plan))
             .map(|plan| format!("{}:{} ({})", plan.origin, plan.feature, plan.codegen_coverage_status))
             .collect::<Vec<_>>();
-        if !metadata_only_executable_claims.is_empty() {
+        if !blocking_consensus_gaps.is_empty() {
             violations.push(format!(
-                "metadata-only ProofPlan records cannot support executable production claims: {}",
-                metadata_only_executable_claims.join(", ")
+                "unresolved consensus ProofPlan gaps cannot support production artifacts: {}",
+                blocking_consensus_gaps.join(", ")
             ));
         }
     }
@@ -12965,18 +12965,6 @@ fn executable_surface_policy(args: &CheckArgs) -> ExecutableSurfacePolicy {
     } else {
         ExecutableSurfacePolicy::AllowFailClosed
     }
-}
-
-fn proof_plan_claims_executable_enforcement(plan: &ProofPlanMetadata) -> bool {
-    let name = plan.name.to_ascii_lowercase();
-    let feature = plan.feature.to_ascii_lowercase();
-    let executable_prefix = |value: &str| {
-        ["assert", "check", "enforce", "require", "validate", "verify"]
-            .into_iter()
-            .any(|prefix| value == prefix || value.starts_with(&format!("{prefix}_")) || value.starts_with(&format!("{prefix}:")))
-    };
-
-    plan.category.contains("invariant") || plan.category == "flow-terminal" || executable_prefix(&name) || executable_prefix(&feature)
 }
 
 fn target_profile_policy_violations(

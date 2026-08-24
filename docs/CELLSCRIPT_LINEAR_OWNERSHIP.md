@@ -51,9 +51,11 @@ would require a verifier-backed membership and consumption model. Until that
 model exists, such cases must remain compile-time rejected or represented as
 structured runtime blockers.
 
-Missing verifier pieces:
+Missing executable verifier pieces:
 
-- `consume_each`
+- runtime source selection, decoding, and per-element enforcement for
+  `consume_each`
+- canonical witness/output correspondence for `create_each`
 - typed collection destructuring
 - verifier-backed membership proofs
 - schema-level ownership witnesses

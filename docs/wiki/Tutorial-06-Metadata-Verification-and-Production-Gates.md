@@ -218,11 +218,21 @@ contract, not proof that the selected artifact emitted or executed that helper.
 `runtime.collection_instantiations` also distinguishes local stack collections
 from source-aware bounded Cell collections. For `BoundedCellSet<T, N>`, verify
 `source = input`, `ownership = linear-cell-set`, the finite `max_elements`, and
-the `consume_each` runtime-helper tier. For `BoundedList<P, N>` driving
+the `consume_each` runtime-helper gap. For `BoundedList<P, N>` driving
 `create_each`, verify `source = witness`, `output_cardinality_max = N`, and
 `capacity_builder_evidence_required = true`. Its ProofPlan evidence is
 `builder-evidence-required`; it is not proof that a transaction builder supplied
-the matching outputs or sufficient capacity.
+the matching outputs or sufficient capacity. Actual cardinality must read
+`not-observed-no-runtime-lowering`, not `runtime-recorded`.
+
+Neither form is deployable in the current CKB profile. The IR retains the
+checked body for audit and emits a fail-closed operation; CKB-VM returns runtime
+error 24. Production compilation stops at E2105 before codegen. Treat any
+selected consensus ProofPlan whose `codegen_coverage_status` begins with
+`gap:` as a blocker, including runtime-helper, builder-evidence, and
+metadata-only records. Until the source/codec/correspondence contract is
+implemented, write explicit fixed-arity inputs, outputs, predicates, and
+lifecycle operations instead.
 
 The validity record first appeared in schema 55 during the 0.22 line and is
 retained by current metadata schema 61 as `types[].validity_predicates`. Review each predicate's

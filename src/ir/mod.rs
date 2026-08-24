@@ -312,8 +312,24 @@ pub struct IrBoundedCollectionOp {
     pub max_elements: usize,
     pub source: ParamSource,
     pub output_type: Option<String>,
+    /// Predicates retained from the type-checked bounded body. These are
+    /// audit records until a source-selection/runtime iteration contract is
+    /// defined; codegen must not pretend they were executed.
+    pub predicates: Vec<String>,
+    /// The single type-checked create template retained for `create_each`.
+    pub create_template: Option<IrBoundedCreateTemplate>,
     pub span: Span,
 }
+
+#[derive(Debug, Clone)]
+pub struct IrBoundedCreateTemplate {
+    pub output_type: String,
+    pub fields: Vec<(String, String)>,
+    pub lock: Option<String>,
+}
+
+pub const BOUNDED_CONSUME_EACH_FAIL_CLOSED_HELPER: &str = "__cellscript_bounded_consume_each_fail_closed";
+pub const BOUNDED_CREATE_EACH_FAIL_CLOSED_HELPER: &str = "__cellscript_bounded_create_each_fail_closed";
 
 #[derive(Debug, Clone)]
 pub struct CellPattern {
@@ -5537,6 +5553,16 @@ impl IrGenerator {
         match call.func.as_ref() {
             Expr::Identifier(name) => match name.as_str() {
                 "__cellscript_consume_each" | "__cellscript_create_each" => {
+                    let helper = if name == "__cellscript_consume_each" {
+                        BOUNDED_CONSUME_EACH_FAIL_CLOSED_HELPER
+                    } else {
+                        BOUNDED_CREATE_EACH_FAIL_CLOSED_HELPER
+                    };
+                    self.block_mut(blocks, current).instructions.push(IrInstruction::Call {
+                        dest: None,
+                        func: helper.to_string(),
+                        args: Vec::new(),
+                    });
                     Some(LoweredExpr { operand: IrOperand::Const(IrConst::Unit), current: Some(current) })
                 }
                 "Address::zero" if call.args.is_empty() => {
@@ -8391,6 +8417,25 @@ fn collect_bounded_collection_ops_from_expr(expr: &Expr, params: &[Param], ops: 
         Stmt::Expr(Expr::Create(create)) => Some(create.ty.clone()),
         _ => None,
     });
+    let predicates = body
+        .iter()
+        .filter_map(|stmt| match stmt {
+            Stmt::Expr(Expr::Require(require)) => Some(vec![crate::fmt::format_expression(&require.condition)]),
+            Stmt::Expr(Expr::RequireBlock(require_block)) => {
+                Some(require_block.expressions.iter().map(crate::fmt::format_expression).collect())
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let create_template = body.iter().find_map(|stmt| match stmt {
+        Stmt::Expr(Expr::Create(create)) => Some(IrBoundedCreateTemplate {
+            output_type: create.ty.clone(),
+            fields: create.fields.iter().map(|(field, value)| (field.clone(), crate::fmt::format_expression(value))).collect(),
+            lock: create.lock.as_deref().map(crate::fmt::format_expression),
+        }),
+        _ => None,
+    });
     ops.push(IrBoundedCollectionOp {
         operation: operation.trim_start_matches("__cellscript_").to_string(),
         binding: binding.clone(),
@@ -8400,6 +8445,8 @@ fn collect_bounded_collection_ops_from_expr(expr: &Expr, params: &[Param], ops: 
         max_elements: collection.max_elements,
         source: param.source,
         output_type,
+        predicates,
+        create_template,
         span: call.span,
     });
 }

@@ -20,7 +20,9 @@ not be collapsed into one generic "collections are supported" claim.
 | `HashMap<u64, u64>` | Limited | Limited | No production helper surface | Unsupported/fail-closed for production contracts |
 | `HashMap<Hash, Token>` | No | No | No | Unsupported; must fail closed |
 | `HashSet<T>` | Limited | Limited | No production helper surface | Unsupported/fail-closed for production contracts |
-| Cell-backed resource collections | No executable ownership model | No | No | Unsupported until a linear collection ownership primitive exists |
+| `BoundedCellSet<Resource, N>` + `consume_each` | Frontend and metadata only | Explicit fail-closed IR; checked predicates retained | No source scan/decoder | Production-rejected with E2105; non-production artifacts return error 24 |
+| `BoundedList<Plan, N>` + `create_each` | Frontend and metadata only | Explicit fail-closed IR; predicates and create template retained | No witness codec/output verifier | Production-rejected with E2105; non-production artifacts return error 24 |
+| Generic Cell-backed resource collections | No executable ownership model | No | No | Unsupported |
 
 ## Stack-Backed Local Vec Rule
 
@@ -67,15 +69,36 @@ shape. They must produce one of:
 - structured blocker in metadata/constraints
 - explicit fail-closed runtime path with a registered runtime error
 
+Every selected consensus-relevant ProofPlan status beginning with `gap:` is a
+production blocker, including `gap:runtime-helper-required`,
+`gap:builder-evidence-required`, and `gap:metadata-only`. A transaction builder
+can supply evidence for construction, but that evidence cannot authorize a
+consensus operation the emitted Script does not check.
+
+## Bounded Lifecycle Boundary
+
+The bound `N` is currently a static type and complexity declaration. It is not
+evidence that a runtime scan observed at most `N` items. Metadata therefore
+records the maximum but leaves actual cardinality unobserved.
+
+Positive `consume_each` execution needs a specified transaction versus
+script-group source, a resource Type Script identity, canonical cell-data
+decoding, actual-count enforcement, and per-element predicate plus consumption
+semantics. Positive `create_each` execution additionally needs a canonical
+witness list codec, output ordering and one-to-one plan/output correspondence,
+fresh Cell identity, and occupied-capacity rules. Until those contracts exist,
+use explicit fixed-arity input/output bindings and ordinary lowered
+`require`/`consume`/`create` operations.
+
 ## Authoring Guidance
 
 Use dynamic vectors for data that is still a single cell field, such as signer
 lists, proposal payload bytes, NFT attributes, or launch distributions.
 
-Do not model ownership of multiple independent linear cells as a generic vector
-or map. Use explicit action parameters, named output bindings, and explicit
-`consume`/`destroy` operations or compiler-recognized stdlib lifecycle patterns
-until the language gains a verifier-backed collection ownership primitive.
+Do not deploy ownership of multiple independent linear cells through a generic
+vector, map, `BoundedCellSet`, or `BoundedList`. Use explicit fixed-arity action
+parameters, named output bindings, and lowered `consume`/`destroy`/`create`
+operations until the bounded runtime contract is implemented.
 
 The missing verifier pieces are explicit cell consumption, typed collection
 destructuring, and membership proofs tied to Molecule schema manifests. Until

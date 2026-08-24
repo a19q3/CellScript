@@ -74,6 +74,31 @@ remain defense in depth rather than a public feature boundary. An unregistered
 IR variant fails compilation, and an unregistered runtime feature fails closed
 under every policy.
 
+## Bounded Lifecycle Collections Fail Closed
+
+An audit of `consume_each` and `create_each` found a serious lowering gap: the
+frontend and ownership checker accepted the bounded body, but IR replaced it
+with `Unit`. A body containing `require false` could therefore compile to an
+action that returned success without scanning, consuming, checking, or
+creating anything.
+
+0.25 removes that path. The typed IR retains the predicates and create
+template and contains an explicit fail-closed call. Metadata reports
+`actual_scanned_cardinality:not-observed-no-runtime-lowering`; it does not
+claim that a helper ran. The entry ABI marks `BoundedCellSet<T, N>` and
+`BoundedList<P, N>` unsupported. A non-production artifact returns stable
+runtime error 24 (`collection-runtime-unsupported`) in CKB-VM, while
+`--production` and `--deny-fail-closed` return E2105 before writing ASM or ELF.
+The diagnostic includes the operation, source origin, missing ProofPlan tier,
+and a concrete remediation.
+
+This is a safety boundary, not positive runtime support. The language still
+needs a canonical transaction/group selection rule and Type Script identity
+for `BoundedCellSet`, plus a witness element codec, output order and
+one-to-one correspondence, fresh identity, and capacity rules for
+`BoundedList`/`create_each`. Builder evidence is not accepted as a replacement
+for those on-chain checks.
+
 ## Validation Before Release
 
 The implementation is not release-complete until the generated surface and

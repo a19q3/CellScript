@@ -46,8 +46,8 @@ Only `verified` is release-complete.
 | ID | Requirement | Status | Required release evidence |
 |---|---|---|---|
 | LC-01 | Generated supported-surface matrix | implemented | Compiler-owned operation/type registry, generated Markdown/JSON, freshness gate, and negative drift test. Final full-gate verification remains. |
-| LC-02 | Pre-codegen executable-surface rejection | in-progress | `--production` and `--deny-fail-closed` reject with stable diagnostics before ASM/ELF generation; metadata-only Playground analysis remains available. |
-| LC-03 | Current non-generic runtime closure | in-progress | Complete `u128`, enum, collection, output-verification, field/index/length/type-hash, lifecycle, and cast matrices with exact-negative CKB-VM tests. `u128` division/remainder now share a complete wide restoring-division path; scalar division/remainder now reject zero with stable runtime code 20. |
+| LC-02 | Pre-codegen executable-surface rejection | implemented | `--production` and `--deny-fail-closed` reject registered fail-closed shapes and every selected consensus-relevant ProofPlan `gap:*` before ASM/ELF generation. E2105 names the operation, origin, missing enforcement, and remediation; metadata-only analysis remains available. Final full-gate verification remains. |
+| LC-03 | Current non-generic runtime closure | in-progress | Complete `u128`, enum, collection, output-verification, field/index/length/type-hash, lifecycle, and cast matrices with exact-negative CKB-VM tests. `u128` division/remainder now share a complete wide restoring-division path; scalar division/remainder reject zero with runtime code 20. Bounded lifecycle iteration now rejects with runtime code 24 instead of silently succeeding, but its positive runtime semantics remain LC-27. |
 | LC-04 | Arbitrary-width integer literals | implemented | Decimal tokens preserve the full supported `u128` range; inference selects `u64` or `u128`; narrower contexts use checked representability diagnostics; constants, IR, formatter round trips, codegen byte materialization, and overflow boundaries are tested. Final full-gate verification remains. |
 | LC-05 | Bitwise and shift operations | implemented | `&`, `|`, `^`, `<<`, and `>>` have precedence-preserving parse/format support, contextual integer typing, constant folding, scalar and `u128` IR/codegen, internal assembler closure, stable compile/runtime range errors, editor grammar support, and exact CKB-VM width/signedness/cross-limb vectors. Final full-gate verification remains. |
 | LC-06 | Parameterized type kernel | implemented | Struct/enum/function parameters, explicit constraints, inference at typed function calls, deterministic pre-IR monomorphization, nesting/count/identity budgets, canonical metadata, and `cellc explain generics`. Full checker/gate verification remains. |
@@ -71,6 +71,23 @@ Only `verified` is release-complete.
 | LC-24 | Lambdas and higher-order helpers | pending | Explicit effects, captures, linear ownership, instantiation, borrow escape, and bounded code growth. |
 | LC-25 | Typed source macro functions | pending | Bounded, source-mapped, metadata-visible expansion that cannot hide Cell effects. |
 | LC-26 | Stable lint and migration UX | pending | Stable rule identities, explicit suppression, CLI/LSP parity, edition-aware migration tests. |
+| LC-27 | Bounded lifecycle collection execution | pending | Define and implement the `BoundedCellSet` transaction/group selection rule, resource Type Script identity, element codec, actual-count and `N` enforcement, per-element predicate/consume semantics, canonical `BoundedList` witness codec, output order and one-to-one correspondence, fresh identity, occupied-capacity policy, and exact positive/adversarial CKB-VM vectors. Until then both operations are production-rejected. |
+
+## Bounded Collection Decision
+
+The 0.25 hardening pass found that the frontend accepted `consume_each` and
+`create_each` while IR lowering replaced the whole operation with `Unit`.
+That made a source body containing `require false` compile into an action that
+returned success. The immediate fix is complete: the body is retained for
+audit, the IR contains an explicit fail-closed operation, the entry ABI is
+marked unsupported, CKB-VM returns error 24, and production stops at E2105.
+
+Positive execution is not implemented because the source language does not yet
+answer the consensus-sensitive questions listed in LC-27. In particular,
+`input` alone does not choose transaction versus script-group scanning or bind
+a deployed Type Script identity, and `witness BoundedList<P, N>` has no
+canonical element framing or required output ordering. Builder evidence may
+help construct a transaction, but it cannot substitute for on-chain checks.
 
 ## Stage Gates
 
@@ -105,7 +122,7 @@ binds its recomputed facts to the structural ELF record.
 
 ### Stage 5: CKB Libraries And Product Closure
 
-Scope: LC-18 through LC-26.
+Scope: LC-18 through LC-27.
 
 Exit: representative token, NFT, DAO, covenant, AMM/order,
 multisig/authorization, and cross-Script packages require no undocumented glue,

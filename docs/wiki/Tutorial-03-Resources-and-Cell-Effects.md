@@ -66,10 +66,11 @@ validated as a named successor output, or handled by an explicit stdlib
 lifecycle pattern. Silent loss is rejected because silent loss would make Cell
 movement unclear.
 
-## Finite Batch Movement In 0.22
+## Finite Batch Contracts (Metadata-Only Boundary)
 
-Use source-aware bounded collections when one action must account for a finite
-set of Cells or witness plans:
+Source-aware bounded collections can describe how one action intends to account
+for a finite set of Cells or witness plans. In the current CKB executable
+profile, the following is auditable metadata, not deployable code:
 
 ```cellscript
 action batch(
@@ -90,16 +91,20 @@ action batch(
 }
 ```
 
-`BoundedCellSet<T, N>` is input-qualified and linearly owned: every selected
-Cell must be discharged by `consume_each`. `BoundedList<T, N>` is fixed-width
-and may come from witness/static input; `create_each` records a maximum output
-cardinality and capacity-builder obligation. The bound makes review and
-ProofPlan complexity finite. It does not prove that a builder supplied the
-outputs or enough capacity.
+`BoundedCellSet<T, N>` is input-qualified and statically linearly owned: the
+binding must be discharged by one `consume_each`. `BoundedList<T, N>` is
+fixed-width; `create_each` records a maximum output cardinality and
+capacity-builder obligation. The bound makes review and ProofPlan complexity
+finite. It does not prove a runtime count, a Cell selection, or that a builder
+supplied matching outputs and enough capacity.
 
 Generic `Vec<Resource>` and unbounded iteration remain rejected. Inspect
-`runtime.collection_instantiations` and the matching ProofPlan records before
-treating a batch path as executable.
+`runtime.collection_instantiations` and the matching ProofPlan records for
+audit, but do not treat the batch path as executable. Production returns E2105
+before codegen; non-production CKB artifacts return runtime error 24. Use
+explicit fixed-arity Cell inputs/outputs and ordinary lifecycle operations for
+deployable code until source selection, codecs, correspondence, identity, and
+capacity rules are implemented.
 
 ## Borrowed Read Views
 

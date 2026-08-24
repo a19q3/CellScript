@@ -5046,6 +5046,67 @@ action issue(digest: Hash) -> Fingerprint {
 }
 
 #[test]
+fn cellc_production_rejects_bounded_collection_consensus_gaps_before_codegen() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cell.toml"),
+        r#"
+[package]
+edition = "2026"
+name = "bounded-gap"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src").join("main.cell"),
+        r#"
+module bounded::gap
+
+struct Plan { amount: u64 }
+resource Token has store, create, consume { amount: u64 }
+
+action batch(input inputs: BoundedCellSet<Token, 2>, witness plans: BoundedList<Plan, 2>) -> u64 {
+    verification
+        consume_each token in inputs {
+            require false
+            require token.amount > 0
+        }
+        create_each plan in plans {
+            require false
+            create Token { amount: plan.amount }
+        }
+        return 0
+}
+"#,
+    )
+    .unwrap();
+
+    let check =
+        Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("check").arg("--production").arg("--json").output().unwrap();
+    assert!(!check.status.success(), "unexpected success: {}", String::from_utf8_lossy(&check.stdout));
+    let report: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
+    assert_eq!(report["diagnostics"][0]["code"], "E2105");
+    assert_eq!(report["phase"], "pre-codegen");
+    assert_eq!(report["consensus_gaps"].as_array().map(Vec::len), Some(2));
+    assert_eq!(report["consensus_gaps"][0]["operation"], "consume_each:inputs:BoundedCellSet<Token, 2>");
+    assert_eq!(report["consensus_gaps"][0]["missing_enforcement"], "gap:runtime-helper-required");
+    assert_eq!(report["consensus_gaps"][1]["missing_enforcement"], "gap:builder-evidence-required");
+    assert!(report["consensus_gaps"][0]["remediation"].as_str().unwrap().contains("fixed-arity"));
+
+    let build = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").arg("--production").output().unwrap();
+    assert!(!build.status.success(), "unexpected success: {}", String::from_utf8_lossy(&build.stdout));
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(stderr.contains("error[E2105]"), "unexpected stderr: {stderr}");
+    assert!(stderr.contains("create_each") || stderr.contains("consume_each"), "unexpected stderr: {stderr}");
+    assert!(!root.join("build").join("main.s").exists());
+    assert!(!root.join("build").join("main.s.meta.json").exists());
+}
+
+#[test]
 fn cellc_errors_include_compiler_ecode_when_surface_is_rejected_before_codegen() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -7622,7 +7683,8 @@ action run() -> u64 {
     assert!(!output.status.success(), "unexpected success: {}", String::from_utf8_lossy(&output.stdout));
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("metadata-only ProofPlan records cannot support executable production claims"), "{stderr}");
+    assert!(stderr.contains("unresolved consensus ProofPlan enforcement"), "{stderr}");
+    assert!(stderr.contains("gap:metadata-only"), "{stderr}");
     assert!(stderr.contains("invariant:enforce_token_conservation"), "{stderr}");
 }
 

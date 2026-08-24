@@ -67,6 +67,44 @@ action verify() -> u64 {
 }
 "#;
 
+const BOUNDED_COLLECTION_FAIL_CLOSED_ENTRY: &str = r#"
+module bounded_collection_fail_closed_entry
+
+resource Token has store, consume {
+    amount: u64
+}
+
+action verify(input inputs: BoundedCellSet<Token, 2>) -> u64 {
+    verification
+        consume_each token in inputs {
+            require false
+            require token.amount > 0
+        }
+        return 0
+}
+"#;
+
+const BOUNDED_CREATE_FAIL_CLOSED_ENTRY: &str = r#"
+module bounded_create_fail_closed_entry
+
+struct Plan {
+    amount: u64
+}
+
+resource Token has store, create {
+    amount: u64
+}
+
+action verify(witness plans: BoundedList<Plan, 2>) -> u64 {
+    verification
+        create_each plan in plans {
+            require false
+            create Token { amount: plan.amount }
+        }
+        return 0
+}
+"#;
+
 const U128_DIV_REM_ENTRY: &str = r#"
 module entry_witness_u128_div_rem
 
@@ -643,6 +681,22 @@ fn labeled_break_and_continue_execute_in_ckb_vm() {
     let fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
     let result = execute_cellscript_script(&elf, &fixture);
     assert_eq!(result.exit_code, 0, "labeled break and continue must execute in CKB-VM: {:?}", result.captured_debug);
+}
+
+#[test]
+fn bounded_collection_entries_fail_closed_with_stable_runtime_code_in_ckb_vm() {
+    for (operation, source) in
+        [("consume_each", BOUNDED_COLLECTION_FAIL_CLOSED_ENTRY), ("create_each", BOUNDED_CREATE_FAIL_CLOSED_ENTRY)]
+    {
+        let elf = compile_cellscript_source_to_elf(source, "verify", None);
+        let fixture = build_simple_fixture(Bytes::default(), 1, 1, false, Some("bounded-collection-runtime-unsupported".to_string()));
+        let result = execute_cellscript_script(&elf, &fixture);
+        assert_eq!(
+            result.exit_code, 24,
+            "{operation} entry must reject before witness decoding instead of returning success: {:?}",
+            result.captured_debug
+        );
+    }
 }
 
 #[test]

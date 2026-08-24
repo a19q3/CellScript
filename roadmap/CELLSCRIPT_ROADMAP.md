@@ -436,12 +436,16 @@ Completed:
 - typed/contextual `Vec<T>` literals for local stack vectors;
 - metadata and `cellc explain-generics` visibility for checked instantiations.
 - source-aware `BoundedCellSet<T, N>` and witness/static
-  `BoundedList<T, N>` contracts with finite cardinality evidence.
+  `BoundedList<T, N>` frontend/metadata contracts with a finite declared
+  maximum. The 0.25 audit hardens their executable boundary: production rejects
+  them and non-production CKB artifacts return error 24 until the runtime
+  source/codec/correspondence contract is implemented.
 
 Deferred:
 
 - full generic `HashMap<K, V>` and `HashSet<T>`;
 - `Vec<Cell<T>>` and other cell-backed linear ownership collections;
+- positive `consume_each`/`create_each` CKB runtime semantics;
 - source-level `Option<T>` lowering;
 - explicit `Vec<T, N>[...]` bounded-vector literal syntax.
 

@@ -611,6 +611,26 @@
       "layer": "artifact-policy",
       "production_policy": "rejected by production policy",
       "status": "reserved"
+    },
+    {
+      "conditions": "BoundedCellSet source selection, element decoding, and per-element predicate execution are not yet an executable contract.",
+      "fail_closed_features": [
+        "bounded-consume-each-runtime"
+      ],
+      "id": "artifact:bounded-consume-each-runtime",
+      "layer": "artifact-policy",
+      "production_policy": "rejected by production policy",
+      "status": "reserved"
+    },
+    {
+      "conditions": "BoundedList witness codec, output correspondence, ordering, identity, and capacity enforcement are not yet an executable contract.",
+      "fail_closed_features": [
+        "bounded-create-each-runtime"
+      ],
+      "id": "artifact:bounded-create-each-runtime",
+      "layer": "artifact-policy",
+      "production_policy": "rejected by production policy",
+      "status": "reserved"
     }
   ],
   "schema": "cellscript-executable-surface-v1"
