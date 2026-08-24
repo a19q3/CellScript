@@ -27,7 +27,7 @@ stable release certificate or production CKB evidence.
 ## nightly-0.22
 
 `nightly-0.22` is the historical implementation line for the 0.22 type-and-set
-theory roadmap. The stable release boundary is the `v0.22.0` tag, not the
+theory release. The stable release boundary is the `v0.22.0` tag, not the
 nightly branch name.
 
 ## main

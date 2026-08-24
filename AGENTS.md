@@ -329,8 +329,8 @@ Existing command families to be aware of:
   executable semantics are intentionally unavailable.
 - Release notes separate highlights, scope boundaries, validation commands,
   and links to detailed docs.
-- Roadmap promises don't live under `docs/` — release notes describe what
-  shipped; future plans belong in `roadmap/` or `proposals/`.
+- Release notes describe what shipped. Future work belongs in a concrete RFC
+  or proposal with explicit ownership and acceptance criteria.
 
 ## Gotchas that are easy to miss
 

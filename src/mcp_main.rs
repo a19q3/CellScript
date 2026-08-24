@@ -348,8 +348,8 @@ fn tool_specs() -> Vec<Value> {
                         "diagnostics",
                         "language-0.22",
                         "fiber-interop",
-                        "roadmap-0.21",
-                        "roadmap-0.22"
+                        "release-0.21",
+                        "release-0.22"
                     ]
                 }
             })),
@@ -472,7 +472,7 @@ fn docs_for_topic(topic: &str) -> anyhow::Result<Vec<PathBuf>> {
         "ckb-model" => {
             vec!["docs/wiki/CKB-Glossary.md", "docs/wiki/Tutorial-05-CKB-Target-Profiles.md", "docs/CELLSCRIPT_CKB_STD_COMPAT.md"]
         }
-        "package-cli" => vec!["docs/wiki/Tutorial-04-Packages-and-CLI-Workflow.md", "roadmap/CELLSCRIPT_0_21_CLI_UX_PLAN.md"],
+        "package-cli" => vec!["docs/wiki/Tutorial-04-Packages-and-CLI-Workflow.md", "docs/releases/CELLSCRIPT_0_21_RELEASE_NOTES.md"],
         "metadata-audit" => vec![
             "docs/wiki/Tutorial-06-Metadata-Verification-and-Production-Gates.md",
             "docs/wiki/Tutorial-11-Scoped-Invariants-and-ProofPlan.md",
@@ -492,17 +492,12 @@ fn docs_for_topic(topic: &str) -> anyhow::Result<Vec<PathBuf>> {
             "docs/wiki/Tutorial-02-Language-Basics.md",
             "docs/wiki/Tutorial-03-Resources-and-Cell-Effects.md",
             "docs/wiki/Tutorial-11-Scoped-Invariants-and-ProofPlan.md",
-            "roadmap/CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md",
         ],
         "fiber-interop" => {
-            vec!["examples/fiber/README.md", "roadmap/CELLSCRIPT_0_22_FIBER_NATIVE_SUPPORT_PLAN.md", "docs/CELLSCRIPT_GATE_POLICY.md"]
+            vec!["examples/fiber/README.md", "docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md", "docs/CELLSCRIPT_GATE_POLICY.md"]
         }
-        "roadmap-0.21" => vec!["docs/CELLSCRIPT_0_21_ROADMAP.md", "roadmap/CELLSCRIPT_0_21_CLI_UX_PLAN.md"],
-        "roadmap-0.22" => vec![
-            "docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md",
-            "roadmap/CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md",
-            "roadmap/CELLSCRIPT_0_22_FIBER_NATIVE_SUPPORT_PLAN.md",
-        ],
+        "release-0.21" => vec!["docs/releases/CELLSCRIPT_0_21_RELEASE_NOTES.md"],
+        "release-0.22" => vec!["docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md", "examples/fiber/README.md"],
         _ => return Err(anyhow::anyhow!("unknown docs topic '{topic}'")),
     };
     Ok(paths.into_iter().map(PathBuf::from).collect())
@@ -541,13 +536,13 @@ mod tests {
     #[test]
     fn docs_topic_catalog_covers_the_022_language_and_fiber_surfaces() {
         let language = docs_for_topic("language-0.22").unwrap();
-        assert!(language.iter().any(|path| path.ends_with("CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md")));
+        assert!(language.iter().any(|path| path.ends_with("CELLSCRIPT_0_22_RELEASE_NOTES.md")));
         assert!(language.iter().any(|path| path.ends_with("Tutorial-11-Scoped-Invariants-and-ProofPlan.md")));
 
         let fiber = docs_for_topic("fiber-interop").unwrap();
         assert!(fiber.iter().any(|path| path.ends_with("examples/fiber/README.md")));
 
-        let roadmap = docs_for_topic("roadmap-0.22").unwrap();
-        assert!(roadmap.iter().any(|path| path.ends_with("CELLSCRIPT_0_22_RELEASE_NOTES.md")));
+        let release = docs_for_topic("release-0.22").unwrap();
+        assert!(release.iter().any(|path| path.ends_with("CELLSCRIPT_0_22_RELEASE_NOTES.md")));
     }
 }

@@ -536,8 +536,8 @@ pub fn run(root: &Path) -> Result<()> {
     )?;
     require_contains(
         root,
-        "docs/archive/0.20/CELLSCRIPT_0_20_ROADMAP.md",
-        &["VS Code extension", "check_action_builder_toolchain", "CellFabric is frozen"],
+        "docs/releases/CELLSCRIPT_0_16_TO_0_20_RELEASE_NOTES.md",
+        &["check_action_builder_toolchain", "CellFabric smoke check", "tooling release validator"],
     )?;
     require_contains(
         root,

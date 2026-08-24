@@ -3,7 +3,7 @@ name: cellscript-package-cli
 description: CellScript package layout, Cell.toml, build/check/fmt/test, canonical command groups, global JSON output, registry/package verification, and legacy alias migration.
 references:
   - docs/wiki/Tutorial-04-Packages-and-CLI-Workflow.md
-  - roadmap/CELLSCRIPT_0_21_CLI_UX_PLAN.md
+  - docs/releases/CELLSCRIPT_0_21_RELEASE_NOTES.md
   - docs/CELLSCRIPT_GATE_POLICY.md
 commands:
   - cellc check

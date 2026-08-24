@@ -267,9 +267,9 @@ fn cellscript_mcp_reads_the_diagnostics_topic() {
 #[test]
 fn cellscript_mcp_reads_the_022_language_and_fiber_topics() {
     for (topic, expected_path) in [
-        ("language-0.22", "roadmap/CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md"),
+        ("language-0.22", "docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md"),
         ("fiber-interop", "examples/fiber/README.md"),
-        ("roadmap-0.22", "docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md"),
+        ("release-0.22", "docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md"),
     ] {
         let responses = run_mcp_messages(vec![serde_json::json!({
             "jsonrpc": "2.0",

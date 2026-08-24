@@ -181,7 +181,7 @@ pub fn check_doc_status(root: &Path) -> Result<()> {
     check_document_contract(
         root,
         "README.md",
-        &["0.23 release notes", "0.24 release notes", "0.24 roadmap", "cellc publish --authorise"],
+        &["0.23 release notes", "0.24 release notes", "cellc publish --authorise"],
         &[],
         &mut failures,
     )?;
@@ -192,7 +192,6 @@ pub fn check_doc_status(root: &Path) -> Result<()> {
             schema_number.as_str(),
             "CELLSCRIPT_0_23_RELEASE_NOTES.md",
             "CELLSCRIPT_0_24_RELEASE_NOTES.md",
-            "CELLSCRIPT_0_24_ROADMAP.md",
             "CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md",
         ],
         &[],
@@ -207,7 +206,7 @@ pub fn check_doc_status(root: &Path) -> Result<()> {
     check_document_contract(
         root,
         "docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md",
-        &["metadata schema 57", "0.24 roadmap"],
+        &["metadata schema 57", "independent artifact checker"],
         &["metadata schema 58"],
         &mut failures,
     )?;
@@ -236,41 +235,11 @@ pub fn check_doc_status(root: &Path) -> Result<()> {
     )?;
     check_document_contract(
         root,
-        "roadmap/CELLSCRIPT_0_23_ROADMAP.md",
-        &["implementation scope frozen", "final scope decision", "0.24 roadmap", "attested adapter"],
-        &["Status: Draft, pending release-line coordination"],
-        &mut failures,
-    )?;
-    check_document_contract(
-        root,
-        "roadmap/CELLSCRIPT_0_24_ROADMAP.md",
-        &[
-            "Verified Artifact Boundary",
-            "Executable Package Tests",
-            "Myelin Adapter Re-Convergence",
-            "independent checker",
-            "Exit Criteria",
-        ],
-        &[],
-        &mut failures,
-    )?;
-    check_document_contract(
-        root,
         "docs/wiki/Tutorial-14-Verified-Artifacts-and-Executable-Tests.md",
         &["four-file bundle", "cellc test --backend all", "structurally_verified"],
         &[],
         &mut failures,
     )?;
-    for relative in ["roadmap/CELLSCRIPT_ROADMAP.md", "roadmap/CELLSCRIPT_ROADMAP_OVERVIEW.md"] {
-        check_document_contract(
-            root,
-            relative,
-            &["0.24", "independent", "CELLSCRIPT_0_24_ROADMAP.md"],
-            &["Myelin vendored fork re-converges"],
-            &mut failures,
-        )?;
-    }
-
     let mut wiki_docs = Vec::new();
     collect_markdown(&root.join("docs/wiki"), &mut wiki_docs)?;
     for path in wiki_docs {
@@ -318,7 +287,6 @@ pub fn check_markdown_links(root: &Path) -> Result<()> {
     let starts = [
         root.join("README.md"),
         root.join("docs"),
-        root.join("roadmap"),
         root.join("editors/vscode-cellscript/README.md"),
         root.join("editors/vscode-cellscript/docs"),
     ];
@@ -382,7 +350,7 @@ pub fn check_package_contents(path: &Path) -> Result<()> {
         "LICENSE-MIT",
         "README.md",
     ];
-    let allowed_dirs = ["assets", "examples", "roadmap", "scripts", "src", "tests"];
+    let allowed_dirs = ["assets", "examples", "scripts", "src", "tests"];
     let mut unexpected = Vec::new();
     let contents = fs::read_to_string(path)?;
     for raw in contents.lines() {

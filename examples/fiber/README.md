@@ -271,8 +271,7 @@ Run the local compiler/CKB-VM boundary yourself:
 
 These are bounded integration results, not a mainnet-readiness certificate or
 a complete Fiber lifecycle certification. See the
-[full compatibility boundary](../../roadmap/CELLSCRIPT_0_22_FIBER_NATIVE_SUPPORT_PLAN.md)
-and [gate policy](../../docs/CELLSCRIPT_GATE_POLICY.md) for the exact evidence
+[gate policy](../../docs/CELLSCRIPT_GATE_POLICY.md) for the exact evidence
 levels and remaining work.
 
 ## Common Errors

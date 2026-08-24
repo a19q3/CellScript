@@ -109,26 +109,16 @@ bundled `.cell` examples. These are not release notes.
   bootstrap and AMM builder path for the bundled `launch`, `token`, and
   `amm_pool` examples.
 
-## Roadmap
+## Design And Release Records
 
-`roadmap/` is outside this directory and contains planning state. Roadmap files
-may point to release notes and active reference docs, but they should not
-duplicate full release notes.
+Shipped behavior is recorded in `releases/`, while forward-looking work must
+be owned by a concrete RFC under `docs/` or a scoped implementation proposal
+under `proposals/`. The documentation set does not maintain a separate roadmap
+layer.
 
-Archived later-stage roadmap notes that live under `docs/archive/` because they
-are tied to historical branch-specific evidence:
+Active design and evidence records include:
 
-- `archive/0.17/CELLSCRIPT_0_17_ROADMAP.md`
-- `archive/0.18/CELLSCRIPT_0_18_ROADMAP.md`
-- `archive/0.19/CELLSCRIPT_0_19_ROADMAP.md`
-- `archive/0.20/CELLSCRIPT_0_20_ROADMAP.md`
-- `releases/CELLSCRIPT_0_16_TO_0_20_RELEASE_NOTES.md`
-
-Active later-stage roadmap notes that live under `docs/` because they are tied
-to current branch-specific evidence or forward design:
-
-- `CELLSCRIPT_0_21_ROADMAP.md`
-- `CELLSCRIPT_CKB_STD_COMPAT.md` for 0.19 ckb-std compatibility scope
+- `CELLSCRIPT_CKB_STD_COMPAT.md` for the ckb-std compatibility boundary
 - `CELLSCRIPT_GRAMMAR_GOVERNANCE_RFC.md` and
   `CELLSCRIPT_SYNTAX_COMBO_AUDIT_METHODOLOGY.md` for 0.19 grammar/syntax
   governance scope
@@ -136,22 +126,12 @@ to current branch-specific evidence or forward design:
   deployment-evidence, and public API contract
 - `CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md` for the 0.24 Lock Script interface
   profile and compatibility evidence
-- `archive/0.20/CELLSCRIPT_0_20_ROADMAP.md` for generated TypeScript action builders,
-  live-chain registry verification, stateful flow evidence, and the bounded
-  CellFabric JSON bridge
-- `CELLSCRIPT_0_21_ROADMAP.md` for semantic closure, authenticated compiler
-  evidence, derived cyclic graph views, type-level TemplateLayout metadata, and
-  deferred optional template Merkleisation
-- `../roadmap/CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md` for the 0.22 typed
-  transaction-view, finite quantifier, bounded collection, validity, borrow,
-  capability, and payload-enum design/implementation record
-- `../roadmap/CELLSCRIPT_0_22_FIBER_NATIVE_SUPPORT_PLAN.md` for the implemented
-  bounded Fiber path and its still-pending production evidence
-- `../roadmap/CELLSCRIPT_0_23_ROADMAP.md` for the frozen Edition/ABI, Registry,
-  native-tooling, and bounded ecosystem-evidence implementation scope
-- `../roadmap/CELLSCRIPT_0_24_ROADMAP.md` for the implemented core independent
-  artifact checker, executable package tests, and source maps, plus the
-  explicitly pending external Myelin/Fiber/RGB++ evidence checkpoints
+- `releases/CELLSCRIPT_0_22_RELEASE_NOTES.md` for the typed transaction-view,
+  bounded collection, validity, borrow, capability, payload-enum, and Fiber
+  release boundary
+- `releases/CELLSCRIPT_0_23_RELEASE_NOTES.md` and
+  `releases/CELLSCRIPT_0_24_RELEASE_NOTES.md` for the Edition/ABI, Registry,
+  verified-artifact, executable-test, and ecosystem evidence boundaries
 
 ## Archive
 
@@ -163,8 +143,6 @@ Current archive:
 
 - `docs/archive/0.13/CELLSCRIPT_0_13_1_PLAN.md`
 - `docs/archive/0.13/CELLSCRIPT_SIGNATURE_DIRECTION_EXECUTION_PLAN.md`
-- `docs/archive/0.15/CELLSCRIPT_0_15_ROADMAP_SUMMARY.md`
-- `docs/archive/0.17/CELLSCRIPT_0_17_ROADMAP.md`
 - `docs/archive/0.17/CELLSCRIPT_0_17_ICKB_FINAL_REPORT.md`
 - `docs/archive/0.17/CELLSCRIPT_0_17_ICKB_PRODUCTION_EQUIVALENCE_GATE.md`
 - `docs/archive/0.17/CELLSCRIPT_0_17_REVIEW_FINDINGS_CLOSURE.md`

@@ -49,8 +49,8 @@ for the accepted scope and
 0.13.1 is a **forward patch** on the current development branch: it
 extends 0.13 surface syntax without reopening the 0.13 release boundary.
 
-The 0.14 roadmap (`roadmap/CELLSCRIPT_0_14_ROADMAP.md` §12) lists surface
-ergonomics backlog items including `transfer` sugar and batch-create sugar.
+The later 0.14 work considered surface ergonomics including `transfer` sugar
+and batch-create sugar.
 `preserve` sugar is scoped separately because it is a **pure local desugaring**
 that does not touch verifier semantics, builder integration, or transaction
 shape — making it safe for a patch release without waiting for the full 0.14

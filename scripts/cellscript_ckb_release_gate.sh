@@ -2,7 +2,7 @@
 # Legacy entry point that now delegates to the unified gate script.
 #
 # Historically this file carried its own copies of the trailing-whitespace,
-# release-roadmap, CKB-release-doc, and CKB-acceptance-boundary audits, plus
+# release-doc, CKB-release-doc, and CKB-acceptance-boundary audits, plus
 # Novaseal certify and action-builder toolchain checks. Those function bodies
 # were unreachable because the `case` block below always `exec`ed to the
 # unified gate, and they had drifted out of sync with the live checks in

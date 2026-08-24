@@ -6,8 +6,6 @@
 `v0.13.2`; this document explains what 0.13 includes, what it intentionally
 leaves out, and where each subtopic is tracked in more detail.
 
-For the broader plan, see [CellScript Roadmap](../../roadmap/CELLSCRIPT_ROADMAP.md).
-
 ## 0.13 Goals
 
 0.13 has five concrete goals:
@@ -79,10 +77,7 @@ Important boundaries:
 - generic maps and sets remain out of scope;
 - `Option<T>` remains reserved for a later explicit optional/error model.
 
-Detailed tracker:
-
-- [0.13 release tracker](../../roadmap/CELLSCRIPT_0_13_TODOLIST.md)
-- [Collections support matrix](../CELLSCRIPT_COLLECTIONS_SUPPORT_MATRIX.md)
+Detailed boundary: [Collections support matrix](../CELLSCRIPT_COLLECTIONS_SUPPORT_MATRIX.md).
 
 ## Surface Syntax And Examples
 

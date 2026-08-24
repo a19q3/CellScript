@@ -409,4 +409,3 @@ and must preserve the validated source and artifact identities.
 - [LS-IDL Registry profile](../CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md)
 - [Myelin handoff](../CELLSCRIPT_MYELIN_0_24_HANDOFF.md)
 - [Gate policy](../CELLSCRIPT_GATE_POLICY.md)
-- [0.24 roadmap](../../roadmap/CELLSCRIPT_0_24_ROADMAP.md)

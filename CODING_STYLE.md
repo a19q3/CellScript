@@ -178,8 +178,9 @@ implicit backend contracts more implicit.
   semantics are intentionally unavailable.
 - Release notes should separate highlights, scope boundaries, validation
   commands, and links to detailed docs.
-- Do not keep roadmap promises in `docs/`. Release notes may describe what
-  shipped; future plans belong in dedicated roadmap/proposal files.
+- Release notes describe what shipped. Future work belongs in a concrete RFC
+  or proposal with explicit ownership and acceptance criteria, not in release
+  documentation.
 
 ## Tests
 

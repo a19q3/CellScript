@@ -114,8 +114,6 @@ check_trailing_whitespace() {
         "README.md"
         "CHANGELOG.md"
         "docs/README.md"
-        "roadmap/CELLSCRIPT_ROADMAP.md"
-        "roadmap/CELLSCRIPT_0_13_TODOLIST.md"
         "docs/releases/CELLSCRIPT_0_13_RELEASE_SCOPE.md"
         "docs/releases/CELLSCRIPT_0_13_2_RELEASE_NOTES.md"
         "docs/releases/CELLSCRIPT_0_13_2_ACCEPTANCE_COMMUNITY_POST.md"
@@ -148,9 +146,6 @@ check_trailing_whitespace() {
         "docs/releases/CELLSCRIPT_0_21_RELEASE_NOTES.md"
         "docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md"
         "docs/releases/CELLSCRIPT_0_16_TO_0_20_RELEASE_NOTES.md"
-        "docs/archive/0.20/CELLSCRIPT_0_20_ROADMAP.md"
-        "docs/CELLSCRIPT_0_21_ROADMAP.md"
-        "roadmap/CELLSCRIPT_0_21_CLI_UX_PLAN.md"
         "examples/atomic_swap.cell"
         "examples/multi_phase_dao.cell"
     )
@@ -171,14 +166,11 @@ check_novaseal_verifier_pinning() {
         --root "$ROOT_DIR" check-novaseal-verifier-pinning
 }
 
-check_release_roadmap_docs() {
+check_release_docs() {
     local required=(
-        'roadmap/CELLSCRIPT_ROADMAP.md::0.13.2 syntax-governance hardening'
-        'roadmap/CELLSCRIPT_ROADMAP.md::syntax-combination audit'
         'docs/releases/CELLSCRIPT_0_13_RELEASE_SCOPE.md::Stdlib lifecycle and Cell metadata patterns'
         'docs/releases/CELLSCRIPT_0_13_RELEASE_SCOPE.md::./scripts/cellscript_gate.sh release'
         'docs/releases/CELLSCRIPT_0_13_RELEASE_SCOPE.md::./scripts/cellscript_gate.sh ci'
-        'roadmap/CELLSCRIPT_0_13_TODOLIST.md::0.13.2 Syntax Governance And Release Hardening'
         'docs/releases/CELLSCRIPT_0_13_2_RELEASE_NOTES.md::Syntax Governance And Standard Library'
         'docs/releases/CELLSCRIPT_0_13_2_RELEASE_NOTES.md::Release tag'
         'docs/README.md::CellScript Documentation Map'
@@ -188,7 +180,7 @@ check_release_roadmap_docs() {
         file="${item%%::*}"
         pattern="${item#*::}"
         if ! rg --quiet --fixed-strings "$pattern" "$file"; then
-            printf 'release roadmap docs are missing required boundary in %s: %s\n' "$file" "$pattern" >&2
+            printf 'release docs are missing required boundary in %s: %s\n' "$file" "$pattern" >&2
             exit 1
         fi
     done
@@ -655,7 +647,7 @@ run_release_auxiliary_checks() {
 
     run cargo run --quiet --locked -p cellscript-tools --bin cellscript-tools -- \
         --root "$ROOT_DIR" validate-tooling-release
-    check_release_roadmap_docs
+    check_release_docs
     check_ckb_release_docs
     check_ckb_acceptance_boundaries
     check_novaseal_acceptance_boundaries

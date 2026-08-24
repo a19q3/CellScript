@@ -22,10 +22,8 @@ binding, and scheduler-aware execution.
 The current stable release is
 [CellScript v0.24.0](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.24.0).
 The [0.24 release notes](docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md)
-describe its verified-artifact, executable-test, and integration boundaries.
-The [0.24 roadmap](roadmap/CELLSCRIPT_0_24_ROADMAP.md) records its independently
-checked artifact, executable-test, and explicitly deferred ecosystem
-boundaries.
+describe its verified-artifact, executable-test, integration, and explicitly
+deferred ecosystem boundaries.
 
 In this README, metadata means machine-readable semantic facts emitted by the
 compiler: schema layout, Cell effects, access summaries, source hashes,
@@ -96,8 +94,8 @@ cargo run --locked -p cellscript-fiber-adapter --bin cellscript-fiber -- \
 ```
 
 The supported policy compositions and deliberate protocol non-goals are
-documented in `roadmap/CELLSCRIPT_0_22_FIBER_NATIVE_SUPPORT_PLAN.md`; runnable
-source examples live in `examples/fiber/`.
+documented in [the Fiber example guide](examples/fiber/README.md); runnable
+source examples live in the same directory.
 
 `check` does not modify Fiber or CKB. `enable` can resolve a live deployment and
 asset Cell, while `materialize-config` replaces only `ckb.udt_whitelist` in an
@@ -105,8 +103,8 @@ existing native Fiber YAML file; the operator still controls the required node
 restart. The exact v1 artifact has passed bounded local-devnet runs of Fiber's
 official multi-hop UDT payment and pending-TLC watchtower force-close suites.
 Production and general-support claims still require the clean pinned full
-matrix described in
-`roadmap/CELLSCRIPT_0_22_FIBER_NATIVE_SUPPORT_PLAN.md`.
+matrix described in [the Fiber example guide](examples/fiber/README.md) and
+[gate policy](docs/CELLSCRIPT_GATE_POLICY.md).
 
 ## Quick Start
 
@@ -519,24 +517,15 @@ or CellFabric intent engine.
 - [Collections matrix example](docs/examples/collections_matrix.md)
 - [Deployment manifest example](docs/examples/deployment_manifest.md)
 - [Output append example](docs/examples/output_append.md)
-- [0.20 generated builder roadmap](docs/archive/0.20/CELLSCRIPT_0_20_ROADMAP.md)
-- [Roadmap overview](roadmap/CELLSCRIPT_ROADMAP.md)
 - [0.13 release scope](docs/releases/CELLSCRIPT_0_13_RELEASE_SCOPE.md)
-- [0.14 roadmap](roadmap/CELLSCRIPT_0_14_ROADMAP.md)
 - [0.14 release notes](docs/releases/CELLSCRIPT_0_14_RELEASE_NOTES.md)
-- [0.15 roadmap](roadmap/CELLSCRIPT_0_15_ROADMAP.md)
 - [0.15 release notes](docs/releases/CELLSCRIPT_0_15_RELEASE_NOTES.md)
-- [0.16 roadmap](roadmap/CELLSCRIPT_0_16_ROADMAP.md)
 - [0.16 release notes](docs/releases/CELLSCRIPT_0_16_RELEASE_NOTES.md)
-- [0.17 roadmap](docs/archive/0.17/CELLSCRIPT_0_17_ROADMAP.md)
-- [0.18 roadmap](docs/archive/0.18/CELLSCRIPT_0_18_ROADMAP.md)
-- [0.19 roadmap](docs/archive/0.19/CELLSCRIPT_0_19_ROADMAP.md)
 - [0.20 release notes](docs/releases/CELLSCRIPT_0_20_RELEASE_NOTES.md)
 - [0.21 release notes](docs/releases/CELLSCRIPT_0_21_RELEASE_NOTES.md)
 - [0.22 release notes](docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md)
 - [0.23 release notes](docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md)
 - [0.24 release notes](docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md)
-- [0.22 type and set theory roadmap](roadmap/CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md)
 - [0.22 bounded Fiber interoperability guide](examples/fiber/README.md)
 - [Agentic Loops and cellscript-mcp tutorial](docs/wiki/Tutorial-13-Agentic-Loops-and-cellscript-mcp.md)
 - [LS-IDL for CKB Lock Scripts tutorial](docs/wiki/Tutorial-15-LS-IDL-for-CKB-Lock-Scripts.md)
