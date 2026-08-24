@@ -317,17 +317,17 @@ fn check_plan_record(plan: &ProofPlanMetadata, strict: bool, issues: &mut Vec<Pr
         );
     }
 
-    if let Some(span) = &plan.source_span {
-        if span.end <= span.start || span.line == 0 {
-            push_issue(
-                issues,
-                "error",
-                "PP0211",
-                &plan.origin,
-                &plan.feature,
-                "ProofPlan source span must have end > start and a one-based line",
-            );
-        }
+    if let Some(span) = &plan.source_span
+        && (span.end <= span.start || span.line == 0)
+    {
+        push_issue(
+            issues,
+            "error",
+            "PP0211",
+            &plan.origin,
+            &plan.feature,
+            "ProofPlan source span must have end > start and a one-based line",
+        );
     }
 
     if plan.on_chain_checked
@@ -510,9 +510,4 @@ fn push_issue(issues: &mut Vec<ProofPlanSoundnessIssue>, severity: &str, code: &
         feature: feature.to_string(),
         message: message.to_string(),
     });
-}
-
-#[allow(dead_code)]
-fn _obligation_debug_key(obligation: &VerifierObligationMetadata) -> String {
-    obligation_key(&obligation.scope, &obligation.category, &obligation.feature, &obligation.status, &obligation.detail)
 }

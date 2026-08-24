@@ -114,8 +114,6 @@ check_trailing_whitespace() {
         "README.md"
         "CHANGELOG.md"
         "docs/README.md"
-        "roadmap/CELLSCRIPT_ROADMAP.md"
-        "roadmap/CELLSCRIPT_0_13_TODOLIST.md"
         "docs/releases/CELLSCRIPT_0_13_RELEASE_SCOPE.md"
         "docs/releases/CELLSCRIPT_0_13_2_RELEASE_NOTES.md"
         "docs/releases/CELLSCRIPT_0_13_2_ACCEPTANCE_COMMUNITY_POST.md"
@@ -148,9 +146,6 @@ check_trailing_whitespace() {
         "docs/releases/CELLSCRIPT_0_21_RELEASE_NOTES.md"
         "docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md"
         "docs/releases/CELLSCRIPT_0_16_TO_0_20_RELEASE_NOTES.md"
-        "docs/archive/0.20/CELLSCRIPT_0_20_ROADMAP.md"
-        "docs/CELLSCRIPT_0_21_ROADMAP.md"
-        "roadmap/CELLSCRIPT_0_21_CLI_UX_PLAN.md"
         "examples/atomic_swap.cell"
         "examples/multi_phase_dao.cell"
     )
@@ -171,14 +166,11 @@ check_novaseal_verifier_pinning() {
         --root "$ROOT_DIR" check-novaseal-verifier-pinning
 }
 
-check_release_roadmap_docs() {
+check_release_docs() {
     local required=(
-        'roadmap/CELLSCRIPT_ROADMAP.md::0.13.2 syntax-governance hardening'
-        'roadmap/CELLSCRIPT_ROADMAP.md::syntax-combination audit'
         'docs/releases/CELLSCRIPT_0_13_RELEASE_SCOPE.md::Stdlib lifecycle and Cell metadata patterns'
         'docs/releases/CELLSCRIPT_0_13_RELEASE_SCOPE.md::./scripts/cellscript_gate.sh release'
         'docs/releases/CELLSCRIPT_0_13_RELEASE_SCOPE.md::./scripts/cellscript_gate.sh ci'
-        'roadmap/CELLSCRIPT_0_13_TODOLIST.md::0.13.2 Syntax Governance And Release Hardening'
         'docs/releases/CELLSCRIPT_0_13_2_RELEASE_NOTES.md::Syntax Governance And Standard Library'
         'docs/releases/CELLSCRIPT_0_13_2_RELEASE_NOTES.md::Release tag'
         'docs/README.md::CellScript Documentation Map'
@@ -188,7 +180,7 @@ check_release_roadmap_docs() {
         file="${item%%::*}"
         pattern="${item#*::}"
         if ! rg --quiet --fixed-strings "$pattern" "$file"; then
-            printf 'release roadmap docs are missing required boundary in %s: %s\n' "$file" "$pattern" >&2
+            printf 'release docs are missing required boundary in %s: %s\n' "$file" "$pattern" >&2
             exit 1
         fi
     done
@@ -482,8 +474,50 @@ check_wasm_release_bundle() {
     fi
 }
 
+release_ckb_repo_from_args() {
+    local ckb_repo="$ROOT_DIR/../ckb"
+    while (($# > 0)); do
+        case "$1" in
+            --ckb-repo)
+                if (($# < 2)); then
+                    printf 'missing value for --ckb-repo\n' >&2
+                    return 2
+                fi
+                ckb_repo="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+    printf '%s\n' "$ckb_repo"
+}
+
 check_ckb_tx_measure_tool() {
-    run cargo test --manifest-path tools/ckb-tx-measure/Cargo.toml --locked
+    local ckb_repo="$1"
+    local default_ckb_repo="$ROOT_DIR/../ckb"
+    if [[ ! -d "$ckb_repo" ]]; then
+        printf 'CKB checkout does not exist: %s\n' "$ckb_repo" >&2
+        return 1
+    fi
+    ckb_repo="$(cd "$ckb_repo" && pwd -P)"
+    if [[ -d "$default_ckb_repo" ]]; then
+        default_ckb_repo="$(cd "$default_ckb_repo" && pwd -P)"
+        if [[ "$ckb_repo" == "$default_ckb_repo" ]]; then
+            run cargo test --manifest-path tools/ckb-tx-measure/Cargo.toml --locked
+            return
+        fi
+    fi
+
+    local staging_dir
+    staging_dir="$(mktemp -d "$ROOT_DIR/target/cellscript-ckb-tx-measure.XXXXXX")"
+    mkdir -p "$staging_dir/cellscript/tools/ckb-tx-measure" "$staging_dir/cellscript/src/bin"
+    cp tools/ckb-tx-measure/Cargo.toml tools/ckb-tx-measure/Cargo.lock \
+        "$staging_dir/cellscript/tools/ckb-tx-measure/"
+    cp src/bin/ckb_tx_measure.rs "$staging_dir/cellscript/src/bin/"
+    ln -s "$ckb_repo" "$staging_dir/ckb"
+    run cargo test --manifest-path "$staging_dir/cellscript/tools/ckb-tx-measure/Cargo.toml" --locked
 }
 
 check_novaseal_rust_tooling() {
@@ -615,15 +649,16 @@ run_backend_gate() {
 }
 
 run_release_auxiliary_checks() {
+    local ckb_repo="$1"
     require_cmd npm
 
     run cargo run --quiet --locked -p cellscript-tools --bin cellscript-tools -- \
         --root "$ROOT_DIR" validate-tooling-release
-    check_release_roadmap_docs
+    check_release_docs
     check_ckb_release_docs
     check_ckb_acceptance_boundaries
     check_novaseal_acceptance_boundaries
-    check_ckb_tx_measure_tool
+    check_ckb_tx_measure_tool "$ckb_repo"
     check_novaseal_rust_tooling
     check_novaseal_verifier_pinning
     check_wasm_release_bundle
@@ -635,18 +670,22 @@ run_release_auxiliary_checks() {
 }
 
 run_release_quick_gate() {
+    local ckb_repo
+    ckb_repo="$(release_ckb_repo_from_args "$@")"
     check_release_source_identity
     run_ci_gate
-    run_release_auxiliary_checks
+    run_release_auxiliary_checks "$ckb_repo"
     run ./scripts/ckb_cellscript_acceptance.sh --compile-only --production "$@"
     printf '\nCellScript backend shape report: %s\n' "$CELLSCRIPT_BACKEND_SHAPE_REPORT"
     printf 'CellScript Molecule schema manifest report: %s\n' "$CELLSCRIPT_MOLECULE_SCHEMA_MANIFEST_REPORT"
 }
 
 run_release_gate() {
+    local ckb_repo
+    ckb_repo="$(release_ckb_repo_from_args "$@")"
     check_release_source_identity
     run_ci_gate
-    run_release_auxiliary_checks
+    run_release_auxiliary_checks "$ckb_repo"
     run ./scripts/ckb_cellscript_acceptance.sh --production --stateful-scenarios "$@"
     printf '\nCellScript backend shape report: %s\n' "$CELLSCRIPT_BACKEND_SHAPE_REPORT"
     printf 'CellScript Molecule schema manifest report: %s\n' "$CELLSCRIPT_MOLECULE_SCHEMA_MANIFEST_REPORT"

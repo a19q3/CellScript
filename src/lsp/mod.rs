@@ -480,10 +480,10 @@ impl LspServer {
                 _ => None,
             }?;
             fields.iter().find_map(|field| {
-                if field.name == field_name {
-                    if let Type::Named(name) = &field.ty {
-                        return Some(name.clone());
-                    }
+                if field.name == field_name
+                    && let Type::Named(name) = &field.ty
+                {
+                    return Some(name.clone());
                 }
                 None
             })
@@ -961,20 +961,20 @@ impl LspServer {
                         break;
                     }
                 }
-                if let Stmt::Let(let_stmt) = stmt {
-                    if let BindingPattern::Name(name) = &let_stmt.pattern {
-                        items.push(CompletionItem {
-                            label: name.clone(),
-                            kind: CompletionItemKind::Variable,
-                            detail: Some(format!(
-                                "let{}: {}",
-                                if let_stmt.is_mut { " mut" } else { "" },
-                                let_stmt.ty.as_ref().map(type_to_string).unwrap_or_else(|| "_".to_string())
-                            )),
-                            documentation: None,
-                            insert_text: Some(name.clone()),
-                        });
-                    }
+                if let Stmt::Let(let_stmt) = stmt
+                    && let BindingPattern::Name(name) = &let_stmt.pattern
+                {
+                    items.push(CompletionItem {
+                        label: name.clone(),
+                        kind: CompletionItemKind::Variable,
+                        detail: Some(format!(
+                            "let{}: {}",
+                            if let_stmt.is_mut { " mut" } else { "" },
+                            let_stmt.ty.as_ref().map(type_to_string).unwrap_or_else(|| "_".to_string())
+                        )),
+                        documentation: None,
+                        insert_text: Some(name.clone()),
+                    });
                 }
             }
         }
@@ -1255,12 +1255,11 @@ impl LspServer {
 
             // Check local let bindings.
             for stmt in body {
-                if let Stmt::Let(let_stmt) = stmt {
-                    if let BindingPattern::Name(name) = &let_stmt.pattern {
-                        if name == symbol {
-                            return Some(Location { uri: uri.to_string(), range: span_to_range(content, let_stmt.span) });
-                        }
-                    }
+                if let Stmt::Let(let_stmt) = stmt
+                    && let BindingPattern::Name(name) = &let_stmt.pattern
+                    && name == symbol
+                {
+                    return Some(Location { uri: uri.to_string(), range: span_to_range(content, let_stmt.span) });
                 }
             }
         }
@@ -1435,21 +1434,20 @@ impl LspServer {
 
             // Check local let bindings.
             for stmt in body {
-                if let Stmt::Let(let_stmt) = stmt {
-                    if let BindingPattern::Name(name) = &let_stmt.pattern {
-                        if name == symbol {
-                            let ty_str = let_stmt.ty.as_ref().map(type_to_string).unwrap_or_else(|| "_".to_string());
-                            return Some(Hover {
-                                contents: format!(
-                                    "```cellscript\n{}{}: {}\n```\n\nLocal variable",
-                                    if let_stmt.is_mut { "mut " } else { "" },
-                                    name,
-                                    ty_str
-                                ),
-                                range: Some(span_to_range(content, let_stmt.span)),
-                            });
-                        }
-                    }
+                if let Stmt::Let(let_stmt) = stmt
+                    && let BindingPattern::Name(name) = &let_stmt.pattern
+                    && name == symbol
+                {
+                    let ty_str = let_stmt.ty.as_ref().map(type_to_string).unwrap_or_else(|| "_".to_string());
+                    return Some(Hover {
+                        contents: format!(
+                            "```cellscript\n{}{}: {}\n```\n\nLocal variable",
+                            if let_stmt.is_mut { "mut " } else { "" },
+                            name,
+                            ty_str
+                        ),
+                        range: Some(span_to_range(content, let_stmt.span)),
+                    });
                 }
             }
         }
@@ -1748,17 +1746,15 @@ impl LspServer {
                         });
                     }
                 }
-                Item::Shared(s) => {
-                    if !s.fields.is_empty() {
-                        let range = span_to_range(content, s.span);
-                        ranges.push(FoldingRange {
-                            start_line: range.start.line,
-                            start_character: Some(range.start.character),
-                            end_line: range.end.line,
-                            end_character: Some(range.end.character),
-                            kind: Some(FoldingRangeKind::Region),
-                        });
-                    }
+                Item::Shared(s) if !s.fields.is_empty() => {
+                    let range = span_to_range(content, s.span);
+                    ranges.push(FoldingRange {
+                        start_line: range.start.line,
+                        start_character: Some(range.start.character),
+                        end_line: range.end.line,
+                        end_character: Some(range.end.character),
+                        kind: Some(FoldingRangeKind::Region),
+                    });
                 }
                 _ => {}
             }
@@ -1837,10 +1833,10 @@ impl LspServer {
     }
 
     fn find_signature(&self, uri: &str, name: &str) -> Option<SignatureInformation> {
-        if let Some(ast) = self.ast_cache.get(uri) {
-            if let Some(info) = self.find_signature_in_items(&ast.items, name) {
-                return Some(info);
-            }
+        if let Some(ast) = self.ast_cache.get(uri)
+            && let Some(info) = self.find_signature_in_items(&ast.items, name)
+        {
+            return Some(info);
         }
 
         for module in self.workspace_modules(uri) {
@@ -1954,17 +1950,17 @@ impl LspServer {
     }
 
     fn find_top_level_symbol(&self, uri: &str, symbol: &str) -> Option<Location> {
-        if let (Some(ast), Some(source)) = (self.ast_cache.get(uri), self.documents.get(uri)) {
-            if let Some(location) = ast.items.iter().find_map(|item| {
+        if let (Some(ast), Some(source)) = (self.ast_cache.get(uri), self.documents.get(uri))
+            && let Some(location) = ast.items.iter().find_map(|item| {
                 let name = item_name(item)?;
                 if name == symbol {
                     Some(Location { uri: uri.to_string(), range: item_name_range(source, item, name) })
                 } else {
                     None
                 }
-            }) {
-                return Some(location);
-            }
+            })
+        {
+            return Some(location);
         }
 
         for module in self.workspace_modules(uri) {
@@ -2574,17 +2570,17 @@ fn action_metadata_hover(name: &str, metadata: Option<&crate::CompileMetadata>) 
 }
 
 fn function_metadata_hover(name: &str, function: &FnDef, metadata: Option<&crate::CompileMetadata>) -> String {
-    if let Some(metadata) = metadata {
-        if let Some(function_metadata) = metadata.functions.iter().find(|candidate| candidate.name == name) {
-            let declared = function_metadata.declared_effect_class.as_deref().unwrap_or("inferred");
-            return format!(
-                "\n\n**Effect metadata**\n\nDeclared: `{}`\n\nInferred: `{}`\n\nEffective: `{}`\n\nEvidence: `{}`",
-                declared,
-                function_metadata.inferred_effect_class,
-                function_metadata.effect_class,
-                function_metadata.effect_evidence_tier.as_str()
-            );
-        }
+    if let Some(metadata) = metadata
+        && let Some(function_metadata) = metadata.functions.iter().find(|candidate| candidate.name == name)
+    {
+        let declared = function_metadata.declared_effect_class.as_deref().unwrap_or("inferred");
+        return format!(
+            "\n\n**Effect metadata**\n\nDeclared: `{}`\n\nInferred: `{}`\n\nEffective: `{}`\n\nEvidence: `{}`",
+            declared,
+            function_metadata.inferred_effect_class,
+            function_metadata.effect_class,
+            function_metadata.effect_evidence_tier.as_str()
+        );
     }
 
     if function.effect_declared {
@@ -2734,10 +2730,10 @@ fn word_occurrences(source: &str, symbol: &str) -> Vec<(usize, usize)> {
         return matches;
     };
     for token in tokens {
-        if let TokenKind::Identifier(name) = token.kind {
-            if name == symbol {
-                matches.push((token.span.start, token.span.end));
-            }
+        if let TokenKind::Identifier(name) = token.kind
+            && name == symbol
+        {
+            matches.push((token.span.start, token.span.end));
         }
     }
     matches

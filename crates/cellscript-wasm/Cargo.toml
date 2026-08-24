@@ -1,6 +1,6 @@
 [package]
 name = "cellscript-wasm"
-version = "0.22.0"
+version = "0.25.0"
 edition = "2024"
 rust-version = "1.97.1"
 publish = false
@@ -14,6 +14,10 @@ crate-type = ["cdylib", "rlib"]
 # Forwards to the cellscript dependency's wasm feature, which gates
 # out the cli/lsp/native modules.
 wasm = ["cellscript/wasm"]
+# The website keeps semantic completion/hover in the native VS Code extension
+# so the metadata compiler stays within its 600 KB gzip budget. Consumers that
+# accept the larger bundle may opt into the browser language service.
+language-service = []
 
 [dependencies]
 cellscript = { path = "../..", default-features = false }

@@ -8,7 +8,8 @@ IR-surface classification, and the typed-semantics v2 / lowering-record v3
 boundary. Treat it as merge-ready only when compiler, independent checker,
 Registry, editor/Playground, docs, and the `dev`, `ci`, and `backend` gates all
 agree. It is not a stable release or production CKB evidence claim; the crate
-version remains pinned until the coordinated release gate changes it.
+version identifies the 0.25 development line but is not a substitute for a
+signed release tag or the coordinated release gate.
 
 ## 0.12-era proposal baseline
 
@@ -18,13 +19,12 @@ discussions. Do not use that historical baseline to describe the current
 
 ## nightly-0.24
 
-`nightly-0.24` is the active development line for independently verified
+`nightly-0.24` is the closed maintenance line for independently verified
 artifacts and executable package evidence. It builds on the closed 0.23
-Edition 2026 and native-tooling boundary. Treat the line as merge-ready only
-when compiler, checker, Registry worker, executable tests, source maps, docs,
-and the `dev`, `ci`, and `backend` gates agree. A passing merge gate is not a
-stable-release or production CKB claim; those still require the release gate
-and the external evidence named in the 0.24 release notes.
+Edition 2026 and native-tooling boundary. The stable release boundary is the
+exact `v0.24.0` tag; later commits on the branch are not implicitly part of
+that release. External Myelin, Fiber, and RGB++ claims remain separately
+evidence gated as described in the 0.24 release notes.
 
 ## nightly-0.23
 
@@ -38,7 +38,7 @@ stable release certificate or production CKB evidence.
 ## nightly-0.22
 
 `nightly-0.22` is the historical implementation line for the 0.22 type-and-set
-theory roadmap. The stable release boundary is the `v0.22.0` tag, not the
+theory release. The stable release boundary is the `v0.22.0` tag, not the
 nightly branch name.
 
 ## main
@@ -47,11 +47,25 @@ nightly branch name.
 comparisons and an exact nightly branch for development-scope comparisons;
 do not infer release evidence from `main` alone.
 
+## v0.24.0
+
+`v0.24.0` is the current stable release for the verified-artifact checker,
+executable package scenarios, lock-authoritative package graph, and LS-IDL
+Registry path. Use the exact tag ref `refs/tags/v0.24.0` for stable
+comparisons. The release does not promote the separately pending Myelin,
+Fiber, or RGB++ external evidence boundaries.
+
+## v0.23.0
+
+`v0.23.0` is the historical stable baseline for Edition 2026, the Registry,
+and native release tooling. Use the exact tag ref `refs/tags/v0.23.0` when
+reproducing that release.
+
 ## v0.22.0
 
-`v0.22.0` is the current stable release baseline. Use the exact tag ref
-`refs/tags/v0.22.0` for stable comparisons; later nightly branches describe
-development work and do not supersede that stable boundary by themselves.
+`v0.22.0` is the historical stable baseline for the type-and-set-theory line.
+Use the exact tag ref `refs/tags/v0.22.0` when reproducing that release rather
+than treating a later nightly branch as equivalent evidence.
 
 ## 0.16
 

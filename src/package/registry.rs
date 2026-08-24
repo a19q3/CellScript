@@ -70,11 +70,17 @@ pub fn canonical_json_value(value: &serde_json::Value) -> serde_json::Value {
 }
 
 pub const ARTIFACT_PROFILE_CONTRACT_SCHEMA: &str = "cellscript-registry-profile-contract-v1";
+pub const LS_IDL_INTERFACE_SCHEMA: &str = "cellscript-registry-ls-idl-interface-v1";
+pub const LS_IDL_CONTENT_TYPE: &str = "application/vnd.ckb.ls-idl+json";
+pub const LS_IDL_FORMAT_VERSION: &str = "0.1";
+pub const MAX_LS_IDL_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ArtifactContractHashes<'a> {
     pub artifact_hash: Option<&'a str>,
     pub abi_hash: Option<&'a str>,
+    pub abi_sha256: Option<&'a str>,
+    pub executable_ls_idl_bound: Option<bool>,
     pub build_recipe_hash: Option<&'a str>,
     pub audit_report_hash: Option<&'a str>,
 }
@@ -93,7 +99,7 @@ pub fn validate_artifact_profile_contract(
     let contract = registry_contract_object(value, "profile contract")?;
     registry_exact_keys(
         contract,
-        &["schema", "artifact_kind", "profile", "build", "security", "ckb", "verifier", "reproduction", "copy"],
+        &["schema", "artifact_kind", "profile", "build", "security", "ckb", "interface", "verifier", "reproduction", "copy"],
         "profile contract",
     )?;
     registry_require_literal(contract, "schema", ARTIFACT_PROFILE_CONTRACT_SCHEMA, "profile contract")?;
@@ -112,24 +118,29 @@ pub fn validate_artifact_profile_contract(
             registry_require_nonempty_string(verifier, "verifier_id", "verifier")?;
             registry_require_nonempty_string(verifier, "ipc_abi", "verifier")?;
             registry_require_matching_hash(verifier, "ipc_abi_hash", hashes.abi_hash, "verifier")?;
-            registry_forbid_keys(contract, &["copy"], "profile contract")?;
+            registry_forbid_keys(contract, &["interface", "copy"], "profile contract")?;
         }
         ("deployable_contract", "ckb_executable") => {
             let reproducible = validate_registry_build_contract(contract, None)?;
             validate_registry_security_contract(contract, hashes.audit_report_hash)?;
             validate_registry_ckb_contract(contract)?;
             validate_registry_abi_contract(contract, hashes.abi_hash)?;
+            validate_registry_ls_idl_interface(contract, hashes)?;
             validate_registry_reproduction_contract(contract, reproducible, hashes)?;
             registry_forbid_keys(contract, &["verifier", "copy"], "profile contract")?;
         }
         ("reproducible_binary", "reproducible_build") => {
             validate_registry_build_contract(contract, Some(true))?;
             validate_registry_security_contract(contract, hashes.audit_report_hash)?;
-            registry_forbid_keys(contract, &["ckb", "verifier", "copy"], "profile contract")?;
+            registry_forbid_keys(contract, &["ckb", "interface", "verifier", "copy"], "profile contract")?;
             validate_registry_reproduction_contract(contract, true, hashes)?;
         }
         ("template", "copy_material") => {
-            registry_forbid_keys(contract, &["build", "security", "ckb", "verifier", "reproduction"], "profile contract")?;
+            registry_forbid_keys(
+                contract,
+                &["build", "security", "ckb", "interface", "verifier", "reproduction"],
+                "profile contract",
+            )?;
             let copy = registry_required_object(contract, "copy", "profile contract")?;
             registry_exact_keys(copy, &["format", "entrypoint"], "copy")?;
             registry_require_one_of(copy, "format", &["file_map_v1"], "copy")?;
@@ -213,6 +224,101 @@ fn validate_registry_abi_contract(
 ) -> std::result::Result<(), String> {
     let ckb = registry_required_object(contract, "ckb", "profile contract")?;
     registry_require_matching_hash(ckb, "abi_hash", expected, "ckb")
+}
+
+fn validate_registry_ls_idl_interface(
+    contract: &serde_json::Map<String, serde_json::Value>,
+    hashes: ArtifactContractHashes<'_>,
+) -> std::result::Result<(), String> {
+    let Some(interface_value) = contract.get("interface") else {
+        return Ok(());
+    };
+    let interface = registry_contract_object(interface_value, "interface")?;
+    registry_exact_keys(
+        interface,
+        &["schema", "format", "format_version", "object_role", "content_type", "encoding", "commitment"],
+        "interface",
+    )?;
+    registry_require_literal(interface, "schema", LS_IDL_INTERFACE_SCHEMA, "interface")?;
+    registry_require_literal(interface, "format", "ls-idl", "interface")?;
+    registry_require_literal(interface, "format_version", LS_IDL_FORMAT_VERSION, "interface")?;
+    registry_require_literal(interface, "object_role", "abi", "interface")?;
+    registry_require_literal(interface, "content_type", LS_IDL_CONTENT_TYPE, "interface")?;
+    registry_require_literal(interface, "encoding", "linear-le-v0", "interface")?;
+
+    let ckb = registry_required_object(contract, "ckb", "profile contract")?;
+    registry_require_literal(ckb, "script_role", "lock", "ckb")?;
+    let commitment = registry_required_object(interface, "commitment", "interface")?;
+    registry_exact_keys(commitment, &["algorithm", "placement", "digest"], "interface.commitment")?;
+    registry_require_literal(commitment, "algorithm", "sha256", "interface.commitment")?;
+    registry_require_literal(commitment, "placement", "code-cell-data-suffix-32", "interface.commitment")?;
+    registry_require_matching_hash(commitment, "digest", hashes.abi_sha256, "interface.commitment")?;
+    if hashes.executable_ls_idl_bound != Some(true) {
+        return Err("interface commitment is not the exact 32-byte suffix of the executable object".to_string());
+    }
+    Ok(())
+}
+
+/// Validate the bounded LS-IDL 0.1 document accepted by the Registry profile.
+///
+/// The digest commits the exact input bytes; this function parses only for
+/// schema admission and never reserializes the document as its identity.
+pub fn validate_ls_idl_document(bytes: &[u8]) -> std::result::Result<(), String> {
+    if bytes.is_empty() || bytes.len() > MAX_LS_IDL_BYTES {
+        return Err(format!("LS-IDL must be a non-empty JSON document no larger than {MAX_LS_IDL_BYTES} bytes"));
+    }
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| format!("LS-IDL is not valid JSON: {error}"))?;
+    let document = registry_contract_object(&value, "LS-IDL")?;
+    registry_exact_keys(document, &["idl_version", "name", "witness", "description", "script_version", "signing"], "LS-IDL")?;
+    for key in ["idl_version", "name", "description", "script_version"] {
+        if let Some(value) = document.get(key) {
+            let text = value.as_str().ok_or_else(|| format!("LS-IDL.{key} must be a string"))?;
+            if text.len() > 1024 {
+                return Err(format!("LS-IDL.{key} exceeds the 1024-byte limit"));
+            }
+        }
+    }
+    let fields =
+        document.get("witness").and_then(serde_json::Value::as_array).ok_or_else(|| "LS-IDL.witness must be an array".to_string())?;
+    if fields.len() > 256 {
+        return Err("LS-IDL.witness may contain at most 256 fields".to_string());
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for (index, field_value) in fields.iter().enumerate() {
+        let label = format!("LS-IDL.witness[{index}]");
+        let field = registry_contract_object(field_value, &label)?;
+        registry_exact_keys(field, &["name", "type", "required", "description"], &label)?;
+        let name = registry_require_nonempty_string(field, "name", &label)?;
+        if name.len() > 128 || !names.insert(name) {
+            return Err(format!("{label}.name must be unique and no longer than 128 bytes"));
+        }
+        registry_require_one_of(
+            field,
+            "type",
+            &["uint8", "uint32", "uint64", "secp256k1_sig", "secp256k1_pubkey", "schnorr_sig", "bytes"],
+            &label,
+        )?;
+        if !matches!(field.get("required"), Some(serde_json::Value::Bool(_))) {
+            return Err(format!("{label}.required must be a boolean"));
+        }
+        if let Some(description) = field.get("description") {
+            let description = description.as_str().ok_or_else(|| format!("{label}.description must be a string"))?;
+            if description.len() > 1024 {
+                return Err(format!("{label}.description exceeds the 1024-byte limit"));
+            }
+        }
+    }
+    if let Some(signing_value) = document.get("signing") {
+        let signing = registry_contract_object(signing_value, "LS-IDL.signing")?;
+        registry_exact_keys(signing, &["algorithm", "message", "hasher"], "LS-IDL.signing")?;
+        for key in ["algorithm", "message", "hasher"] {
+            let value = registry_require_nonempty_string(signing, key, "LS-IDL.signing")?;
+            if value.len() > 1024 {
+                return Err(format!("LS-IDL.signing.{key} exceeds the 1024-byte limit"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn registry_contract_object<'a>(
@@ -1673,6 +1779,89 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ls_idl_profile_binds_exact_bytes_to_lock_executable_suffix() {
+        use sha2::Digest as _;
+
+        let idl = br#"{
+  "witness": [
+    {"name":"signature","type":"secp256k1_sig","required":true},
+    {"name":"memo","type":"bytes","required":false}
+  ]
+}"#;
+        validate_ls_idl_document(idl).unwrap();
+        let abi_hash = crate::hex_encode(&crate::ckb_blake2b256(idl));
+        let digest = sha2::Sha256::digest(idl);
+        let digest_hex = crate::hex_encode(digest.as_slice());
+        let contract = serde_json::json!({
+            "schema": ARTIFACT_PROFILE_CONTRACT_SCHEMA,
+            "artifact_kind": "deployable_contract",
+            "profile": "ckb_executable",
+            "build": {
+                "target": "riscv64imac-unknown-none-elf",
+                "toolchain": "rustc 1.97.1",
+                "profile": "release",
+                "source_revision": "0123456789abcdef",
+                "reproducible": false
+            },
+            "security": { "status": "review_required" },
+            "ckb": {
+                "vm_version": "2",
+                "script_role": "lock",
+                "hash_type": "data1",
+                "dep_type": "code",
+                "abi_hash": abi_hash
+            },
+            "interface": {
+                "schema": LS_IDL_INTERFACE_SCHEMA,
+                "format": "ls-idl",
+                "format_version": LS_IDL_FORMAT_VERSION,
+                "object_role": "abi",
+                "content_type": LS_IDL_CONTENT_TYPE,
+                "encoding": "linear-le-v0",
+                "commitment": {
+                    "algorithm": "sha256",
+                    "placement": "code-cell-data-suffix-32",
+                    "digest": digest_hex
+                }
+            }
+        });
+        validate_artifact_profile_contract(
+            "deployable_contract",
+            "ckb_executable",
+            &contract,
+            ArtifactContractHashes {
+                abi_hash: Some(&abi_hash),
+                abi_sha256: Some(&digest_hex),
+                executable_ls_idl_bound: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let error = validate_artifact_profile_contract(
+            "deployable_contract",
+            "ckb_executable",
+            &contract,
+            ArtifactContractHashes {
+                abi_hash: Some(&abi_hash),
+                abi_sha256: Some(&digest_hex),
+                executable_ls_idl_bound: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("exact 32-byte suffix"));
+    }
+
+    #[test]
+    fn ls_idl_schema_rejects_unknown_types_and_duplicate_fields() {
+        let unknown = br#"{"witness":[{"name":"digest","type":"[u8;32]","required":true}]}"#;
+        assert!(validate_ls_idl_document(unknown).unwrap_err().contains("must be one of"));
+        let duplicate = br#"{"witness":[{"name":"n","type":"uint8","required":true},{"name":"n","type":"uint64","required":true}]}"#;
+        assert!(validate_ls_idl_document(duplicate).unwrap_err().contains("unique"));
+    }
+
+    #[test]
     fn audited_artifact_contract_binds_the_immutable_audit_report() {
         let artifact_hash = "11".repeat(32);
         let abi_hash = "22".repeat(32);
@@ -1703,6 +1892,8 @@ mod tests {
         let hashes = ArtifactContractHashes {
             artifact_hash: Some(&artifact_hash),
             abi_hash: Some(&abi_hash),
+            abi_sha256: None,
+            executable_ls_idl_bound: None,
             build_recipe_hash: None,
             audit_report_hash: Some(&audit_report_hash),
         };

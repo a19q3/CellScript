@@ -104,12 +104,11 @@ impl Optimizer {
                 ty: let_stmt.ty.clone(),
                 value: {
                     let value = self.optimize_expr(&let_stmt.value)?;
-                    if !let_stmt.is_mut {
-                        if let BindingPattern::Name(name) = &let_stmt.pattern {
-                            if let Some(constant) = self.try_eval_const(&value) {
-                                self.insert_const(name, constant);
-                            }
-                        }
+                    if !let_stmt.is_mut
+                        && let BindingPattern::Name(name) = &let_stmt.pattern
+                        && let Some(constant) = self.try_eval_const(&value)
+                    {
+                        self.insert_const(name, constant);
                     }
                     value
                 },
@@ -182,10 +181,10 @@ impl Optimizer {
             Expr::Binary(bin) => {
                 let left = self.optimize_expr(&bin.left)?;
                 let right = self.optimize_expr(&bin.right)?;
-                if let (Some(left_const), Some(right_const)) = (self.try_eval_const(&left), self.try_eval_const(&right)) {
-                    if let Some(value) = fold_binary(bin.op, &left_const, &right_const) {
-                        return Ok(const_to_expr(value));
-                    }
+                if let (Some(left_const), Some(right_const)) = (self.try_eval_const(&left), self.try_eval_const(&right))
+                    && let Some(value) = fold_binary(bin.op, &left_const, &right_const)
+                {
+                    return Ok(const_to_expr(value));
                 }
                 if let Some(simplified) = simplify_binary(bin.op, &left, &right) {
                     return Ok(simplified);
@@ -197,12 +196,11 @@ impl Optimizer {
                 if let Some(value) = self.try_eval_const(&inner).and_then(|value| fold_unary(unary.op, &value)) {
                     return Ok(const_to_expr(value));
                 }
-                if unary.op == UnaryOp::Not {
-                    if let Expr::Unary(nested) = &inner {
-                        if nested.op == UnaryOp::Not {
-                            return Ok(*nested.expr.clone());
-                        }
-                    }
+                if unary.op == UnaryOp::Not
+                    && let Expr::Unary(nested) = &inner
+                    && nested.op == UnaryOp::Not
+                {
+                    return Ok(*nested.expr.clone());
                 }
                 Ok(Expr::Unary(UnaryExpr { op: unary.op, expr: Box::new(inner), span: unary.span }))
             }
@@ -212,10 +210,10 @@ impl Optimizer {
                     args.push(self.optimize_expr(arg)?);
                 }
                 let func = self.optimize_expr(&call.func)?;
-                if let Expr::Identifier(name) = &func {
-                    if let Some(inlined) = self.inline_call(name, &args)? {
-                        return Ok(inlined);
-                    }
+                if let Expr::Identifier(name) = &func
+                    && let Some(inlined) = self.inline_call(name, &args)?
+                {
+                    return Ok(inlined);
                 }
                 Ok(Expr::Call(CallExpr { func: Box::new(func), type_args: call.type_args.clone(), args, span: call.span }))
             }
@@ -360,10 +358,10 @@ impl Optimizer {
 
     fn seed_top_level_constants(&mut self, module: &Module) {
         for item in &module.items {
-            if let Item::Const(def) = item {
-                if let Some(value) = self.try_eval_const(&def.value) {
-                    self.insert_const(&def.name, value);
-                }
+            if let Item::Const(def) = item
+                && let Some(value) = self.try_eval_const(&def.value)
+            {
+                self.insert_const(&def.name, value);
             }
         }
     }

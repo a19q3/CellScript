@@ -4,7 +4,7 @@
 </p>
 
 [![CellScript CI](https://github.com/CellScript-Labs/CellScript/actions/workflows/ci.yml/badge.svg)](https://github.com/CellScript-Labs/CellScript/actions/workflows/ci.yml)
-[![Release: v0.22.0](https://img.shields.io/badge/release-v0.22.0-2f6f4e.svg)](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.22.0)
+[![Release: v0.24.0](https://img.shields.io/badge/release-v0.24.0-2f6f4e.svg)](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.24.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE-MIT)
 [![Rust 1.97.1](https://img.shields.io/badge/rust-1.97.1-orange.svg)](Cargo.toml)
 [![Targets: CKB](https://img.shields.io/badge/targets-CKB-2f6f4e.svg)](#target-profiles)
@@ -20,15 +20,10 @@ artifacts, together with typed metadata for auditing, policy checks, schema
 binding, and scheduler-aware execution.
 
 The current stable release is
-[CellScript v0.22.0](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.22.0).
-See the [0.22 release notes](docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md)
-for its shipped surface, evidence boundaries, and migration checklist.
-The completed 0.23 implementation scope is tracked in the
-[0.23 release notes](docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md); those
-notes are not a stable-release claim. Development on `nightly-0.24` implements
-the independently checked artifact and executable-test boundary described in
-the [0.24 release notes](docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md) and
-[0.24 roadmap](roadmap/CELLSCRIPT_0_24_ROADMAP.md).
+[CellScript v0.24.0](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.24.0).
+The [0.24 release notes](docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md)
+describe its verified-artifact, executable-test, integration, and explicitly
+deferred ecosystem boundaries.
 
 In this README, metadata means machine-readable semantic facts emitted by the
 compiler: schema layout, Cell effects, access summaries, source hashes,
@@ -99,8 +94,8 @@ cargo run --locked -p cellscript-fiber-adapter --bin cellscript-fiber -- \
 ```
 
 The supported policy compositions and deliberate protocol non-goals are
-documented in `roadmap/CELLSCRIPT_0_22_FIBER_NATIVE_SUPPORT_PLAN.md`; runnable
-source examples live in `examples/fiber/`.
+documented in [the Fiber example guide](examples/fiber/README.md); runnable
+source examples live in the same directory.
 
 `check` does not modify Fiber or CKB. `enable` can resolve a live deployment and
 asset Cell, while `materialize-config` replaces only `ckb.udt_whitelist` in an
@@ -108,8 +103,8 @@ existing native Fiber YAML file; the operator still controls the required node
 restart. The exact v1 artifact has passed bounded local-devnet runs of Fiber's
 official multi-hop UDT payment and pending-TLC watchtower force-close suites.
 Production and general-support claims still require the clean pinned full
-matrix described in
-`roadmap/CELLSCRIPT_0_22_FIBER_NATIVE_SUPPORT_PLAN.md`.
+matrix described in [the Fiber example guide](examples/fiber/README.md) and
+[gate policy](docs/CELLSCRIPT_GATE_POLICY.md).
 
 ## Quick Start
 
@@ -122,7 +117,7 @@ curl -fsSL https://raw.githubusercontent.com/CellScript-Labs/CellScript/main/scr
 Or pin a specific version:
 
 ```bash
-CELLSCRIPT_VERSION=0.22.0 curl -fsSL https://raw.githubusercontent.com/CellScript-Labs/CellScript/main/scripts/install.sh | sh
+CELLSCRIPT_VERSION=0.24.0 curl -fsSL https://raw.githubusercontent.com/CellScript-Labs/CellScript/main/scripts/install.sh | sh
 ```
 
 The release page publishes `SHA256SUMS` alongside all four platform archives.
@@ -130,7 +125,7 @@ The release page publishes `SHA256SUMS` alongside all four platform archives.
 Build the exact published source instead:
 
 ```bash
-git clone --branch v0.22.0 --depth 1 https://github.com/CellScript-Labs/CellScript.git
+git clone --branch v0.24.0 --depth 1 https://github.com/CellScript-Labs/CellScript.git
 cd CellScript
 cargo install --locked --path .
 ```
@@ -522,24 +517,18 @@ or CellFabric intent engine.
 - [Collections matrix example](docs/examples/collections_matrix.md)
 - [Deployment manifest example](docs/examples/deployment_manifest.md)
 - [Output append example](docs/examples/output_append.md)
-- [0.20 generated builder roadmap](docs/archive/0.20/CELLSCRIPT_0_20_ROADMAP.md)
-- [Roadmap overview](roadmap/CELLSCRIPT_ROADMAP.md)
 - [0.13 release scope](docs/releases/CELLSCRIPT_0_13_RELEASE_SCOPE.md)
-- [0.14 roadmap](roadmap/CELLSCRIPT_0_14_ROADMAP.md)
 - [0.14 release notes](docs/releases/CELLSCRIPT_0_14_RELEASE_NOTES.md)
-- [0.15 roadmap](roadmap/CELLSCRIPT_0_15_ROADMAP.md)
 - [0.15 release notes](docs/releases/CELLSCRIPT_0_15_RELEASE_NOTES.md)
-- [0.16 roadmap](roadmap/CELLSCRIPT_0_16_ROADMAP.md)
 - [0.16 release notes](docs/releases/CELLSCRIPT_0_16_RELEASE_NOTES.md)
-- [0.17 roadmap](docs/archive/0.17/CELLSCRIPT_0_17_ROADMAP.md)
-- [0.18 roadmap](docs/archive/0.18/CELLSCRIPT_0_18_ROADMAP.md)
-- [0.19 roadmap](docs/archive/0.19/CELLSCRIPT_0_19_ROADMAP.md)
 - [0.20 release notes](docs/releases/CELLSCRIPT_0_20_RELEASE_NOTES.md)
 - [0.21 release notes](docs/releases/CELLSCRIPT_0_21_RELEASE_NOTES.md)
 - [0.22 release notes](docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md)
-- [0.22 type and set theory roadmap](roadmap/CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md)
+- [0.23 release notes](docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md)
+- [0.24 release notes](docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md)
 - [0.22 bounded Fiber interoperability guide](examples/fiber/README.md)
 - [Agentic Loops and cellscript-mcp tutorial](docs/wiki/Tutorial-13-Agentic-Loops-and-cellscript-mcp.md)
+- [LS-IDL for CKB Lock Scripts tutorial](docs/wiki/Tutorial-15-LS-IDL-for-CKB-Lock-Scripts.md)
 
 ---
 
@@ -641,7 +630,7 @@ CKB cycle/capacity estimates.
 |---|---|---|
 | **CLI** | `cli/` + `main.rs` | `cellc` binary with all subcommands |
 | **LSP** | `lsp/` + `lsp/server.rs` | In-process `LspServer` + `tower-lsp` JSON-RPC over stdio (`cellc --lsp`) |
-| **VS Code** | `editors/vscode-cellscript/` | Shells out to `cellc` for LSP startup, reports, action-builder generation, and package/registry verification |
+| **VS Code** | `editors/vscode-cellscript/` | Shells out to `cellc` for LSP startup, reports, action-builder generation, package/registry verification, and LS-IDL validate/bind/fetch flows |
 | **MCP server** | `cellscript-mcp` (separate bin) | Read-only Model Context Protocol JSON-RPC server that exposes compiler reports and explain commands to MCP-aware agents (Claude Code, Cursor, Aider, Codex, etc.) |
 | **Formatter** | `fmt/` | Idempotent formatter for `cellc fmt` and LSP |
 | **Doc generator** | `docgen/` | HTML/Markdown/JSON docs from AST + metadata |
@@ -737,7 +726,7 @@ policy defaults:
 [package]
 edition = "2026"
 name = "token"
-version = "0.22.0"
+version = "0.25.0"
 entry = "src/main.cell"
 source_roots = ["src"]
 
@@ -814,6 +803,8 @@ Non-CellScript artifact profiles still fail closed.
   test-only dependency, and explicit CKB-environment graph
 - `examples/scenario_basics` — runnable positive and exact-negative scenarios
   under both simulator and CKB-VM, plus a four-file artifact walkthrough
+- `examples/registry_ls_idl` — runnable LS-IDL validation, executable binding,
+  Registry bundle scaffolding, exact-byte fetch, and compatibility vectors
 - `cellc info --json` — exposes package metadata for CI and tooling
 - `cellc package verify --json` — fails closed when `Cell.toml`, source hash,
   dependency resolution, or build identity disagree with `Cell.lock`; run an
@@ -904,6 +895,13 @@ the manual, CI, recovery, and external-wallet path.
   `cellscript_source` dependency-resolving; non-CellScript artifact profiles
   remain discoverable through explicit artifact commands and fail closed in
   package resolution
+- Deployable CKB Lock Scripts may attach the versioned
+  `cellscript-registry-ls-idl-interface-v1` profile. Registry admission binds
+  `SHA-256` of the exact IDL bytes to the executable's final 32 bytes, and
+  public reads resolve those bytes by chain-verified Script identity. This is
+  an interface-identity check, not proof of implementation correctness or a
+  security audit. See the
+  [LS-IDL Registry profile](docs/CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md).
 - Git dependencies are explicit remote source fetches; treat them as
   review-required inputs, not the registry production path
 
@@ -957,6 +955,7 @@ the manual, CI, recovery, and external-wallet path.
 | `cellc opt-report` | Compare O0..O3 artifact size and constraints status |
 | `cellc receipt` / `sign-receipt` / `verify-receipt` | Emit, sign, and verify compile receipts over metadata/artifact hashes |
 | `cellc verify-artifact` | Independently check an ELF, metadata, lowering record, and source map; report VM/chain evidence separately; optionally bind a receipt |
+| `cellc artifact ls-idl validate\|bind\|fetch\|bundle` | Validate byte-exact LS-IDL, bind its SHA-256 to a CKB executable, resolve it by deployed Script identity, or scaffold a publish-ready Registry bundle |
 | `cellc test --backend simulator\|ckb-vm\|all` | Execute fail-closed package scenarios with exact outcomes and evidence tiers (`--no-run` is compile-only) |
 | `cellc doc` | Generate API and audit documentation |
 | `cellc fmt` | Format `.cell` sources or check formatting |

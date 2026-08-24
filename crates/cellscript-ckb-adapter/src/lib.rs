@@ -1802,43 +1802,6 @@ impl CellScriptAdapter {
         Ok(Self { client })
     }
 
-    // ---- Deploy workflow ----
-
-    /// Automatic collection, signing, and submission are deliberately disabled.
-    ///
-    /// Use [`build_deploy_transaction`] with an RPC-verified
-    /// [`DeployArtifactSpec`], sign the resulting transaction externally, and
-    /// submit the signed transaction through [`Self::submit_transaction`].
-    #[deprecated(note = "automatic deployment has no signer; use build_deploy_transaction and an external CKB wallet")]
-    pub fn deploy_artifact(
-        &self,
-        name: &str,
-        artifact_binary: Bytes,
-        deployer_lock: Script,
-        fee_shannons: u64,
-    ) -> Result<(DeploymentManifest, TransactionLifecycleEvidence)> {
-        let _ = (self, name, artifact_binary, deployer_lock, fee_shannons);
-        bail!(
-            "automatic deployment is disabled because the adapter has no signer; build an unsigned transaction with build_deploy_transaction(), sign it externally, then submit the signed transaction"
-        )
-    }
-
-    /// Legacy automatic-capacity build entry point; fails closed because live
-    /// Cell collection has no implemented ownership or coin-selection policy.
-    #[deprecated(note = "capacity collection is undefined; use build_deploy_transaction with a verified DeployArtifactSpec")]
-    pub fn build_deploy(
-        &self,
-        name: &str,
-        artifact_binary: Bytes,
-        deployer_lock: Script,
-        fee_shannons: u64,
-    ) -> Result<(TransactionView, ResolvedDeployEvidence)> {
-        let _ = (self, name, artifact_binary, deployer_lock, fee_shannons);
-        bail!(
-            "automatic capacity collection is disabled; resolve and verify a live capacity Cell, then call build_deploy_transaction()"
-        )
-    }
-
     // ---- Action workflow ----
 
     /// Load an action plan from a file path.

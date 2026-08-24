@@ -1,11 +1,6 @@
 //! CellScript - Domain-specific language compiler for CKB blockchain
 //! Currently the backend can output RISC-V assembly or ELF artifacts.
 
-// Rust 2024 makes let-chains available, so Clippy 1.97 newly proposes folding
-// a large legacy control-flow surface. Keep that mechanical rewrite separate
-// from the edition rollout so each semantic branch remains reviewable.
-#![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::ptr_arg, clippy::too_many_arguments)]
-
 pub(crate) mod aggregate_lowering;
 pub mod assumptions;
 pub mod ast;
@@ -43,6 +38,7 @@ pub mod resolve;
 pub mod runtime_errors;
 pub mod simulate;
 pub mod stdlib;
+#[cfg(not(feature = "wasm"))]
 mod typed_semantics;
 pub mod types;
 mod verified_artifact;
@@ -414,10 +410,15 @@ pub struct CompileMetadata {
     pub edition: CellScriptEdition,
     pub compatibility_profile: ResolvedCompatibilityProfile,
     pub module: String,
+    // Full interface and typed-operation records are native artifact evidence.
+    // The bounded browser summary omits them so the metadata-only Playground
+    // does not ship a second copy of their large construction/serde surface.
+    #[cfg_attr(feature = "wasm", serde(skip))]
     #[serde(default)]
     pub public_interface: interface::PackageInterface,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub interface_hash: String,
+    #[cfg_attr(feature = "wasm", serde(skip))]
     #[serde(default)]
     pub typed_semantics: cellscript_artifact_checker::TypedSemanticRecord,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -441,6 +442,7 @@ pub struct CompileMetadata {
     pub capability_registry: CapabilityRegistryMetadata,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enum_layouts: Vec<PayloadEnumLayoutMetadata>,
+    #[cfg_attr(feature = "wasm", serde(skip))]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub generic_instantiations: Vec<GenericInstantiationMetadata>,
     pub runtime: RuntimeMetadata,
@@ -1163,75 +1165,82 @@ pub fn validate_compile_metadata(metadata: &CompileMetadata, artifact_format: Ar
             metadata.compiler_version, VERSION
         )));
     }
-    if metadata.public_interface.schema != interface::INTERFACE_SCHEMA
-        || metadata.public_interface.version != interface::INTERFACE_SCHEMA_VERSION
-        || metadata.public_interface.module != metadata.module
+    #[cfg(not(feature = "wasm"))]
     {
-        return Err(CompileError::without_span(
-            "compile metadata public interface has an invalid schema, version, or module identity",
-        ));
-    }
-    let expected_interface_hash = interface::hash(&metadata.public_interface);
-    if metadata.interface_hash != expected_interface_hash {
-        return Err(CompileError::without_span(format!(
-            "compile metadata interface_hash '{}' does not match canonical public interface '{}'",
-            metadata.interface_hash, expected_interface_hash
-        )));
-    }
-    if metadata.typed_semantics.schema != cellscript_artifact_checker::TYPED_SEMANTICS_SCHEMA
-        || metadata.typed_semantics.version != cellscript_artifact_checker::TYPED_SEMANTICS_VERSION
-        || metadata.typed_semantics.module != metadata.module
-        || metadata.typed_semantics.interface_hash != metadata.interface_hash
-    {
-        return Err(CompileError::without_span(
-            "compile metadata typed semantics has an invalid schema, version, module, or interface identity",
-        ));
-    }
-    let expected_typed_semantics_hash =
-        cellscript_artifact_checker::canonical_hash(cellscript_artifact_checker::TYPED_SEMANTICS_SCHEMA, &metadata.typed_semantics)
-            .map_err(|error| CompileError::without_span(format!("failed to hash typed semantics: {error}")))?;
-    if metadata.typed_semantics_hash != expected_typed_semantics_hash {
-        return Err(CompileError::without_span(format!(
-            "compile metadata typed_semantics_hash '{}' does not match canonical typed semantics '{}'",
-            metadata.typed_semantics_hash, expected_typed_semantics_hash
-        )));
-    }
-    let mut previous_generic_identity = None::<&str>;
-    for instantiation in &metadata.generic_instantiations {
-        if instantiation.schema != "cellscript-generic-instantiation-v1"
-            || instantiation.version != 1
-            || instantiation.value_ability_registry_version != ast::ValueAbility::REGISTRY_VERSION
-            || !instantiation.constraints_verified
-            || instantiation.module.is_empty()
-            || instantiation.type_arguments.is_empty()
-            || !matches!(instantiation.kind.as_str(), "struct" | "enum" | "function")
+        if metadata.public_interface.schema != interface::INTERFACE_SCHEMA
+            || metadata.public_interface.version != interface::INTERFACE_SCHEMA_VERSION
+            || metadata.public_interface.module != metadata.module
         {
+            return Err(CompileError::without_span(
+                "compile metadata public interface has an invalid schema, version, or module identity",
+            ));
+        }
+        let expected_interface_hash = interface::hash(&metadata.public_interface);
+        if metadata.interface_hash != expected_interface_hash {
             return Err(CompileError::without_span(format!(
-                "generic instantiation metadata '{}' has an invalid schema, registry version, kind, or verification state",
-                instantiation.identity
+                "compile metadata interface_hash '{}' does not match canonical public interface '{}'",
+                metadata.interface_hash, expected_interface_hash
             )));
         }
-        let Some((template, args)) = generics::decode_monomorph_name(&instantiation.concrete_name) else {
-            return Err(CompileError::without_span(format!(
-                "generic instantiation '{}' has a non-canonical concrete name",
-                instantiation.identity
-            )));
-        };
-        let expected_identity = format!("{}::{}<{}>", instantiation.module, template, args.join(","));
-        if template != instantiation.template
-            || args != instantiation.type_arguments
-            || instantiation.identity != expected_identity
-            || !instantiation.identity_includes_phantom_arguments
+        if metadata.typed_semantics.schema != cellscript_artifact_checker::TYPED_SEMANTICS_SCHEMA
+            || metadata.typed_semantics.version != cellscript_artifact_checker::TYPED_SEMANTICS_VERSION
+            || metadata.typed_semantics.module != metadata.module
+            || metadata.typed_semantics.interface_hash != metadata.interface_hash
         {
+            return Err(CompileError::without_span(
+                "compile metadata typed semantics has an invalid schema, version, module, or interface identity",
+            ));
+        }
+        let expected_typed_semantics_hash = cellscript_artifact_checker::canonical_hash(
+            cellscript_artifact_checker::TYPED_SEMANTICS_SCHEMA,
+            &metadata.typed_semantics,
+        )
+        .map_err(|error| CompileError::without_span(format!("failed to hash typed semantics: {error}")))?;
+        if metadata.typed_semantics_hash != expected_typed_semantics_hash {
             return Err(CompileError::without_span(format!(
-                "generic instantiation '{}' does not match its canonical monomorphization identity",
-                instantiation.identity
+                "compile metadata typed_semantics_hash '{}' does not match canonical typed semantics '{}'",
+                metadata.typed_semantics_hash, expected_typed_semantics_hash
             )));
         }
-        if previous_generic_identity.is_some_and(|previous| previous >= instantiation.identity.as_str()) {
-            return Err(CompileError::without_span("generic instantiation metadata must be unique and sorted by canonical identity"));
+        let mut previous_generic_identity = None::<&str>;
+        for instantiation in &metadata.generic_instantiations {
+            if instantiation.schema != "cellscript-generic-instantiation-v1"
+                || instantiation.version != 1
+                || instantiation.value_ability_registry_version != ast::ValueAbility::REGISTRY_VERSION
+                || !instantiation.constraints_verified
+                || instantiation.module.is_empty()
+                || instantiation.type_arguments.is_empty()
+                || !matches!(instantiation.kind.as_str(), "struct" | "enum" | "function")
+            {
+                return Err(CompileError::without_span(format!(
+                    "generic instantiation metadata '{}' has an invalid schema, registry version, kind, or verification state",
+                    instantiation.identity
+                )));
+            }
+            let Some((template, args)) = generics::decode_monomorph_name(&instantiation.concrete_name) else {
+                return Err(CompileError::without_span(format!(
+                    "generic instantiation '{}' has a non-canonical concrete name",
+                    instantiation.identity
+                )));
+            };
+            let expected_identity = format!("{}::{}<{}>", instantiation.module, template, args.join(","));
+            if template != instantiation.template
+                || args != instantiation.type_arguments
+                || instantiation.identity != expected_identity
+                || !instantiation.identity_includes_phantom_arguments
+            {
+                return Err(CompileError::without_span(format!(
+                    "generic instantiation '{}' does not match its canonical monomorphization identity",
+                    instantiation.identity
+                )));
+            }
+            if previous_generic_identity.is_some_and(|previous| previous >= instantiation.identity.as_str()) {
+                return Err(CompileError::without_span(
+                    "generic instantiation metadata must be unique and sorted by canonical identity",
+                ));
+            }
+            previous_generic_identity = Some(&instantiation.identity);
         }
-        previous_generic_identity = Some(&instantiation.identity);
     }
     let primitive_assurance = (metadata.compatibility_profile.primitive_assurance != "default")
         .then_some(metadata.compatibility_profile.primitive_assurance.as_str());
@@ -4161,13 +4170,13 @@ fn validate_template_layout_metadata(metadata: &CompileMetadata) -> Result<()> {
                 layout.type_name
             )));
         }
-        if let Some(root_hash) = layout.root_hash.as_deref() {
-            if !is_canonical_hash_hex(root_hash) {
-                return Err(CompileError::without_span(format!(
-                    "metadata template_layout '{}' root_hash '{}' is not a canonical 32-byte lowercase hex hash",
-                    layout.type_name, root_hash
-                )));
-            }
+        if let Some(root_hash) = layout.root_hash.as_deref()
+            && !is_canonical_hash_hex(root_hash)
+        {
+            return Err(CompileError::without_span(format!(
+                "metadata template_layout '{}' root_hash '{}' is not a canonical 32-byte lowercase hex hash",
+                layout.type_name, root_hash
+            )));
         }
         if !is_canonical_hash_hex(&layout.template_layout_hash) {
             return Err(CompileError::without_span(format!(
@@ -4600,12 +4609,10 @@ impl ActionMetadata {
     pub fn scheduler_witness_bytes(&self) -> Result<Vec<u8>> {
         let scheduler_witness_hex = non_empty_metadata_field(&self.scheduler_witness_hex);
         let scheduler_witness_molecule_hex = non_empty_metadata_field(&self.scheduler_witness_molecule_hex);
-        if let (Some(primary), Some(alias)) = (scheduler_witness_hex, scheduler_witness_molecule_hex) {
-            if primary != alias {
-                return Err(CompileError::without_span(
-                    "conflicting scheduler_witness_hex and scheduler_witness_molecule_hex metadata",
-                ));
-            }
+        if let (Some(primary), Some(alias)) = (scheduler_witness_hex, scheduler_witness_molecule_hex)
+            && primary != alias
+        {
+            return Err(CompileError::without_span("conflicting scheduler_witness_hex and scheduler_witness_molecule_hex metadata"));
         }
         if let Some(scheduler_witness_hex) = scheduler_witness_hex {
             if self.scheduler_witness_abi != SCHEDULER_WITNESS_ABI_MOLECULE {
@@ -6166,10 +6173,10 @@ fn project_frontend_diagnostics(project: &LoadedProject, options: &CompileOption
         }
         let module_error_start = diagnostics.len();
 
-        if options.is_primitive_strict_015() {
-            if let Err(error) = check_primitive_strict_015(&module.ast) {
-                diagnostics.push(attach_file_if_missing(error, &module.path));
-            }
+        if options.is_primitive_strict_015()
+            && let Err(error) = check_primitive_strict_015(&module.ast)
+        {
+            diagnostics.push(attach_file_if_missing(error, &module.path));
         }
 
         diagnostics.extend(
@@ -6184,10 +6191,10 @@ fn project_frontend_diagnostics(project: &LoadedProject, options: &CompileOption
 
         let module_has_errors =
             diagnostics[module_error_start..].iter().any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error);
-        if !module_has_errors {
-            if let Err(errors) = ir::generate_with_resolver_diagnostics(&module.ast, &project.resolver, &module.ast.name) {
-                diagnostics.extend(attach_default_file(errors, &module.path));
-            }
+        if !module_has_errors
+            && let Err(errors) = ir::generate_with_resolver_diagnostics(&module.ast, &project.resolver, &module.ast.name)
+        {
+            diagnostics.extend(attach_default_file(errors, &module.path));
         }
     }
     diagnostics
@@ -6764,11 +6771,11 @@ fn compile_file_with_entry_scope<P: AsRef<Utf8Path>>(
 
     // Incremental compilation: skip recompilation if cache hit and source unchanged.
     // Cache is only used for default entry scope (no --entry-action / --entry-lock).
-    if entry_scope.is_none() {
-        if let Some(cached) = incremental_cache_hit(&path, &cache_units, &options) {
-            validate_executable_surface(&cached.metadata, executable_surface_policy)?;
-            return Ok(cached);
-        }
+    if entry_scope.is_none()
+        && let Some(cached) = incremental_cache_hit(&path, &cache_units, &options)
+    {
+        validate_executable_surface(&cached.metadata, executable_surface_policy)?;
+        return Ok(cached);
     }
 
     let project = load_project_for_entry(&path, None)?;
@@ -6836,13 +6843,13 @@ fn incremental_cache_hit(path: &Utf8Path, cache_units: &[SourceUnitMetadata], op
     let metadata_path = entry_dir.join("metadata.json");
     let lowering_record_path = entry_dir.join("lowering.json");
     let source_map_path = entry_dir.join("sourcemap.json");
+    let source_hash_file = entry_dir.join("source_hash");
 
-    if !artifact_path.exists() || !metadata_path.exists() {
+    if ![&artifact_path, &metadata_path, &source_hash_file].into_iter().all(|path| incremental_cache_file_is_regular(path)) {
         return None;
     }
 
     // Verify the source content hash still matches.
-    let source_hash_file = entry_dir.join("source_hash");
     let cached_source_hash = std::fs::read_to_string(&source_hash_file).ok()?;
     let current_source_hash = source_set_hash(cache_units);
     if cached_source_hash != current_source_hash {
@@ -6854,6 +6861,9 @@ fn incremental_cache_hit(path: &Utf8Path, cache_units: &[SourceUnitMetadata], op
     let metadata_json = std::fs::read_to_string(&metadata_path).ok()?;
     let metadata: CompileMetadata = serde_json::from_str(&metadata_json).ok()?;
     let (verified_lowering_record, source_artifact_map) = if metadata.artifact_format == "RISC-V ELF" {
+        if !incremental_cache_file_is_regular(&lowering_record_path) || !incremental_cache_file_is_regular(&source_map_path) {
+            return None;
+        }
         let lowering_bytes = std::fs::read(&lowering_record_path).ok()?;
         let source_map_bytes = std::fs::read(&source_map_path).ok()?;
         (
@@ -6890,7 +6900,7 @@ fn incremental_cache_hit(path: &Utf8Path, cache_units: &[SourceUnitMetadata], op
         cache_hit: true,
     };
     result.validate().ok()?;
-    let _ = std::fs::write(entry_dir.join(".last_used"), []);
+    refresh_incremental_cache_recency(&entry_dir);
     prune_incremental_cache_entries(&cache_dir, &cache_key, max_entries);
     Some(result)
 }
@@ -6905,32 +6915,63 @@ fn incremental_cache_store(path: &Utf8Path, cache_units: &[SourceUnitMetadata], 
     let cache_key = incremental_cache_key(cache_units, options);
     let entry_dir = cache_dir.join(&cache_key);
 
-    let _ = std::fs::create_dir_all(&entry_dir);
-    let Ok(entry_metadata) = std::fs::symlink_metadata(&entry_dir) else { return };
-    if !incremental_cache_components_are_safe(&cache_dir) || entry_metadata.file_type().is_symlink() || !entry_metadata.is_dir() {
-        return;
-    }
-
-    let _ = std::fs::write(entry_dir.join("artifact"), &result.artifact_bytes);
-    let metadata_json = serde_json::to_string_pretty(&result.metadata).unwrap_or_default();
-    let _ = std::fs::write(entry_dir.join("metadata.json"), metadata_json);
+    let mut files = vec![
+        ("artifact", result.artifact_bytes.clone()),
+        (
+            "metadata.json",
+            match serde_json::to_vec_pretty(&result.metadata) {
+                Ok(bytes) => bytes,
+                Err(_) => return,
+            },
+        ),
+        ("source_hash", source_set_hash(cache_units).into_bytes()),
+        (".last_used", Vec::new()),
+    ];
     if let Some(record) = &result.verified_lowering_record {
-        if let Ok(bytes) = cellscript_artifact_checker::canonical_bytes(record) {
-            let _ = std::fs::write(entry_dir.join("lowering.json"), bytes);
-        }
+        let Ok(bytes) = cellscript_artifact_checker::canonical_bytes(record) else { return };
+        files.push(("lowering.json", bytes));
     }
     if let Some(source_map) = &result.source_artifact_map {
-        if let Ok(bytes) = cellscript_artifact_checker::canonical_bytes(source_map) {
-            let _ = std::fs::write(entry_dir.join("sourcemap.json"), bytes);
+        let Ok(bytes) = cellscript_artifact_checker::canonical_bytes(source_map) else { return };
+        files.push(("sourcemap.json", bytes));
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(cache_units) {
+        files.push(("source_units.json", bytes));
+    }
+
+    if !create_incremental_cache_components(&cache_dir) || std::fs::create_dir(&entry_dir).is_err() {
+        return;
+    }
+    if !files.into_iter().all(|(name, bytes)| write_new_incremental_cache_file(&entry_dir.join(name), &bytes)) {
+        if std::fs::symlink_metadata(&entry_dir).is_ok_and(|metadata| !metadata.file_type().is_symlink() && metadata.is_dir()) {
+            let _ = std::fs::remove_dir_all(&entry_dir);
         }
+        return;
     }
-    let source_hash = source_set_hash(cache_units);
-    let _ = std::fs::write(entry_dir.join("source_hash"), &source_hash);
-    if let Ok(cache_units_json) = serde_json::to_string_pretty(cache_units) {
-        let _ = std::fs::write(entry_dir.join("source_units.json"), cache_units_json);
-    }
-    let _ = std::fs::write(entry_dir.join(".last_used"), []);
     prune_incremental_cache_entries(&cache_dir, &cache_key, max_entries);
+}
+
+fn incremental_cache_file_is_regular(path: &Utf8Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.file_type().is_symlink() && metadata.is_file())
+}
+
+fn write_new_incremental_cache_file(path: &Utf8Path, bytes: &[u8]) -> bool {
+    use std::io::Write;
+
+    let Ok(mut file) = std::fs::OpenOptions::new().write(true).create_new(true).open(path) else { return false };
+    file.write_all(bytes).is_ok()
+}
+
+fn refresh_incremental_cache_recency(entry_dir: &Utf8Path) {
+    let nonce =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|duration| duration.as_nanos()).unwrap_or_default();
+    let temporary = entry_dir.join(format!(".cellscript-cache-touch-{}-{nonce}.tmp", std::process::id()));
+    if !write_new_incremental_cache_file(&temporary, &[]) {
+        return;
+    }
+    if std::fs::rename(&temporary, entry_dir.join(".last_used")).is_err() {
+        let _ = std::fs::remove_file(temporary);
+    }
 }
 
 const DEFAULT_INCREMENTAL_CACHE_MAX_ENTRIES: usize = 32;
@@ -6945,9 +6986,15 @@ fn incremental_cache_max_entries() -> usize {
 }
 
 fn cache_entry_recency(path: &std::path::Path) -> std::time::SystemTime {
-    std::fs::metadata(path.join(".last_used"))
-        .and_then(|metadata| metadata.modified())
-        .or_else(|_| std::fs::metadata(path).and_then(|metadata| metadata.modified()))
+    std::fs::symlink_metadata(path.join(".last_used"))
+        .and_then(|metadata| {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "unsafe incremental-cache recency marker"))
+            } else {
+                metadata.modified()
+            }
+        })
+        .or_else(|_| std::fs::symlink_metadata(path).and_then(|metadata| metadata.modified()))
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
 }
 
@@ -7006,6 +7053,27 @@ fn incremental_cache_components_are_safe(cache_dir: &Utf8Path) -> bool {
         Ok(metadata) => !metadata.file_type().is_symlink() && metadata.is_dir(),
         Err(error) => error.kind() == std::io::ErrorKind::NotFound,
     })
+}
+
+fn create_incremental_cache_components(cache_dir: &Utf8Path) -> bool {
+    let Some(build_dir) = cache_dir.parent() else { return false };
+    let Some(cell_dir) = build_dir.parent() else { return false };
+    if cache_dir.file_name() != Some("cache") || build_dir.file_name() != Some("build") || cell_dir.file_name() != Some(".cell") {
+        return false;
+    }
+    for path in [cell_dir, build_dir, cache_dir] {
+        match std::fs::create_dir(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let Ok(metadata) = std::fs::symlink_metadata(path) else { return false };
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
+    }
+    incremental_cache_components_are_safe(cache_dir)
 }
 
 fn incremental_cache_key(cache_units: &[SourceUnitMetadata], options: &CompileOptions) -> String {
@@ -7351,6 +7419,7 @@ pub fn source_map_output_path_from_artifact(artifact_path: &Utf8Path) -> Utf8Pat
     artifact_path.with_file_name(format!("{}.sourcemap.json", file_name))
 }
 
+#[cfg(not(feature = "wasm"))]
 fn generic_instantiation_metadata(ir: &ir::IrModule) -> Vec<GenericInstantiationMetadata> {
     let mut entries = BTreeMap::<String, GenericInstantiationMetadata>::new();
     let mut insert = |kind: &str, concrete_name: &str, fixed_layout_required: bool| {
@@ -7387,6 +7456,7 @@ fn generic_instantiation_metadata(ir: &ir::IrModule) -> Vec<GenericInstantiation
     entries.into_values().collect()
 }
 
+#[cfg(not(feature = "wasm"))]
 fn bind_public_interface(metadata: &mut CompileMetadata, ast: &ast::Module) {
     let mut linked_instantiations = HashMap::new();
     for item in &ast.items {
@@ -7422,6 +7492,15 @@ fn bind_public_interface(metadata: &mut CompileMetadata, ast: &ast::Module) {
     }
     metadata.public_interface = interface::build(ast, metadata);
     metadata.interface_hash = interface::hash(&metadata.public_interface);
+}
+
+#[cfg(feature = "wasm")]
+fn bind_public_interface(metadata: &mut CompileMetadata, ast: &ast::Module) {
+    for warning in visibility_migration_diagnostics(ast) {
+        if !metadata.constraints.warnings.contains(&warning.message) {
+            metadata.constraints.warnings.push(warning.message.clone());
+        }
+    }
 }
 
 pub fn visibility_migration_diagnostics(module: &ast::Module) -> Vec<CompileError> {
@@ -7477,6 +7556,7 @@ pub fn visibility_migration_diagnostics(module: &ast::Module) -> Vec<CompileErro
     }))]
 }
 
+#[cfg(not(feature = "wasm"))]
 fn bind_typed_semantics(metadata: &mut CompileMetadata, ir: &ir::IrModule) {
     let mut typed = typed_semantics::build(ir, metadata);
     typed.interface_hash = metadata.interface_hash.clone();
@@ -7486,6 +7566,9 @@ fn bind_typed_semantics(metadata: &mut CompileMetadata, ir: &ir::IrModule) {
             .expect("compiler-emitted typed semantics are serializable");
     metadata.typed_semantics = typed;
 }
+
+#[cfg(feature = "wasm")]
+fn bind_typed_semantics(_metadata: &mut CompileMetadata, _ir: &ir::IrModule) {}
 
 fn compile_metadata_from_ir(
     ir: &ir::IrModule,
@@ -7553,7 +7636,10 @@ fn compile_metadata_from_ir(
     let borrow_regions = borrow_region_metadata(ir);
     let capability_proofs = capability_proof_metadata(ir);
     let compatibility_profile = resolve_compatibility_profile(edition, target_profile.name(), primitive_assurance);
+    #[cfg(not(feature = "wasm"))]
     let generic_instantiations = generic_instantiation_metadata(ir);
+    #[cfg(feature = "wasm")]
+    let generic_instantiations = Vec::new();
     let mut metadata = CompileMetadata {
         metadata_schema_version: METADATA_SCHEMA_VERSION,
         source_metadata_schema_version: SOURCE_METADATA_SCHEMA_VERSION,
@@ -10198,10 +10284,10 @@ fn body_transaction_resource_obligations(
         }
     }
     for pattern in &body.create_set {
-        if matches!(pattern.operation.as_str(), "transfer" | "claim" | "settle") {
-            if let Some(check) = create_output_verification_obligation(pattern, type_layouts, &availability) {
-                checks.push(check);
-            }
+        if matches!(pattern.operation.as_str(), "transfer" | "claim" | "settle")
+            && let Some(check) = create_output_verification_obligation(pattern, type_layouts, &availability)
+        {
+            checks.push(check);
         }
     }
     checks.extend(read_ref_cell_dep_data_obligations(body));
@@ -13075,10 +13161,8 @@ fn launch_distribution_sum_coupling_is_checked(
                         u64_sources.insert(dest.id, sources);
                     }
                 }
-                ir::IrInstruction::LoadVar { dest, name } if dest.ty == ir::IrType::Bool => {
-                    if named_bool_sources.contains(name) {
-                        checked_bool_vars.insert(dest.id);
-                    }
+                ir::IrInstruction::LoadVar { dest, name } if dest.ty == ir::IrType::Bool && named_bool_sources.contains(name) => {
+                    checked_bool_vars.insert(dest.id);
                 }
                 _ => {}
             }
@@ -14402,10 +14486,10 @@ fn body_consumed_named_types(body: &ir::IrBody) -> BTreeSet<String> {
                 ir::IrInstruction::Claim { receipt, .. } => Some(receipt),
                 _ => None,
             };
-            if let Some(ir::IrOperand::Var(var)) = operand {
-                if let Some(type_name) = named_type_name(&var.ty) {
-                    types.insert(type_name.to_string());
-                }
+            if let Some(ir::IrOperand::Var(var)) = operand
+                && let Some(type_name) = named_type_name(&var.ty)
+            {
+                types.insert(type_name.to_string());
             }
         }
     }
@@ -14756,10 +14840,10 @@ fn body_fail_closed_runtime_features(
                         features.insert("claim-expression".to_string());
                     }
                 }
-                ir::IrInstruction::Settle { dest, .. } => {
-                    if !metadata_output_operation_is_verifier_covered(body, "settle", dest, type_layouts, &prelude_availability) {
-                        features.insert("settle-expression".to_string());
-                    }
+                ir::IrInstruction::Settle { dest, .. }
+                    if !metadata_output_operation_is_verifier_covered(body, "settle", dest, type_layouts, &prelude_availability) =>
+                {
+                    features.insert("settle-expression".to_string());
                 }
                 _ => {}
             }
@@ -14938,14 +15022,14 @@ fn metadata_prelude_availability(
                             loaded_constructed_vector_names.insert(dest.id, name.clone());
                         }
                     }
-                    if let Some(source_id) = named_constructed_vectors.get(name).copied() {
-                        if let Some(byte_count) = availability.constructed_byte_vector_vars.get(&source_id).copied() {
-                            availability.constructed_byte_vector_vars.insert(dest.id, byte_count);
-                            if let Some(root_id) = availability.constructed_byte_vector_roots.get(&source_id).copied() {
-                                availability.constructed_byte_vector_roots.insert(dest.id, root_id);
-                            }
-                            loaded_constructed_vector_names.insert(dest.id, name.clone());
+                    if let Some(source_id) = named_constructed_vectors.get(name).copied()
+                        && let Some(byte_count) = availability.constructed_byte_vector_vars.get(&source_id).copied()
+                    {
+                        availability.constructed_byte_vector_vars.insert(dest.id, byte_count);
+                        if let Some(root_id) = availability.constructed_byte_vector_roots.get(&source_id).copied() {
+                            availability.constructed_byte_vector_roots.insert(dest.id, root_id);
                         }
+                        loaded_constructed_vector_names.insert(dest.id, name.clone());
                     }
                     if named_fixed_vars.contains_key(name) {
                         availability.fixed_value_vars.insert(dest.id);
@@ -15278,16 +15362,15 @@ fn metadata_prelude_availability(
                         availability.scalar_vars.insert(dest.id);
                         availability.fixed_value_vars.insert(dest.id);
                     }
-                    if let Some(width) = metadata_ir_type_fixed_width(&dest.ty, type_layouts) {
-                        if metadata_fixed_value_available_with_layout_width(src, &availability, width, type_layouts) {
-                            availability.fixed_value_vars.insert(dest.id);
-                            if width > 8
-                                || named_type_name(&dest.ty).is_some_and(|name| type_layouts.enum_fixed_sizes.contains_key(name))
-                            {
-                                availability
-                                    .aggregate_pointer_vars
-                                    .insert(dest.id, MetadataAggregatePointerSource { ty: dest.ty.clone() });
-                            }
+                    if let Some(width) = metadata_ir_type_fixed_width(&dest.ty, type_layouts)
+                        && metadata_fixed_value_available_with_layout_width(src, &availability, width, type_layouts)
+                    {
+                        availability.fixed_value_vars.insert(dest.id);
+                        if width > 8 || named_type_name(&dest.ty).is_some_and(|name| type_layouts.enum_fixed_sizes.contains_key(name))
+                        {
+                            availability
+                                .aggregate_pointer_vars
+                                .insert(dest.id, MetadataAggregatePointerSource { ty: dest.ty.clone() });
                         }
                     }
                     if dest.ty == ir::IrType::U64 && metadata_u64_value_available(src, &availability) {
@@ -15588,10 +15671,10 @@ fn metadata_fixed_value_available_with_width(
     availability: &MetadataPreludeAvailability,
     expected_width: usize,
 ) -> bool {
-    if let ir::IrOperand::Const(value) = operand {
-        if metadata_fixed_scalar_const_value(value).is_some() {
-            return metadata_scalar_const_fits_width(value, expected_width);
-        }
+    if let ir::IrOperand::Const(value) = operand
+        && metadata_fixed_scalar_const_value(value).is_some()
+    {
+        return metadata_scalar_const_fits_width(value, expected_width);
     }
     if expected_width <= 8 && matches!(operand, ir::IrOperand::Var(_)) && metadata_scalar_available(operand, availability) {
         return true;
@@ -15606,10 +15689,10 @@ fn metadata_fixed_value_available_with_layout_width(
     expected_width: usize,
     type_layouts: &MetadataTypeLayouts,
 ) -> bool {
-    if let ir::IrOperand::Const(value) = operand {
-        if metadata_fixed_scalar_const_value(value).is_some() {
-            return metadata_scalar_const_fits_width(value, expected_width);
-        }
+    if let ir::IrOperand::Const(value) = operand
+        && metadata_fixed_scalar_const_value(value).is_some()
+    {
+        return metadata_scalar_const_fits_width(value, expected_width);
     }
     if expected_width <= 8 && matches!(operand, ir::IrOperand::Var(_)) && metadata_scalar_available(operand, availability) {
         return true;
@@ -18502,10 +18585,10 @@ fn param_type_hash_param_ids(body: &ir::IrBody) -> BTreeSet<usize> {
     let mut ids = BTreeSet::new();
     for block in &body.blocks {
         for instruction in &block.instructions {
-            if let ir::IrInstruction::TypeHash { operand: ir::IrOperand::Var(var), .. } = instruction {
-                if named_type_name(&var.ty).is_some() {
-                    ids.insert(var.id);
-                }
+            if let ir::IrInstruction::TypeHash { operand: ir::IrOperand::Var(var), .. } = instruction
+                && named_type_name(&var.ty).is_some()
+            {
+                ids.insert(var.id);
             }
         }
     }
@@ -18934,10 +19017,10 @@ fn collect_package_cell_files(package_root: &Utf8Path) -> Result<Vec<Utf8PathBuf
         }
     }
 
-    if let Some(entry_path) = explicit_entry {
-        if seen_files.insert(entry_path.clone()) {
-            files.push(entry_path);
-        }
+    if let Some(entry_path) = explicit_entry
+        && seen_files.insert(entry_path.clone())
+    {
+        files.push(entry_path);
     }
 
     files.sort();
@@ -28194,6 +28277,57 @@ action main() -> u64 {
         assert!(!super::incremental_cache_components_are_safe(&cache));
         prune_incremental_cache_entries(&cache, &format!("{:064x}", 2), 1);
         assert!(victim.is_dir(), "cache retention must not cross a symlinked build directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn incremental_cache_hit_does_not_follow_recency_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(temp.path()).unwrap();
+        let source = root.join("main.cell");
+        std::fs::write(&source, SIMPLE_PROGRAM).unwrap();
+
+        let first = compile_file(&source, CompileOptions::default()).unwrap();
+        assert!(!first.cache_hit);
+        let cache = root.join(".cell/build/cache");
+        let entry = std::fs::read_dir(&cache).unwrap().next().unwrap().unwrap().path();
+        let recency = entry.join(".last_used");
+        std::fs::remove_file(&recency).unwrap();
+        let victim = root.join("outside.txt");
+        std::fs::write(&victim, b"must survive").unwrap();
+        symlink(&victim, &recency).unwrap();
+
+        let second = compile_file(&source, CompileOptions::default()).unwrap();
+        assert!(second.cache_hit);
+        assert_eq!(std::fs::read(&victim).unwrap(), b"must survive");
+        assert!(std::fs::symlink_metadata(&recency).unwrap().is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn incremental_cache_rejects_symlinked_payload_without_overwriting_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(temp.path()).unwrap();
+        let source = root.join("main.cell");
+        std::fs::write(&source, SIMPLE_PROGRAM).unwrap();
+
+        let first = compile_file(&source, CompileOptions::default()).unwrap();
+        assert!(!first.cache_hit);
+        let cache = root.join(".cell/build/cache");
+        let entry = std::fs::read_dir(&cache).unwrap().next().unwrap().unwrap().path();
+        let artifact = entry.join("artifact");
+        std::fs::remove_file(&artifact).unwrap();
+        let victim = root.join("outside.txt");
+        std::fs::write(&victim, b"must survive").unwrap();
+        symlink(&victim, &artifact).unwrap();
+
+        let second = compile_file(&source, CompileOptions::default()).unwrap();
+        assert!(!second.cache_hit, "a cache payload symlink must invalidate the entry");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"must survive");
     }
 
     #[test]

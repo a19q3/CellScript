@@ -16,7 +16,7 @@ validates the versioned lowering/source-map/ELF boundary without loading the
 compiler front end or code generator. The website submodule under `website/`
 ships an Astro + WASM playground that loads the prebuilt bundle.
 
-Version line: the workspace `Cargo.toml` pins `version = "0.22.0"`, Rust
+Version line: the workspace `Cargo.toml` pins `version = "0.25.0"`, Rust
 Edition 2024, and `rust-version = "1.97.1"`. `rust-toolchain.toml` and CI pin
 that exact toolchain; do not bump either version without coordinating with the
 release gate.
@@ -329,8 +329,8 @@ Existing command families to be aware of:
   executable semantics are intentionally unavailable.
 - Release notes separate highlights, scope boundaries, validation commands,
   and links to detailed docs.
-- Roadmap promises don't live under `docs/` — release notes describe what
-  shipped; future plans belong in `roadmap/` or `proposals/`.
+- Release notes describe what shipped. Future work belongs in a concrete RFC
+  or proposal with explicit ownership and acceptance criteria.
 
 ## Gotchas that are easy to miss
 

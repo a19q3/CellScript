@@ -1,0 +1,16 @@
+{
+  "witness": [
+    {
+      "name": "difficulty",
+      "type": "uint8",
+      "required": true,
+      "description": "Required difficulty level (leading zero bits); must match args[0]"
+    },
+    {
+      "name": "proof",
+      "type": "bytes",
+      "required": true,
+      "description": "Variable-length proof-of-work nonce bytes"
+    }
+  ]
+}

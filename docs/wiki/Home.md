@@ -48,6 +48,16 @@ After that, the wiki continues outward:
 - v0.24 makes `cellc test` run explicit simulator or CKB-VM scenarios with
   exact runtime errors, backend-labelled evidence, local multi-step Cell
   replacement, and conservative source-linked coverage;
+- v0.24 publishes byte-exact LS-IDL for deployed Lock Scripts, binds the raw
+  IDL SHA-256 to the executable suffix, and resolves it through the Registry
+  without upgrading that identity check into an implementation or audit claim;
+- v0.25 adds bounded value generics, explicit package interfaces, typed
+  semantics bound to final machine records, complete patterns, bitwise and
+  shift operations, and labelled loop control;
+- v0.25 also closes a bounded-collection safety gap: `consume_each` and
+  `create_each` remain visible to analysis, but production compilation rejects
+  them until their consensus selection, codec, and output-correspondence rules
+  are fully specified and executable;
 - production evidence proves more than compiler success;
 - editor tooling shortens the local loop;
 - bundled examples show the style in real contracts.
@@ -70,13 +80,17 @@ If you already know what you need, jump directly:
   [Verified Artifacts and Executable Tests](Tutorial-14-Verified-Artifacts-and-Executable-Tests.md).
 - writing reusable generic values, publishing a stable interface, and checking
   typed artifacts: read
-  [Generics, Public Interfaces, and Typed Artifacts](Tutorial-15-Generics-Interfaces-and-Typed-Artifacts.md).
+  [Generics, Public Interfaces, and Typed Artifacts](Tutorial-16-Generics-Interfaces-and-Typed-Artifacts.md).
+- publishing or resolving an LS-IDL Lock Script interface: read
+  [LS-IDL for CKB Lock Scripts](Tutorial-15-LS-IDL-for-CKB-Lock-Scripts.md).
 - using CellScript fungible assets with Fiber: read the
   [bounded Fiber interoperability guide](https://github.com/CellScript-Labs/CellScript/blob/nightly-0.24/examples/fiber/README.md).
 - evaluating Spore or RGB++ integration: read
   [Spore and RGB++ Interoperability Boundaries](Spore-and-RGBPP-Interop-Boundaries.md).
 - spawning a pinned BIP340 verifier: read the
   [verifier CellDep ABI](../CELLSCRIPT_SIGNATURE_VERIFIER_ABI.md).
+- publishing or resolving a Lock Script interface: read the
+  [LS-IDL Registry profile](../CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md).
 
 ## Tutorial Path
 
@@ -114,7 +128,11 @@ If you already know what you need, jump directly:
 14. [Verified Artifacts and Executable Tests](Tutorial-14-Verified-Artifacts-and-Executable-Tests.md):
    independently check a CKB ELF bundle, run simulator and CKB-VM package
    scenarios, and keep structural, runtime, and chain evidence separate.
-15. [Generics, Public Interfaces, and Typed Artifacts](Tutorial-15-Generics-Interfaces-and-Typed-Artifacts.md):
+15. [LS-IDL for CKB Lock Scripts](Tutorial-15-LS-IDL-for-CKB-Lock-Scripts.md):
+   validate exact IDL bytes, bind them to a Lock Script executable, publish
+   the Registry bundle, record deployment evidence, and resolve the interface
+   with `cellc`.
+16. [Generics, Public Interfaces, and Typed Artifacts](Tutorial-16-Generics-Interfaces-and-Typed-Artifacts.md):
    use bounded value generics, explicit visibility, deterministic interface
    compatibility, and the independently checked typed-semantics record.
 

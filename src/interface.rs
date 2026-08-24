@@ -402,6 +402,7 @@ pub fn compare(old: &PackageInterface, new: &PackageInterface) -> InterfaceCompa
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Mirrors the audited, canonical InterfaceType field set.
 fn interface_structural_type(
     identity: &str,
     name: &str,

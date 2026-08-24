@@ -82,8 +82,7 @@ Focused Phase 1 evidence lives in:
   deployment identity scenarios, with live devnet tests intentionally ignored by
   default
 - `docs/CELLSCRIPT_REGISTRY_PHASE1.md`
-- `docs/archive/0.19/CELLSCRIPT_0_19_ROADMAP.md`
-- `docs/archive/0.20/CELLSCRIPT_0_20_ROADMAP.md`
+- `docs/releases/CELLSCRIPT_0_20_RELEASE_NOTES.md`
 
 Implementation and scope commits:
 

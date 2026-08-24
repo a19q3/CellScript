@@ -1100,27 +1100,27 @@ impl Monomorphizer {
                     return Ok(Expr::Call(call));
                 }
 
-                if let Some((enum_name, variant)) = path.rsplit_once("::") {
-                    if self.enums.contains_key(enum_name) {
-                        if call.type_args.is_empty() {
-                            return Err(generic_instantiation_error(
-                                format!("generic enum constructor '{}::{}' requires explicit type arguments", enum_name, variant),
-                                call.span,
-                            ));
-                        }
-                        let concrete = self.enqueue(TemplateKind::Enum, enum_name, call.type_args.clone(), call.span)?;
-                        context.record_applied_type(enum_name, &concrete);
-                        let no_payload = self
-                            .enums
-                            .get(enum_name)
-                            .and_then(|def| def.variants.iter().find(|candidate| candidate.name == variant))
-                            .is_some_and(|variant| variant.fields.is_empty());
-                        if no_payload && call.args.is_empty() {
-                            return Ok(Expr::Identifier(format!("{}::{}", concrete, variant)));
-                        }
-                        call.func = Box::new(Expr::Identifier(format!("{}::{}", concrete, variant)));
-                        call.type_args.clear();
+                if let Some((enum_name, variant)) = path.rsplit_once("::")
+                    && self.enums.contains_key(enum_name)
+                {
+                    if call.type_args.is_empty() {
+                        return Err(generic_instantiation_error(
+                            format!("generic enum constructor '{}::{}' requires explicit type arguments", enum_name, variant),
+                            call.span,
+                        ));
                     }
+                    let concrete = self.enqueue(TemplateKind::Enum, enum_name, call.type_args.clone(), call.span)?;
+                    context.record_applied_type(enum_name, &concrete);
+                    let no_payload = self
+                        .enums
+                        .get(enum_name)
+                        .and_then(|def| def.variants.iter().find(|candidate| candidate.name == variant))
+                        .is_some_and(|variant| variant.fields.is_empty());
+                    if no_payload && call.args.is_empty() {
+                        return Ok(Expr::Identifier(format!("{}::{}", concrete, variant)));
+                    }
+                    call.func = Box::new(Expr::Identifier(format!("{}::{}", concrete, variant)));
+                    call.type_args.clear();
                 }
                 Ok(Expr::Call(call))
             }
@@ -1264,19 +1264,19 @@ impl Monomorphizer {
                 Ok(())
             }
             MatchPattern::Variant { path, fields } => {
-                if let Some((enum_name, variant)) = path.rsplit_once("::") {
-                    if self.enums.contains_key(enum_name) {
-                        let concrete = context.concrete_type(enum_name).ok_or_else(|| {
-                            generic_instantiation_error(
-                                format!(
-                                    "match pattern '{}' is ambiguous; the callable must contain exactly one '{}' instantiation",
-                                    path, enum_name
-                                ),
-                                span,
-                            )
-                        })?;
-                        *path = format!("{}::{}", concrete, variant);
-                    }
+                if let Some((enum_name, variant)) = path.rsplit_once("::")
+                    && self.enums.contains_key(enum_name)
+                {
+                    let concrete = context.concrete_type(enum_name).ok_or_else(|| {
+                        generic_instantiation_error(
+                            format!(
+                                "match pattern '{}' is ambiguous; the callable must contain exactly one '{}' instantiation",
+                                path, enum_name
+                            ),
+                            span,
+                        )
+                    })?;
+                    *path = format!("{}::{}", concrete, variant);
                 }
                 for field in fields {
                     self.rewrite_match_pattern(field, context, span)?;
@@ -1410,25 +1410,25 @@ fn unify_generic_type(
     inferred: &mut HashMap<String, Type>,
     span: Span,
 ) -> Result<()> {
-    if let Type::Named(name) = formal {
-        if params.contains(name.as_str()) {
-            if let Some(previous) = inferred.get(name) {
-                if previous != actual {
-                    return Err(generic_instantiation_error(
-                        format!(
-                            "generic type inference for '{}' is inconsistent: '{}' versus '{}'",
-                            name,
-                            render_type(previous),
-                            render_type(actual)
-                        ),
-                        span,
-                    ));
-                }
-            } else {
-                inferred.insert(name.clone(), actual.clone());
+    if let Type::Named(name) = formal
+        && params.contains(name.as_str())
+    {
+        if let Some(previous) = inferred.get(name) {
+            if previous != actual {
+                return Err(generic_instantiation_error(
+                    format!(
+                        "generic type inference for '{}' is inconsistent: '{}' versus '{}'",
+                        name,
+                        render_type(previous),
+                        render_type(actual)
+                    ),
+                    span,
+                ));
             }
-            return Ok(());
+        } else {
+            inferred.insert(name.clone(), actual.clone());
         }
+        return Ok(());
     }
     match (formal, actual) {
         (Type::Array(formal, formal_len), Type::Array(actual, actual_len)) if formal_len == actual_len => {

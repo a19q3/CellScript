@@ -130,10 +130,10 @@ fn action_state_context(specs: &HashMap<String, FlowSpec>, action: &ActionDef) -
     let mut context = ActionStateContext::default();
 
     for param in &action.params {
-        if let Type::Named(ty) = &param.ty {
-            if specs.contains_key(ty) {
-                context.variable_flow_types.insert(param.name.clone(), ty.clone());
-            }
+        if let Type::Named(ty) = &param.ty
+            && specs.contains_key(ty)
+        {
+            context.variable_flow_types.insert(param.name.clone(), ty.clone());
         }
     }
 
@@ -181,12 +181,11 @@ fn validate_action_state_edges(specs: &HashMap<String, FlowSpec>, action: &Actio
 
 fn action_param_flow_type<'a>(specs: &HashMap<String, FlowSpec>, action: &'a ActionDef, binding: &str) -> Option<&'a str> {
     action.params.iter().find_map(|param| {
-        if param.name == binding {
-            if let Type::Named(ty) = &param.ty {
-                if specs.contains_key(ty) {
-                    return Some(ty.as_str());
-                }
-            }
+        if param.name == binding
+            && let Type::Named(ty) = &param.ty
+            && specs.contains_key(ty)
+        {
+            return Some(ty.as_str());
         }
         None
     })
@@ -194,12 +193,11 @@ fn action_param_flow_type<'a>(specs: &HashMap<String, FlowSpec>, action: &'a Act
 
 fn action_output_flow_type<'a>(specs: &HashMap<String, FlowSpec>, action: &'a ActionDef, binding: &str) -> Option<&'a str> {
     action.outputs.iter().find_map(|output| {
-        if output.name == binding {
-            if let Type::Named(ty) = &output.ty {
-                if specs.contains_key(ty) {
-                    return Some(ty.as_str());
-                }
-            }
+        if output.name == binding
+            && let Type::Named(ty) = &output.ty
+            && specs.contains_key(ty)
+        {
+            return Some(ty.as_str());
         }
         None
     })
@@ -215,10 +213,10 @@ fn collect_state_context_from_stmts(specs: &HashMap<String, FlowSpec>, context: 
                     }
                     if let Some(ty) = flow_expr_type(specs, context, &let_stmt.value) {
                         context.variable_flow_types.insert(name.clone(), ty);
-                    } else if let Some(Type::Named(ty)) = &let_stmt.ty {
-                        if specs.contains_key(ty) {
-                            context.variable_flow_types.insert(name.clone(), ty.clone());
-                        }
+                    } else if let Some(Type::Named(ty)) = &let_stmt.ty
+                        && specs.contains_key(ty)
+                    {
+                        context.variable_flow_types.insert(name.clone(), ty.clone());
                     }
                 }
                 collect_state_context_from_expr(specs, context, &let_stmt.value);
@@ -251,10 +249,10 @@ fn collect_state_context_from_stmts(specs: &HashMap<String, FlowSpec>, context: 
 fn collect_state_context_from_expr(specs: &HashMap<String, FlowSpec>, context: &mut ActionStateContext, expr: &Expr) {
     match expr {
         Expr::Consume(consume) => {
-            if let Expr::Identifier(name) = consume.expr.as_ref() {
-                if let Some(ty) = context.variable_flow_types.get(name) {
-                    context.consumed_flow_types.insert(ty.clone());
-                }
+            if let Expr::Identifier(name) = consume.expr.as_ref()
+                && let Some(ty) = context.variable_flow_types.get(name)
+            {
+                context.consumed_flow_types.insert(ty.clone());
             }
             collect_state_context_from_expr(specs, context, &consume.expr);
         }

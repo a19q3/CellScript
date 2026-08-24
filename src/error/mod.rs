@@ -169,9 +169,9 @@ pub const COMPILER_ERROR_INFOS: &[CompilerErrorInfo] = &[
     },
     CompilerErrorInfo {
         code: "E2400",
-        name: "external-toolchain",
-        description: "An explicitly configured external RISC-V toolchain failed validation or execution.",
-        hint: "Check CELLSCRIPT_RISCV_CC or the CELLSCRIPT_RISCV_AS/CELLSCRIPT_RISCV_LD pair and their stderr output.",
+        name: "verified-artifact-boundary",
+        description: "The compiler could not construct or persist the verified lowering/source-map boundary for an ELF artifact.",
+        hint: "Inspect the verified lowering record, source artifact map, and canonical sidecar diagnostic.",
     },
     CompilerErrorInfo {
         code: "E2501",

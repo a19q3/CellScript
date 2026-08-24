@@ -6,9 +6,8 @@ Draft for community review. Targets the 0.22 release line as the earliest
 realistic landing; not part of 0.21.1 production boundary. Tracking issue:
 none yet (required before implementation adoption).
 
-This RFC sits next to the v0.22 typed transaction-view handles proposal
-(`roadmap/CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md` §"Typed
-Transaction-View Handles Before Tx Builder Surface") and the
+This RFC builds on the v0.22 typed transaction-view handles described in the
+[0.22 release notes](releases/CELLSCRIPT_0_22_RELEASE_NOTES.md) and the
 `docs/CELLSCRIPT_CELL_MODEL_SYNTAX_AUDIT_2026_07_05.md` audit. It does **not**
 replace the typed-view work; it is the policy + identity layer that needs to
 land together with the view layer.
@@ -83,8 +82,8 @@ the existing surface.
 
 | Surface | Status | Reference |
 |---|---|---|
-| `source::cell_dep(i)` (typed view) | implemented, executable | `roadmap/CELLSCRIPT_ROADMAP_OVERVIEW.md:375`; `src/parser/...`, `src/ir/mod.rs:4459` |
-| `source::header_dep(i)` | implemented, executable | roadmap §6.3 |
+| `source::cell_dep(i)` (typed view) | implemented, executable | `src/parser/`, `src/ir/mod.rs` |
+| `source::header_dep(i)` | implemented, executable | `src/parser/`, `src/ir/mod.rs` |
 | `ckb::cell_data_hash(view)` | implemented, returns `Hash`, lowers to `LOAD_CELL_DATA` | `src/ir/mod.rs:4459-4470`; `src/codegen/mod.rs:16086` |
 | `ckb::cell_data_hash_at(view, offset)` | implemented | `src/ir/mod.rs:4468-4470` |
 | `ckb::cell_data_size(view)` | implemented, returns `u64` | `src/ir/mod.rs:4658-4660`; `src/codegen/mod.rs:16037` |
@@ -235,13 +234,11 @@ Two reasons:
 - A second `::` namespace would invite the question of which namespace
   owns lifecycle, which owns access, and which owns policy. A
   declaration block keeps the policy in one place; access is just the
-  existing `source::cell_dep(...)` form.
+existing `source::cell_dep(...)` form.
 
 The expression form is the **first cut**. Source-qualifier sugar such as
-`read config: OracleConfig from price_oracle` is a later stage that
-should ship with the 0.22 action source-qualifier work
-(`roadmap/CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md` §"Discussion
-Candidates, Not Baseline Commitments") — not bolted onto this RFC.
+`read config: OracleConfig from price_oracle` requires its own follow-up RFC;
+it must not be bolted onto this identity proposal.
 
 ### Manifest — intent vs. fact split
 
@@ -423,9 +420,7 @@ the source is silent on it.
 
 ## Layering With 0.22 Typed View
 
-The 0.22 roadmap proposes `ckb::cell_dep(index) -> CellDepView` as a
-typed read-only transaction view
-(`roadmap/CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md:374`). The two
+The 0.22 release introduced typed read-only transaction views. The two
 proposals are **complementary layers**, not competitors:
 
 ```
@@ -435,7 +430,7 @@ proposals are **complementary layers**, not competitors:
 index                (compiler)        binding layer
     │
     ▼  typed view
-SourceView<CellDep>  (0.22 roadmap)    type layer
+SourceView<CellDep>  (0.22 release)    type layer
     │
     ▼  accessor
 ckb::cell_data_hash  (existing)        runtime layer
@@ -574,8 +569,7 @@ Success looks like all of the following, all enforceable in CI.
 
 - `read config: OracleConfig from price_oracle` action/lock parameter
   sugar.
-- Lands together with the 0.22 action source-qualifier work
-  (`roadmap/CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md`).
+- Requires a separately reviewed source-qualifier RFC.
 
 ### Phase 5 — TYPE_ID policy (deferred)
 
@@ -591,7 +585,7 @@ Success looks like all of the following, all enforceable in CI.
   identity.
 - A bare `cell_dep("name")` with no policy. Permanently rejected.
 - Large `TxView` objects, `env::tx()`, and full transaction-builder
-  DSL. Belongs in a separate RFC, per the 0.22 roadmap.
+  DSL. Belongs in a separate RFC.
 - `TemplateLayout`-based identity commitment. Belongs in the
   TemplateLayout RFC, not here.
 
@@ -601,8 +595,8 @@ Success looks like all of the following, all enforceable in CI.
   intent / build / fact split
 - `docs/CELLSCRIPT_REGISTRY_PHASE1.md` — registry as package discovery
 - `docs/CELLSCRIPT_CKB_ADAPTER.md` — adapter resolution path
-- `roadmap/CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md` — typed
-  transaction-view handles
+- `docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md` — typed transaction-view
+  release boundary
 - `docs/CELLSCRIPT_CELL_MODEL_SYNTAX_AUDIT_2026_07_05.md` — source
   view audit
 - `docs/CELLSCRIPT_GRAMMAR_GOVERNANCE_RFC.md` — grammar governance
@@ -617,7 +611,6 @@ Success looks like all of the following, all enforceable in CI.
 - `tests/ickb_diff.rs:3369-3396` — VM test that runs the fixture
 - `tests/cli.rs:2392-2425` — `dep::` namespace usage as package
   reference (reserved)
-- `roadmap/CELLSCRIPT_ROADMAP_OVERVIEW.md:375` — `source::cell_dep`
-  status
+- `src/ir/mod.rs` — `source::cell_dep` lowering
 - `docs/releases/CELLSCRIPT_0_21_RELEASE_NOTES.md` §"Aggregate
   Invariant Coverage" — three-state evidence tier precedent

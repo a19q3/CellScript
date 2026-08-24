@@ -1,0 +1,59 @@
+{
+  "schema": "cellscript-ls-idl-registry-vectors-v1",
+  "format": "ls-idl",
+  "format_version": "0.1",
+  "wire_encoding": "linear-le-v0",
+  "vectors": [
+    {
+      "id": "empty",
+      "fields": [],
+      "wire_hex": "",
+      "expect": "valid"
+    },
+    {
+      "id": "uint8",
+      "fields": [{ "name": "difficulty", "type": "uint8", "required": true }],
+      "wire_hex": "2a",
+      "expect": "valid"
+    },
+    {
+      "id": "uint32-le",
+      "fields": [{ "name": "nonce", "type": "uint32", "required": true }],
+      "wire_hex": "efbeadde",
+      "expect": "valid"
+    },
+    {
+      "id": "uint64-le",
+      "fields": [{ "name": "height", "type": "uint64", "required": true }],
+      "wire_hex": "0068e5cf8b010000",
+      "expect": "valid"
+    },
+    {
+      "id": "bytes-length-prefix",
+      "fields": [{ "name": "memo", "type": "bytes", "required": false }],
+      "wire_hex": "0500000068656c6c6f",
+      "expect": "valid"
+    },
+    {
+      "id": "bytes-missing-prefix",
+      "fields": [{ "name": "memo", "type": "bytes", "required": true }],
+      "wire_hex": "616263",
+      "expect": "error",
+      "error": "FieldTooShort"
+    },
+    {
+      "id": "trailing-bytes",
+      "fields": [{ "name": "memo", "type": "bytes", "required": true }],
+      "wire_hex": "0100000061ff",
+      "expect": "error",
+      "error": "TrailingBytes"
+    },
+    {
+      "id": "unknown-type",
+      "fields": [{ "name": "digest", "type": "[u8;32]", "required": true }],
+      "wire_hex": "",
+      "expect": "error",
+      "error": "UnknownType"
+    }
+  ]
+}

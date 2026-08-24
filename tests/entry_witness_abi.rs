@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use cellscript_ckb_adapter::{place_entry_witness_payload_before_signing, EntryWitnessPlacementAbi};
 use ckb_sdk::{
     constants::MultisigScript,
@@ -22,6 +20,7 @@ use ckb_testtool::{
 use secp256k1::{PublicKey, SecretKey};
 
 #[path = "support/ckb_script_runner.rs"]
+#[allow(dead_code)]
 mod ckb_script_runner;
 
 use ckb_script_runner::{build_simple_fixture, compile_cellscript_source_to_elf, execute_cellscript_script};
@@ -184,6 +183,21 @@ action verify(
 }
 "#;
 
+const U128_DYNAMIC_SCHEMA_ENTRY: &str = r#"
+module entry_witness_u128_dynamic_schema
+
+struct Entry {
+    amount: u128,
+    note: Vec<u8>,
+}
+
+action verify(witness left: Entry, witness right: Entry, witness expected_add: u128) -> u64 {
+    verification
+        require left.amount + right.amount == expected_add
+        return 0
+}
+"#;
+
 const SCALAR_SHIFT_ENTRY: &str = r#"
 module entry_witness_scalar_shift
 
@@ -199,6 +213,16 @@ action verify(
         require (unsigned << count) == expected_left
         require (unsigned >> count) == expected_right
         require (signed >> count) == expected_signed_right
+        return 0
+}
+"#;
+
+const U128_U64_ADD_ENTRY: &str = r#"
+module entry_witness_u128_u64_add
+
+action verify_add(witness wide: u128, witness delta: u64, witness expected: u128) -> u64 {
+    verification
+        require wide + delta == expected
         return 0
 }
 "#;
@@ -258,6 +282,16 @@ action verify() -> u64 {
 }
 "#;
 
+const U128_U64_SUB_ENTRY: &str = r#"
+module entry_witness_u128_u64_sub
+
+action verify_sub(witness wide: u128, witness delta: u64, witness expected: u128) -> u64 {
+    verification
+        require wide - delta == expected
+        return 0
+}
+"#;
+
 const SIGNED_TX_MAX_CYCLES: u64 = 70_000_000;
 
 fn canonical_multisig_v2_witness(entry_payload: Bytes) -> packed::WitnessArgs {
@@ -302,7 +336,7 @@ fn execute_u128_div_rem(
     expected_remainder: u128,
 ) -> ckb_script_runner::CkbScriptExecutionResult {
     let witness = canonical_multisig_v2_witness(raw_u128_div_rem_payload(left, right, expected_quotient, expected_remainder));
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.witnesses = vec![witness.as_bytes()];
     execute_cellscript_script(elf, &fixture)
 }
@@ -319,7 +353,7 @@ fn execute_scalar_div_rem(
         payload.extend_from_slice(&value.to_le_bytes());
     }
     let witness = canonical_multisig_v2_witness(Bytes::from(payload));
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.witnesses = vec![witness.as_bytes()];
     execute_cellscript_script(elf, &fixture)
 }
@@ -343,7 +377,7 @@ fn execute_u128_bitwise_shift(
     expected: [u128; 5],
 ) -> ckb_script_runner::CkbScriptExecutionResult {
     let witness = canonical_multisig_v2_witness(raw_u128_bitwise_shift_payload(value, other, count, expected));
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.witnesses = vec![witness.as_bytes()];
     execute_cellscript_script(elf, &fixture)
 }
@@ -365,7 +399,7 @@ fn execute_scalar_shift(
     payload.extend_from_slice(&expected_right.to_le_bytes());
     payload.extend_from_slice(&expected_signed_right.to_le_bytes());
     let witness = canonical_multisig_v2_witness(Bytes::from(payload));
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.witnesses = vec![witness.as_bytes()];
     execute_cellscript_script(elf, &fixture)
 }
@@ -409,14 +443,45 @@ fn execute_u128_dynamic_schema_bitwise(
     payload.extend_from_slice(&expected_shl.to_le_bytes());
     payload.extend_from_slice(&expected_add.to_le_bytes());
     let witness = canonical_multisig_v2_witness(Bytes::from(payload));
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
+    fixture.witnesses = vec![witness.as_bytes()];
+    execute_cellscript_script(elf, &fixture)
+}
+
+fn execute_u128_dynamic_schema_add(
+    elf: &[u8],
+    left: u128,
+    right: u128,
+    expected_add: u128,
+    total_override: Option<u32>,
+) -> ckb_script_runner::CkbScriptExecutionResult {
+    let mut payload = b"CSARGv1\0".to_vec();
+    for value in [left, right] {
+        let entry = molecule_dynamic_entry_bytes(value, b"audit", total_override);
+        payload.extend_from_slice(&(entry.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&entry);
+    }
+    payload.extend_from_slice(&expected_add.to_le_bytes());
+    let witness = canonical_multisig_v2_witness(Bytes::from(payload));
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
+    fixture.witnesses = vec![witness.as_bytes()];
+    execute_cellscript_script(elf, &fixture)
+}
+
+fn execute_u128_u64_arithmetic(elf: &[u8], wide: u128, delta: u64, expected: u128) -> ckb_script_runner::CkbScriptExecutionResult {
+    let mut payload = b"CSARGv1\0".to_vec();
+    payload.extend_from_slice(&wide.to_le_bytes());
+    payload.extend_from_slice(&delta.to_le_bytes());
+    payload.extend_from_slice(&expected.to_le_bytes());
+    let witness = canonical_multisig_v2_witness(Bytes::from(payload));
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.witnesses = vec![witness.as_bytes()];
     execute_cellscript_script(elf, &fixture)
 }
 
 fn execute_on_second_group_input(witness: Bytes) -> ckb_script_runner::CkbScriptExecutionResult {
     let elf = compile_cellscript_source_to_elf(PARAMETERIZED_ENTRY, "verify", None);
-    let mut fixture = build_simple_fixture(Bytes::default(), 2, 1, true, None);
+    let mut fixture = build_simple_fixture(Bytes::default(), 2, 1);
     fixture.current_type_script_input_indices = vec![1];
     fixture.witnesses = vec![Bytes::from_static(b"unrelated-global-input-zero"), witness];
     execute_cellscript_script(&elf, &fixture)
@@ -424,7 +489,7 @@ fn execute_on_second_group_input(witness: Bytes) -> ckb_script_runner::CkbScript
 
 fn execute_on_output_only_group(witness: Bytes) -> ckb_script_runner::CkbScriptExecutionResult {
     let elf = compile_cellscript_source_to_elf(PARAMETERIZED_ENTRY, "verify", None);
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.current_type_script_input_indices.clear();
     fixture.witnesses = vec![witness];
     execute_cellscript_script(&elf, &fixture)
@@ -662,7 +727,7 @@ fn scalar_shift_width_and_i32_signedness_execute_in_ckb_vm() {
 fn generic_struct_function_and_option_execute_in_ckb_vm() {
     let elf = compile_cellscript_source_to_elf(GENERIC_VALUE_ENTRY, "verify", None);
     let witness = canonical_multisig_v2_witness(raw_entry_payload(42));
-    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
     fixture.witnesses = vec![witness.as_bytes()];
     let result = execute_cellscript_script(&elf, &fixture);
     assert_eq!(result.exit_code, 0, "generic value kernel must execute in CKB-VM: {:?}", result.captured_debug);
@@ -671,7 +736,7 @@ fn generic_struct_function_and_option_execute_in_ckb_vm() {
 #[test]
 fn complete_value_patterns_execute_in_ckb_vm() {
     let elf = compile_cellscript_source_to_elf(COMPLETE_PATTERN_ENTRY, "verify", None);
-    let fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let fixture = build_simple_fixture(Bytes::default(), 1, 1);
     let result = execute_cellscript_script(&elf, &fixture);
     assert_eq!(result.exit_code, 0, "nested/struct/tuple/or patterns must execute in CKB-VM: {:?}", result.captured_debug);
 }
@@ -679,7 +744,7 @@ fn complete_value_patterns_execute_in_ckb_vm() {
 #[test]
 fn labeled_break_and_continue_execute_in_ckb_vm() {
     let elf = compile_cellscript_source_to_elf(LOOP_CONTROL_ENTRY, "verify", None);
-    let fixture = build_simple_fixture(Bytes::default(), 1, 1, true, None);
+    let fixture = build_simple_fixture(Bytes::default(), 1, 1);
     let result = execute_cellscript_script(&elf, &fixture);
     assert_eq!(result.exit_code, 0, "labeled break and continue must execute in CKB-VM: {:?}", result.captured_debug);
 }
@@ -690,7 +755,7 @@ fn bounded_collection_entries_fail_closed_with_stable_runtime_code_in_ckb_vm() {
         [("consume_each", BOUNDED_COLLECTION_FAIL_CLOSED_ENTRY), ("create_each", BOUNDED_CREATE_FAIL_CLOSED_ENTRY)]
     {
         let elf = compile_cellscript_source_to_elf(source, "verify", None);
-        let fixture = build_simple_fixture(Bytes::default(), 1, 1, false, Some("bounded-collection-runtime-unsupported".to_string()));
+        let fixture = build_simple_fixture(Bytes::default(), 1, 1);
         let result = execute_cellscript_script(&elf, &fixture);
         assert_eq!(
             result.exit_code, 24,
@@ -738,4 +803,50 @@ fn malformed_unselected_witnessargs_field_still_fails_closed() {
 
     let result = execute_on_second_group_input(Bytes::from(encoded));
     assert_eq!(result.exit_code, 25, "the placement ABI must validate the whole WitnessArgs table: {:?}", result.captured_debug);
+}
+
+#[test]
+fn u128_add_on_dynamic_schema_fields_executes_exactly_in_ckb_vm() {
+    let elf = compile_cellscript_source_to_elf(U128_DYNAMIC_SCHEMA_ENTRY, "verify", None);
+    let vectors: [(u128, u128); 3] = [
+        (0x00ff_ffee_ddcc_bbaa_55aa_55aa_55aa_55aa, 0x55aa_55aa_55aa_55aa_aa55_aa55_aa55_aa55),
+        (0x0123_4567_89ab_cdef_fedc_ba98_7654_3210, 0xf0f0_0f0f_f0f0_0f0f_aaaa_5555_aaaa_5555),
+        (1, u128::MAX - 1),
+    ];
+    for (left, right) in vectors {
+        let expected_add = left.checked_add(right).expect("vector must not overflow");
+        let result = execute_u128_dynamic_schema_add(&elf, left, right, expected_add, None);
+        assert_eq!(
+            result.exit_code, 0,
+            "u128 addition over Molecule-table-decoded fields must execute exactly in CKB-VM: {:?}",
+            result.captured_debug
+        );
+    }
+
+    let wrong = execute_u128_dynamic_schema_add(&elf, 1, 2, 4, None);
+    assert_eq!(wrong.exit_code, 5, "a wrong expected sum must fail the assertion: {:?}", wrong.captured_debug);
+
+    let malformed = execute_u128_dynamic_schema_add(&elf, 8, 1, 9, Some(255));
+    assert_eq!(
+        malformed.exit_code, 2,
+        "a mismatched Molecule table length must fail the bounds check: {:?}",
+        malformed.captured_debug
+    );
+}
+
+#[test]
+fn u128_u64_arithmetic_checks_carry_overflow_and_underflow_in_ckb_vm() {
+    let add_elf = compile_cellscript_source_to_elf(U128_U64_ADD_ENTRY, "verify_add", None);
+    let carried = execute_u128_u64_arithmetic(&add_elf, u64::MAX as u128, 1, 1u128 << 64);
+    assert_eq!(carried.exit_code, 0, "u128 + u64 carry must execute exactly: {:?}", carried.captured_debug);
+
+    let overflow = execute_u128_u64_arithmetic(&add_elf, u128::MAX, 1, 0);
+    assert_eq!(overflow.exit_code, 49, "u128 + u64 overflow must fail closed: {:?}", overflow.captured_debug);
+
+    let sub_elf = compile_cellscript_source_to_elf(U128_U64_SUB_ENTRY, "verify_sub", None);
+    let borrowed = execute_u128_u64_arithmetic(&sub_elf, 1u128 << 64, 1, u64::MAX as u128);
+    assert_eq!(borrowed.exit_code, 0, "u128 - u64 borrow must execute exactly: {:?}", borrowed.captured_debug);
+
+    let underflow = execute_u128_u64_arithmetic(&sub_elf, 0, 1, 0);
+    assert_eq!(underflow.exit_code, 49, "u128 - u64 underflow must fail closed: {:?}", underflow.captured_debug);
 }

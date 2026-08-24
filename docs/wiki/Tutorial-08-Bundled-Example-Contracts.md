@@ -45,7 +45,7 @@ There are no checked-in `examples/business` or `examples/acceptance` mirrors;
 acceptance-only profile/effect/scheduler metadata belongs in runner
 configuration or generated files under `target/`.
 
-Two 0.24 workflow packages sit beside, but are not part of, the business
+Three 0.24 workflow packages sit beside, but are not part of, the business
 matrix:
 
 - `examples/scenario_basics` runs one positive and one exact-negative scenario
@@ -54,7 +54,10 @@ matrix:
 - `examples/package_graph` demonstrates standard SemVer, a package alias,
   optional and transitive features, a test-only dependency, explicit CKB
   environments, a testnet dependency override, and frozen/offline consumption
-  of the tracked graph.
+  of the tracked graph;
+- `examples/registry_ls_idl` demonstrates the supported LS-IDL witness fields,
+  raw-byte SHA-256/executable-suffix binding, publish scaffolding, and curated
+  normal and negative compatibility vectors.
 
 These packages are deliberately small and synthetic. They teach tooling
 boundaries without implying that simulator bookkeeping or illustrative chain

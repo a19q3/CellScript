@@ -7,7 +7,6 @@
 //!
 //! This harness is protocol-neutral. It does not contain iCKB-specific logic.
 
-use ckb_testtool::ckb_hash::blake2b_256;
 use ckb_testtool::ckb_types::{
     bytes::Bytes,
     core::{DepType, HeaderBuilder, TransactionBuilder},
@@ -73,23 +72,6 @@ action test_dao_input_accumulated_rate() -> u64 {
         return 0
 }
 "#;
-
-/// CellScript source that just reads a header-dep SourceView without using DAO.
-/// This isolates whether the issue is with source::header_dep() or dao::accumulated_rate().
-#[allow(dead_code)]
-pub const VM_HARNESS_HEADER_DEP_PROGRAM: &str = r#"
-module vm_harness_header_dep
-
-action test_header_dep_source() -> u64 {
-    verification
-        let header_view = source::header_dep(0)
-        return 0
-}
-"#;
-
-/// Entry action for the header-dep-only test.
-#[allow(dead_code)]
-pub const VM_HARNESS_HEADER_DEP_ACTION: &str = "test_header_dep_source";
 
 /// Entry action name for the DAO pass-case harness test.
 pub const VM_HARNESS_DAO_PASS_ACTION: &str = "test_dao_input_accumulated_rate";
@@ -274,17 +256,14 @@ pub struct CkbScriptExecutionResult {
 
 /// A cell in a CKB transaction fixture.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FixtureCell {
     pub capacity: u64,
-    pub lock: packed::Script,
     pub type_script: Option<packed::Script>,
     pub data: Bytes,
 }
 
 /// A complete CKB VM fixture for script execution.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CkbVmFixture {
     /// Script args for the CellScript-compiled type script being tested.
     pub script_args: Bytes,
@@ -307,10 +286,6 @@ pub struct CkbVmFixture {
     /// Whether to link input cells with their block headers.
     /// If true, input[i] is linked to header_dao_fields[i]'s block.
     pub link_inputs_to_headers: bool,
-    /// Whether this fixture expects the script to pass.
-    pub expected_pass: bool,
-    /// Named failure mode for reject cases.
-    pub failure_mode: Option<String>,
 }
 
 /// Compile a CellScript source string to RISC-V ELF bytes with a specific entry action.
@@ -332,27 +307,6 @@ pub fn compile_cellscript_source_to_elf(source: &str, entry_action: &str, primit
         result.metadata.actions.iter().any(|a| a.name == entry_action),
         "entry action '{}' not found in compiled metadata",
         entry_action
-    );
-    // Strip the VM ABI trailer before feeding to ckb-testtool,
-    // which expects a bare RISC-V ELF.
-    cellscript::strip_vm_abi_trailer(&result.artifact_bytes).to_vec()
-}
-
-/// Compile a CellScript .cell file to RISC-V ELF bytes with a specific entry action.
-#[allow(dead_code)]
-pub fn compile_cellscript_to_elf(cell_path: &str, entry_action: &str, primitive_compat: Option<&str>) -> Vec<u8> {
-    let options = cellscript::CompileOptions {
-        target: Some("riscv64-elf".to_string()),
-        target_profile: Some("ckb".to_string()),
-        primitive_compat: primitive_compat.map(|s| s.to_string()),
-        ..cellscript::CompileOptions::default()
-    };
-    let result = cellscript::compile_file_with_entry_action(cell_path, options, entry_action)
-        .unwrap_or_else(|err| panic!("failed to compile {} entry {}: {}", cell_path, entry_action, err.message));
-    assert!(
-        matches!(result.artifact_format, cellscript::ArtifactFormat::RiscvElf),
-        "expected ELF artifact, got {:?}",
-        result.artifact_format
     );
     // Strip the VM ABI trailer before feeding to ckb-testtool,
     // which expects a bare RISC-V ELF.
@@ -503,26 +457,13 @@ fn parse_ckb_script_error_code(error: &str) -> Option<i64> {
 
 /// Build a simple harness fixture for testing CellScript script execution.
 /// Uses always_success lock for all cells and the current ELF as type script.
-pub fn build_simple_fixture(
-    script_args: Bytes,
-    input_count: usize,
-    output_count: usize,
-    expected_pass: bool,
-    failure_mode: Option<String>,
-) -> CkbVmFixture {
-    let inputs = (0..input_count)
-        .map(|_| FixtureCell {
-            capacity: 100_000_000_000,
-            lock: packed::Script::default(), // always_success set by harness
-            type_script: None,
-            data: Bytes::default(),
-        })
-        .collect();
+pub fn build_simple_fixture(script_args: Bytes, input_count: usize, output_count: usize) -> CkbVmFixture {
+    let inputs =
+        (0..input_count).map(|_| FixtureCell { capacity: 100_000_000_000, type_script: None, data: Bytes::default() }).collect();
     let outputs = (0..output_count)
         .map(|_| FixtureCell {
             capacity: 100_000_000_000,
-            lock: packed::Script::default(), // always_success set by harness
-            type_script: None,               // current_under_test set by harness
+            type_script: None, // current_under_test set by harness
             data: Bytes::default(),
         })
         .collect();
@@ -535,8 +476,6 @@ pub fn build_simple_fixture(
         witnesses: Vec::new(),
         header_dao_fields: Vec::new(),
         link_inputs_to_headers: false,
-        expected_pass,
-        failure_mode,
     }
 }
 
@@ -557,21 +496,12 @@ fn build_cell_output(
 
 /// Build a DAO fixture for testing DAO accumulated-rate scripts.
 /// Creates a header with the given DAO accumulated rate and includes it as a header dep.
-pub fn build_dao_fixture(
-    script_args: Bytes,
-    accumulated_rate: u64,
-    input_count: usize,
-    output_count: usize,
-    expected_pass: bool,
-    failure_mode: Option<String>,
-) -> CkbVmFixture {
+pub fn build_dao_fixture(script_args: Bytes, accumulated_rate: u64, input_count: usize, output_count: usize) -> CkbVmFixture {
     let dao_field = make_dao_field(accumulated_rate);
-    let inputs = (0..input_count)
-        .map(|_| FixtureCell { capacity: 100_000_000_000, lock: packed::Script::default(), type_script: None, data: Bytes::default() })
-        .collect();
-    let outputs = (0..output_count)
-        .map(|_| FixtureCell { capacity: 100_000_000_000, lock: packed::Script::default(), type_script: None, data: Bytes::default() })
-        .collect();
+    let inputs =
+        (0..input_count).map(|_| FixtureCell { capacity: 100_000_000_000, type_script: None, data: Bytes::default() }).collect();
+    let outputs =
+        (0..output_count).map(|_| FixtureCell { capacity: 100_000_000_000, type_script: None, data: Bytes::default() }).collect();
     CkbVmFixture {
         script_args,
         inputs,
@@ -581,8 +511,6 @@ pub fn build_dao_fixture(
         witnesses: Vec::new(),
         header_dao_fields: vec![dao_field],
         link_inputs_to_headers: true,
-        expected_pass,
-        failure_mode,
     }
 }
 
@@ -591,20 +519,11 @@ pub fn build_dao_fixture(
 /// No header deps or DAO accumulated rate — this fixture is for
 /// `is_deposit_data` / `is_withdrawal_request_data` / `has_dao_type` / `cell_capacity`
 /// tests that use LOAD_CELL_DATA or LOAD_CELL_BY_FIELD on inputs.
-pub fn build_dao_data_fixture(
-    script_args: Bytes,
-    input_data: Vec<Bytes>,
-    output_count: usize,
-    expected_pass: bool,
-    failure_mode: Option<String>,
-) -> CkbVmFixture {
-    let inputs: Vec<FixtureCell> = input_data
-        .into_iter()
-        .map(|data| FixtureCell { capacity: 100_000_000_000, lock: packed::Script::default(), type_script: None, data })
-        .collect();
-    let outputs = (0..output_count)
-        .map(|_| FixtureCell { capacity: 100_000_000_000, lock: packed::Script::default(), type_script: None, data: Bytes::default() })
-        .collect();
+pub fn build_dao_data_fixture(script_args: Bytes, input_data: Vec<Bytes>, output_count: usize) -> CkbVmFixture {
+    let inputs: Vec<FixtureCell> =
+        input_data.into_iter().map(|data| FixtureCell { capacity: 100_000_000_000, type_script: None, data }).collect();
+    let outputs =
+        (0..output_count).map(|_| FixtureCell { capacity: 100_000_000_000, type_script: None, data: Bytes::default() }).collect();
     CkbVmFixture {
         script_args,
         inputs,
@@ -614,8 +533,6 @@ pub fn build_dao_data_fixture(
         witnesses: Vec::new(),
         header_dao_fields: Vec::new(),
         link_inputs_to_headers: false,
-        expected_pass,
-        failure_mode,
     }
 }
 
@@ -630,12 +547,6 @@ pub fn make_dao_field(accumulated_rate: u64) -> [u8; 32] {
     dao[8..16].copy_from_slice(&accumulated_rate.to_le_bytes());
     // Bytes 16-31: leave as 0
     dao
-}
-
-/// Compute the blake2b hash of bytes, returning a 32-byte array.
-#[allow(dead_code)]
-pub fn blake2b_hash(data: &[u8]) -> [u8; 32] {
-    blake2b_256(data)
 }
 
 /// Load an original iCKB script binary from the test fixtures directory.

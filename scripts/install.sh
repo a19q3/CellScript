@@ -5,7 +5,7 @@ if (set -o pipefail) 2>/dev/null; then
     set -o pipefail
 fi
 
-REPO="tsukifune-kosei/CellScript"
+REPO="CellScript-Labs/CellScript"
 BINARY="cellc"
 INSTALL_DIR="${CELLSCRIPT_HOME:-$HOME/.cellscript}/bin"
 

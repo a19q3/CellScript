@@ -73,11 +73,11 @@ a real six-contract Infern parity matrix.
 | public scheduler policy witness remains Molecule-only | `src/lib.rs:3411-3416` |
 | `lock_args` is a fixed-width `Script.args` escape hatch | `docs/CELLSCRIPT_ENTRY_WITNESS_ABI.md:40-43` |
 | schema-backed dynamic witness payloads are Molecule data | `docs/CELLSCRIPT_ENTRY_WITNESS_ABI.md:70-80` |
-| raw cell data and OutPoint helpers exist | `docs/archive/0.18/CELLSCRIPT_0_18_ROADMAP.md:93-110` |
+| raw cell data and OutPoint helpers exist | `src/lib.rs`, `src/ir/mod.rs`, `src/codegen/runtime.rs` |
 | NovaSeal v0-mvp demonstrates raw byte-offset source expressibility | `proposals/novaseal/v0-mvp-skeleton/src/nova_state_lifecycle_type.cell:138-177`, `proposals/novaseal/v0-mvp-skeleton/src/nova_state_type.cell:125-155` |
 | v0-mvp packed layout is not a production ABI conclusion | `proposals/novaseal/v0-mvp-skeleton/docs/SCHEMA_LAYOUT.md:44-54` |
 | newer NovaSeal profiles mostly use whole-cell packed hashes | `proposals/novaseal/fungible-xudt-profile-v0/src/nova_fungible_xudt_lifecycle_type.cell:226-227`, `proposals/novaseal/btc-transaction-commitment-profile-v0/src/nova_btc_transaction_commitment_type.cell:361`, `proposals/novaseal/fiber-candidate-profile-v0/src/nova_fiber_candidate_type.cell:378` |
-| iCKB specs live under the benchmark test surface, not public examples | `tests/benchmarks/ickb_specs/README.md:3-9`, `tests/benchmarks/ickb_diff/claim_manifest.json:5-9`, `roadmap/CELLSCRIPT_ROADMAP.md:343`, `roadmap/CELLSCRIPT_ROADMAP_OVERVIEW.md:330` |
+| iCKB specs live under the benchmark test surface, not public examples | `tests/benchmarks/ickb_specs/README.md:3-9`, `tests/benchmarks/ickb_diff/claim_manifest.json:5-9`, `docs/archive/0.17/CELLSCRIPT_0_17_ICKB_FINAL_REPORT.md` |
 | 0.20 has an ELF entry ABI gate and the build-report linkage | `docs/releases/CELLSCRIPT_0_16_TO_0_20_RELEASE_NOTES.md`, `scripts/ckb_cellscript_acceptance.sh`, `crates/cellscript-tools/src/production_evidence.rs`, `docs/CELLSCRIPT_GATE_POLICY.md` |
 | `cell_data_codec_manifest` is emitted and exposed to generated builders | `src/lib.rs`, `src/cli/commands.rs`, `tests/cli.rs`, `docs/releases/CELLSCRIPT_0_16_TO_0_20_RELEASE_NOTES.md` |
 | DOB-EVO is mainly a lock-hash / production-policy issue, not Molecule-only evidence | Captured in the retired 0.20 audit notes; current release claims must be tied to fresh devnet evidence. |
@@ -121,10 +121,9 @@ Immediate items now closed:
 
 1. Maintain one active report path; the stale `_ZH` / `_zh-cn` document path is
    removed.
-2. Pin `tests/benchmarks/ickb_specs/*.cell` as the benchmark surface and correct
-   the stale `examples/ickb_benchmark/*.cell` roadmap claim. The actual change is
-   in `roadmap/CELLSCRIPT_ROADMAP.md:343` and
-   `roadmap/CELLSCRIPT_ROADMAP_OVERVIEW.md:330`; no new public example directory
+2. Pin `tests/benchmarks/ickb_specs/*.cell` as the benchmark surface and remove
+   the stale `examples/ickb_benchmark/*.cell` planning claim. The canonical
+   evidence remains under `tests/benchmarks`; no new public example directory
    was added.
 3. Document `CellScriptBuildReport` in `docs/CELLSCRIPT_GATE_POLICY.md` as an
    integration of the acceptance report, production gate, and ELF ABI gate.

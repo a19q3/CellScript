@@ -1,0 +1,132 @@
+# Tutorial 16: Generics, Public Interfaces, and Typed Artifacts
+
+This tutorial covers the 0.25 reusable-value and package boundary. It shows how
+to write a bounded generic value, choose visibility, inspect the canonical
+interface, compare an upgrade, and check the typed record bound to an ELF.
+
+## 1. Write A Fixed Generic Value
+
+```cellscript
+module tutorial::pairs
+
+public struct Pair<T: copy + drop + store + fixed + serializable + non_linear>
+    has copy, drop, store, fixed, serializable, non_linear {
+    left: T
+    right: T
+}
+
+public fn swap<T: copy + drop + store + fixed + serializable + non_linear>(pair: Pair<T>) -> Pair<T> {
+    return Pair<T> { left: pair.right, right: pair.left }
+}
+
+private fn internal_identity(value: u64) -> u64 {
+    return value
+}
+```
+
+CellScript monomorphizes concrete value uses before IR lowering. The compiler
+records every instantiation and applies fixed nesting, count, and identity-size
+budgets. Ordinary generic containers cannot hide a Cell-backed value.
+Public templates may be imported from dependencies; specializations remain in
+the owning module and do not become public-interface entries in the consumer.
+
+Value abilities are not Cell authority. `copy`, `drop`, `fixed`,
+`serializable`, and `non_linear` describe ordinary values; `create`, `consume`,
+`replace`, and other Cell capabilities remain on Cell-backed declarations.
+
+## 2. Use `Option<T>` And Complete Patterns
+
+```cellscript
+public fn unwrap_or_zero(value: Option<u64>) -> u64 {
+    return match value {
+        Option::Some(inner) => { inner }
+        Option::None => { 0 }
+    }
+}
+```
+
+Fixed payload enums support recursive tuple, struct, enum, wildcard, and
+binding-free or-patterns. Exhaustiveness and linear-value rules are checked
+before lowering.
+
+## 3. Use Explicit Loop Control
+
+```cellscript
+label outer: for i in 0..10 {
+    for j in 0..10 {
+        if j == 0 {
+            continue
+        }
+        if i == 5 {
+            break outer
+        }
+    }
+}
+```
+
+An unlabelled `break` or `continue` targets the nearest loop. A labelled form
+must name a visible enclosing `label name: for ...` or `label name: while ...`
+loop. The type checker rejects loop control outside a loop, while lowering
+records the exact CFG jump checked against the final machine artifact.
+
+## 4. Emit And Compare Interfaces
+
+```bash
+cellc interface . --output target/current.interface.json
+cellc interface-diff \
+  --old target/released.interface.json \
+  --new . \
+  --json
+```
+
+Read the six compatibility dimensions independently: source API, serialized
+layout, runtime ABI, effects/capabilities, builder contract, and deployment
+contract. A breaking report exits with `E2501`.
+
+## 5. Build And Verify The Typed Artifact
+
+```bash
+cellc build --target riscv64-elf --target-profile ckb
+cellc verify-artifact build/main.elf --json
+```
+
+Metadata schema 61 includes:
+
+- `public_interface` and `interface_hash`;
+- `typed_semantics` and `typed_semantics_hash`;
+- generic instantiation records; and
+- the existing verified lowering and source-map bindings for ELF output.
+
+The independent checker validates exact typed constants and operations and
+recomputes layout/identity, definite-definition joins, ownership/borrow state,
+and the machine ABI link. It does not reconstruct semantics from source. It
+uses `V2419` for an invalid typed semantic record and `V2420` for a typed-to-
+machine mismatch.
+
+This still does not mean the checker ran CKB-VM or observed a deployment. Keep
+compiler, independent-checker, CKB-VM, deployment, commitment, and mainnet
+evidence distinct.
+
+## 6. Inspect It In The Playground
+
+The browser compiler remains metadata-only: it emits no ELF. The Playground
+now highlights generics, abilities, visibility, bitwise/shift operations, and
+loop control. Its default size-bounded compiler returns an authoring summary
+for Cell Flow, actions, and types. Generate the complete public-interface and
+typed-semantics records with native `cellc`; the browser summary is not a
+substitute for those records, semantic equivalence, or CKB-VM execution. Use
+the VS Code extension for full semantic completion, hover, and definition
+support.
+
+## 7. Keep Unsupported Runtime Semantics Out Of Production
+
+Generics do not make a Cell-backed collection executable. The frontend can
+type-check and audit bounded `consume_each` and `create_each` declarations, but
+0.25 does not yet define enough consensus detail to scan and decode every
+selected input or to bind every witness plan to exactly one output safely.
+
+The typed IR therefore retains the body and create template but lowers the
+operation to an explicit fail-closed boundary. A non-production CKB artifact
+returns runtime error 24. `--production` and `--deny-fail-closed` stop with
+E2105 before ASM or ELF is written. Treat that rejection as an honest feature
+boundary, not as evidence that the collection ran.

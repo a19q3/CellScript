@@ -470,6 +470,19 @@ pub fn run(root: &Path) -> Result<()> {
         !tx_measure_gate.contains("RUSTUP_TOOLCHAIN"),
         "CKB transaction measure tooling must use CellScript's pinned Rust toolchain",
     )?;
+    for token in [
+        "release_ckb_repo_from_args() {",
+        "staging_dir=\"$(mktemp -d \"$ROOT_DIR/target/cellscript-ckb-tx-measure.XXXXXX\")\"",
+        "cp tools/ckb-tx-measure/Cargo.toml tools/ckb-tx-measure/Cargo.lock",
+        "cp src/bin/ckb_tx_measure.rs",
+        "ln -s \"$ckb_repo\" \"$staging_dir/ckb\"",
+    ] {
+        require(gate_script.contains(token), format!("release gate must preserve isolated CKB checkout handling: `{token}`"))?;
+    }
+    require(
+        gate_script.matches("run_release_auxiliary_checks \"$ckb_repo\"").count() == 2,
+        "release and release-quick gates must pass the selected CKB checkout to auxiliary checks",
+    )?;
     require(
         gate_script.contains("--root \"$ROOT_DIR\" workspace-version"),
         "release source identity must read the root package version from Cargo.toml",
@@ -523,8 +536,8 @@ pub fn run(root: &Path) -> Result<()> {
     )?;
     require_contains(
         root,
-        "docs/archive/0.20/CELLSCRIPT_0_20_ROADMAP.md",
-        &["VS Code extension", "check_action_builder_toolchain", "CellFabric is frozen"],
+        "docs/releases/CELLSCRIPT_0_16_TO_0_20_RELEASE_NOTES.md",
+        &["check_action_builder_toolchain", "CellFabric smoke check", "tooling release validator"],
     )?;
     require_contains(
         root,
@@ -579,7 +592,20 @@ pub fn run(root: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::require_ordered_script_steps;
+    use super::{changelog_head, require_ordered_script_steps};
+
+    #[test]
+    fn changelog_head_accepts_versioned_unreleased_candidate() {
+        let captures = changelog_head()
+            .captures("# Changelog\n\n## 0.24.0 - Unreleased\n")
+            .expect("a versioned undated candidate heading must be accepted");
+        assert_eq!(captures.get(1).map(|capture| capture.as_str()), Some("0.24.0"));
+    }
+
+    #[test]
+    fn changelog_head_does_not_treat_unversioned_unreleased_as_release_boundary() {
+        assert!(changelog_head().captures("# Changelog\n\n## Unreleased\n").is_none());
+    }
 
     #[test]
     fn website_build_contract_accepts_additional_ordered_checks() {

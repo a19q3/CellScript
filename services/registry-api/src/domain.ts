@@ -14,6 +14,9 @@ export const AVAILABILITY_ACTION = "set_availability";
 export const REGISTRY_SCHEMA_VERSION = 1;
 export const ARTIFACT_PROFILE_CONTRACT_SCHEMA = "cellscript-registry-profile-contract-v1";
 export const ARTIFACT_PROFILE_CATALOG_SCHEMA = "cellscript-registry-profile-catalog-v1";
+export const LS_IDL_INTERFACE_SCHEMA = "cellscript-registry-ls-idl-interface-v1";
+export const LS_IDL_CONTENT_TYPE = "application/vnd.ckb.ls-idl+json";
+export const LS_IDL_FORMAT_VERSION = "0.1";
 export const CELLSCRIPT_EDITION = "2026";
 export const DEFAULT_REGISTRY_ORIGIN = "https://api.registry.cellscript.dev";
 export const DEFAULT_STATIC_REGISTRY_ORIGIN = "https://registry.cellscript.dev";
@@ -975,7 +978,11 @@ function validateArtifactProfileContract(
   } catch {
     throw new ApiError(400, "invalid_profile_contract", "profile_contract must be a JSON object");
   }
-  exactKeys(contract, ["schema", "artifact_kind", "profile", "build", "security", "ckb", "verifier", "reproduction", "copy"], "profile_contract");
+  exactKeys(
+    contract,
+    ["schema", "artifact_kind", "profile", "build", "security", "ckb", "interface", "verifier", "reproduction", "copy"],
+    "profile_contract",
+  );
   requireLiteral(contract, "schema", ARTIFACT_PROFILE_CONTRACT_SCHEMA, "profile_contract");
   requireLiteral(contract, "artifact_kind", artifact.kind, "profile_contract");
   requireLiteral(contract, "profile", artifact.profile, "profile_contract");
@@ -991,9 +998,11 @@ function validateArtifactProfileContract(
     requireOneOf(ckb, "hash_type", ["data", "data1", "data2", "type"], "profile_contract.ckb");
     requireOneOf(ckb, "dep_type", ["code", "dep_group"], "profile_contract.ckb");
     requireBoundHash(ckb, "abi_hash", release["abi_hash"], "profile_contract.ckb");
+    validateLsIdlInterfaceContract(contract, artifact);
     validateReproductionContract(contract, release, reproducible);
     forbidKeys(contract, ["copy"], "profile_contract");
     if (artifact.kind === "runtime_verifier") {
+      forbidKeys(contract, ["interface"], "profile_contract");
       const verifier = requiredObject(contract, "verifier", "profile_contract");
       exactKeys(verifier, ["verifier_id", "ipc_abi", "ipc_abi_hash"], "profile_contract.verifier");
       requireString(verifier, "verifier_id");
@@ -1007,12 +1016,12 @@ function validateArtifactProfileContract(
   if (artifact.kind === "reproducible_binary") {
     validateBuildContract(contract, true);
     validateSecurityContract(contract);
-    forbidKeys(contract, ["ckb", "verifier", "copy"], "profile_contract");
+    forbidKeys(contract, ["ckb", "interface", "verifier", "copy"], "profile_contract");
     validateReproductionContract(contract, release, true);
     return;
   }
   if (artifact.kind === "template") {
-    forbidKeys(contract, ["build", "security", "ckb", "verifier", "reproduction"], "profile_contract");
+    forbidKeys(contract, ["build", "security", "ckb", "interface", "verifier", "reproduction"], "profile_contract");
     const copy = requiredObject(contract, "copy", "profile_contract");
     exactKeys(copy, ["format", "entrypoint"], "profile_contract.copy");
     requireOneOf(copy, "format", ["file_map_v1"], "profile_contract.copy");
@@ -1020,6 +1029,36 @@ function validateArtifactProfileContract(
     return;
   }
   throw new ApiError(400, "invalid_profile_contract", "profile_contract is not valid for this artifact kind");
+}
+
+function validateLsIdlInterfaceContract(contract: Record<string, unknown>, artifact: ArtifactDescriptor): void {
+  if (contract["interface"] === undefined) return;
+  if (artifact.kind !== "deployable_contract") {
+    throw new ApiError(400, "invalid_profile_contract", "LS-IDL is valid only for deployable_contract artifacts");
+  }
+  const ckb = requiredObject(contract, "ckb", "profile_contract");
+  requireLiteral(ckb, "script_role", "lock", "profile_contract.ckb");
+  const interfaceContract = requiredObject(contract, "interface", "profile_contract");
+  exactKeys(
+    interfaceContract,
+    ["schema", "format", "format_version", "object_role", "content_type", "encoding", "commitment"],
+    "profile_contract.interface",
+  );
+  requireLiteral(interfaceContract, "schema", LS_IDL_INTERFACE_SCHEMA, "profile_contract.interface");
+  requireLiteral(interfaceContract, "format", "ls-idl", "profile_contract.interface");
+  requireLiteral(interfaceContract, "format_version", LS_IDL_FORMAT_VERSION, "profile_contract.interface");
+  requireLiteral(interfaceContract, "object_role", "abi", "profile_contract.interface");
+  requireLiteral(interfaceContract, "content_type", LS_IDL_CONTENT_TYPE, "profile_contract.interface");
+  requireLiteral(interfaceContract, "encoding", "linear-le-v0", "profile_contract.interface");
+  const commitment = requiredObject(interfaceContract, "commitment", "profile_contract.interface");
+  exactKeys(commitment, ["algorithm", "placement", "digest"], "profile_contract.interface.commitment");
+  requireLiteral(commitment, "algorithm", "sha256", "profile_contract.interface.commitment");
+  requireLiteral(commitment, "placement", "code-cell-data-suffix-32", "profile_contract.interface.commitment");
+  validateHash(
+    requireString(commitment, "digest"),
+    "profile_contract.interface.commitment.digest",
+    "invalid_profile_contract",
+  );
 }
 
 function validateBuildContract(contract: Record<string, unknown>, expectedReproducible?: boolean): boolean {

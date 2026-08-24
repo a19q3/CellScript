@@ -22,7 +22,7 @@ non-overlapping `E2xxx` range.
 | `E2201` | `assembly-layout` | Generated assembly could not form a valid machine layout. | Check sections, labels, branches, and block ordering. |
 | `E2202` | `instruction-encoding` | A RISC-V instruction or immediate could not be encoded. | Check the mnemonic, operands, registers, and immediate range. |
 | `E2300` | `elf-emission` | A valid RISC-V ELF artifact could not be constructed. | Check entrypoint, section layout, offsets, and size constraints. |
-| `E2400` | `external-toolchain` | An explicitly configured RISC-V toolchain failed. | Check the toolchain environment variables, executable paths, and stderr. |
+| `E2400` | `verified-artifact-boundary` | The verified lowering/source-map boundary for an ELF artifact could not be constructed or persisted. | Inspect the verified lowering record, source artifact map, and canonical sidecar diagnostic. |
 | `E2501` | `public-interface-breaking` | `cellc interface-diff` found a breaking source API, serialized layout, runtime ABI, effect/capability, builder, or deployment change. | Inspect every reported compatibility dimension and intentionally version or reverse the incompatible change before Registry publication. |
 | `E2900` | `backend-invariant` | An internal backend invariant failed after semantic checking. | Retain the source and compiler version and report a compiler defect. |
 | `W2500` | `implicit-legacy-public` | A module mixes explicit visibility with Edition 2026 declarations that still default to public. | Add `public`, `public(package)`, or `private` to every declaration listed by the warning. |

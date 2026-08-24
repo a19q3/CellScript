@@ -12,9 +12,6 @@
 //! 3. **Live devnet deploy** (`#[ignore]`): Submit real transactions to a CKB devnet,
 //!    query on-chain state, verify Cell.lock ↔ Deployed.toml ↔ on-chain consistency.
 
-// Keep the Edition 2024 let-chain cleanup separate from the toolchain migration.
-#![allow(clippy::collapsible_if)]
-
 //!
 //! ## Running
 //!
@@ -445,39 +442,39 @@ fn cross_verify_lockfile_deployed(lockfile: &Lockfile, deployed: &DeployedManife
     let mut violations = Vec::new();
 
     // Check build hashes
-    if let Some(build) = &lockfile.package_build {
-        if let Some(deployed_build) = &deployed.build {
-            if let (Some(lk), Some(dp)) = (&build.artifact_hash, &deployed_build.artifact_hash) {
-                if lk != dp {
-                    violations.push(format!("artifact_hash mismatch: Cell.lock='{}', Deployed.toml='{}'", lk, dp));
-                }
-            }
-            if let (Some(lk), Some(dp)) = (&build.schema_hash, &deployed_build.schema_hash) {
-                if lk != dp {
-                    violations.push(format!("schema_hash mismatch: Cell.lock='{}', Deployed.toml='{}'", lk, dp));
-                }
-            }
+    if let Some(build) = &lockfile.package_build
+        && let Some(deployed_build) = &deployed.build
+    {
+        if let (Some(lk), Some(dp)) = (&build.artifact_hash, &deployed_build.artifact_hash)
+            && lk != dp
+        {
+            violations.push(format!("artifact_hash mismatch: Cell.lock='{}', Deployed.toml='{}'", lk, dp));
+        }
+        if let (Some(lk), Some(dp)) = (&build.schema_hash, &deployed_build.schema_hash)
+            && lk != dp
+        {
+            violations.push(format!("schema_hash mismatch: Cell.lock='{}', Deployed.toml='{}'", lk, dp));
         }
     }
 
     // Check deployment records
     for deployment in &deployed.deployments {
         if let Some(deployment_ref) = lockfile.deployment.get(&deployment.network) {
-            if let Some(ref code_hash) = deployment_ref.code_hash {
-                if code_hash != &deployment.code_hash {
-                    violations.push(format!(
-                        "code_hash mismatch for network '{}': Cell.lock='{}', Deployed.toml='{}'",
-                        deployment.network, code_hash, deployment.code_hash
-                    ));
-                }
+            if let Some(ref code_hash) = deployment_ref.code_hash
+                && code_hash != &deployment.code_hash
+            {
+                violations.push(format!(
+                    "code_hash mismatch for network '{}': Cell.lock='{}', Deployed.toml='{}'",
+                    deployment.network, code_hash, deployment.code_hash
+                ));
             }
-            if let Some(ref data_hash) = deployment_ref.data_hash {
-                if data_hash != &deployment.data_hash {
-                    violations.push(format!(
-                        "data_hash mismatch for network '{}': Cell.lock='{}', Deployed.toml='{}'",
-                        deployment.network, data_hash, deployment.data_hash
-                    ));
-                }
+            if let Some(ref data_hash) = deployment_ref.data_hash
+                && data_hash != &deployment.data_hash
+            {
+                violations.push(format!(
+                    "data_hash mismatch for network '{}': Cell.lock='{}', Deployed.toml='{}'",
+                    deployment.network, data_hash, deployment.data_hash
+                ));
             }
         }
     }
@@ -1741,8 +1738,7 @@ const ALWAYS_SUCCESS_HASH_TYPE: &str = "data";
 // ── Devnet lifecycle helpers ──
 
 struct CkbDevnet {
-    #[allow(dead_code)]
-    ckb_dir: tempfile::TempDir,
+    _ckb_dir: tempfile::TempDir,
     rpc_url: String,
     ckb_pid: std::process::Child,
 }
@@ -1781,18 +1777,17 @@ impl CkbDevnet {
                 "id": 1,
                 "jsonrpc": "2.0",
                 "method": "get_tip_header",
-                                "params": serde_json::Value::Array(vec![]),
+                "params": serde_json::Value::Array(vec![]),
             });
             if let Ok(output) = std::process::Command::new("curl")
                 .args(["-s", "-H", "Content-Type: application/json", "-d", &body.to_string(), &rpc_url])
                 .output()
+                && let Ok(response) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                && response.get("result").is_some()
+                && response.get("error").is_none()
             {
-                if let Ok(response) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
-                    if response.get("result").is_some() && response.get("error").is_none() {
-                        ready = true;
-                        break;
-                    }
-                }
+                ready = true;
+                break;
             }
             if let Ok(Some(status)) = ckb_pid.try_wait() {
                 let log_content = std::fs::read_to_string(&ckb_log_path).unwrap_or_default();
@@ -1820,7 +1815,7 @@ impl CkbDevnet {
                 .output();
         }
 
-        Self { ckb_dir, rpc_url, ckb_pid }
+        Self { _ckb_dir: ckb_dir, rpc_url, ckb_pid }
     }
 
     fn find_ckb_repo() -> std::path::PathBuf {
@@ -1935,32 +1930,6 @@ impl CkbDevnet {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         panic!("{} was not committed after 64 blocks", label);
-    }
-
-    /// Find a spendable cellbase output and return (tx_hash, index, capacity_hex).
-    #[allow(dead_code)]
-    fn find_spendable_cellbase(&self) -> (String, u32, String) {
-        for _ in 0..64 {
-            let block_hash = self.generate_block().as_str().unwrap().to_string();
-            let block = self.rpc("get_block", serde_json::json!([block_hash]));
-            let cellbase = &block["transactions"][0];
-            let tx_hash = cellbase["hash"].as_str().unwrap().to_string();
-            let outputs = cellbase["outputs"].as_array().unwrap();
-            for (index, output) in outputs.iter().enumerate() {
-                let capacity = output["capacity"].as_str().unwrap();
-                if u64::from_str_radix(capacity.trim_start_matches("0x"), 16).unwrap() > 0 {
-                    // Wait for it to be live
-                    for _ in 0..20 {
-                        let live = self.get_live_cell(&tx_hash, index as u32);
-                        if live["status"].as_str() == Some("live") {
-                            return (tx_hash, index as u32, capacity.to_string());
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    }
-                }
-            }
-        }
-        panic!("no spendable cellbase found after 64 blocks");
     }
 
     /// Collect enough capacity for deploying `artifact_size` bytes.

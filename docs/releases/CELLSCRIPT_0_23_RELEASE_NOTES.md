@@ -52,9 +52,8 @@ the incomplete pinned Fiber/RGB++ matrices remain pending.
 Myelin no longer has the vendored-compiler architecture assumed by the early
 0.23 proposal. Adding an off-chain target profile would now duplicate
 Myelin-owned VM/session semantics and weaken the `CkbStrict` court boundary.
-The [0.24 roadmap](../../roadmap/CELLSCRIPT_0_24_ROADMAP.md) instead specifies
-an independent artifact checker, executable package tests, source maps, and an
-explicit Myelin adapter-lock handoff.
+The 0.24 release instead adds an independent artifact checker, executable
+package tests, source maps, and an explicit Myelin adapter-lock handoff.
 
 ## At A Glance
 
@@ -481,6 +480,5 @@ consumer install remain the explicit adoption checkpoint.
 - [Package provenance and deployment identity](../CELLSCRIPT_PACKAGE_PROVENANCE_AND_DEPLOYMENT_IDENTITY.md)
 - [CKB target profiles](../wiki/Tutorial-05-CKB-Target-Profiles.md)
 - [Metadata verification and production gates](../wiki/Tutorial-06-Metadata-Verification-and-Production-Gates.md)
-- [0.23 roadmap](../../roadmap/CELLSCRIPT_0_23_ROADMAP.md)
-- [0.24 roadmap](../../roadmap/CELLSCRIPT_0_24_ROADMAP.md)
+- [0.24 release notes](CELLSCRIPT_0_24_RELEASE_NOTES.md)
 - [Changelog](../../CHANGELOG.md)

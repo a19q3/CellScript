@@ -260,17 +260,17 @@ impl ModuleResolver {
                 return Some(ty.clone());
             }
 
-            if let Some(full_path) = table.imported.get(name) {
-                if let Some((target_module, symbol)) = full_path.rsplit_once("::") {
-                    if !self.symbol_accessible(module, target_module, symbol) {
-                        return None;
-                    }
-                    return self
-                        .symbol_tables
-                        .get(target_module)
-                        .and_then(|target_table| target_table.types.get(symbol).cloned())
-                        .map(|ty| self.localize_type_def(module, target_module, ty));
+            if let Some(full_path) = table.imported.get(name)
+                && let Some((target_module, symbol)) = full_path.rsplit_once("::")
+            {
+                if !self.symbol_accessible(module, target_module, symbol) {
+                    return None;
                 }
+                return self
+                    .symbol_tables
+                    .get(target_module)
+                    .and_then(|target_table| target_table.types.get(symbol).cloned())
+                    .map(|ty| self.localize_type_def(module, target_module, ty));
             }
         }
 
@@ -298,18 +298,18 @@ impl ModuleResolver {
                 return Some((module.to_string(), func.clone()));
             }
 
-            if let Some(full_path) = table.imported.get(name) {
-                if let Some((target_module, symbol)) = full_path.rsplit_once("::") {
-                    if !self.symbol_accessible(module, target_module, symbol) {
-                        return None;
-                    }
-                    if let Some(target_table) = self.symbol_tables.get(target_module) {
-                        return target_table
-                            .functions
-                            .get(symbol)
-                            .cloned()
-                            .map(|function| (target_module.to_string(), self.localize_function_def(module, target_module, function)));
-                    }
+            if let Some(full_path) = table.imported.get(name)
+                && let Some((target_module, symbol)) = full_path.rsplit_once("::")
+            {
+                if !self.symbol_accessible(module, target_module, symbol) {
+                    return None;
+                }
+                if let Some(target_table) = self.symbol_tables.get(target_module) {
+                    return target_table
+                        .functions
+                        .get(symbol)
+                        .cloned()
+                        .map(|function| (target_module.to_string(), self.localize_function_def(module, target_module, function)));
                 }
             }
         }
@@ -337,14 +337,14 @@ impl ModuleResolver {
                 return Some((module.to_string(), constant.clone()));
             }
 
-            if let Some(full_path) = table.imported.get(name) {
-                if let Some((target_module, symbol)) = full_path.rsplit_once("::") {
-                    if !self.symbol_accessible(module, target_module, symbol) {
-                        return None;
-                    }
-                    if let Some(target_table) = self.symbol_tables.get(target_module) {
-                        return target_table.constants.get(symbol).cloned().map(|constant| (target_module.to_string(), constant));
-                    }
+            if let Some(full_path) = table.imported.get(name)
+                && let Some((target_module, symbol)) = full_path.rsplit_once("::")
+            {
+                if !self.symbol_accessible(module, target_module, symbol) {
+                    return None;
+                }
+                if let Some(target_table) = self.symbol_tables.get(target_module) {
+                    return target_table.constants.get(symbol).cloned().map(|constant| (target_module.to_string(), constant));
                 }
             }
         }

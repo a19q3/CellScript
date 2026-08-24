@@ -34,7 +34,9 @@ fn forbidden_source_artifact(path: &Path) -> bool {
         .is_some_and(|extension| matches!(extension, "py" | "pyi" | "pyc" | "pyo"));
     forbidden_extension
         || path.file_name().and_then(|name| name.to_str()) == Some(".DS_Store")
-        || path.components().any(|component| matches!(component.as_os_str().to_str(), Some("__pycache__" | ".cap")))
+        || path
+            .components()
+            .any(|component| matches!(component.as_os_str().to_str(), Some("__pycache__" | ".cap" | ".playwright-mcp")))
 }
 
 fn active_tooling_source(path: &Path) -> bool {
@@ -179,7 +181,7 @@ pub fn check_doc_status(root: &Path) -> Result<()> {
     check_document_contract(
         root,
         "README.md",
-        &["0.23 release notes", "0.24 release notes", "0.24 roadmap", "cellc publish --authorise"],
+        &["0.23 release notes", "0.24 release notes", "cellc publish --authorise"],
         &[],
         &mut failures,
     )?;
@@ -190,8 +192,6 @@ pub fn check_doc_status(root: &Path) -> Result<()> {
             schema_number.as_str(),
             "CELLSCRIPT_0_23_RELEASE_NOTES.md",
             "CELLSCRIPT_0_24_RELEASE_NOTES.md",
-            "CELLSCRIPT_0_24_ROADMAP.md",
-            "CELLSCRIPT_0_25_ROADMAP.md",
             "CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md",
         ],
         &[],
@@ -217,7 +217,7 @@ pub fn check_doc_status(root: &Path) -> Result<()> {
     check_document_contract(
         root,
         "docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md",
-        &["metadata schema 57", "0.24 roadmap"],
+        &["metadata schema 57", "independent artifact checker"],
         &["metadata schema 58"],
         &mut failures,
     )?;
@@ -246,41 +246,11 @@ pub fn check_doc_status(root: &Path) -> Result<()> {
     )?;
     check_document_contract(
         root,
-        "roadmap/CELLSCRIPT_0_23_ROADMAP.md",
-        &["implementation scope frozen", "final scope decision", "0.24 roadmap", "attested adapter"],
-        &["Status: Draft, pending release-line coordination"],
-        &mut failures,
-    )?;
-    check_document_contract(
-        root,
-        "roadmap/CELLSCRIPT_0_24_ROADMAP.md",
-        &[
-            "Verified Artifact Boundary",
-            "Executable Package Tests",
-            "Myelin Adapter Re-Convergence",
-            "independent checker",
-            "Exit Criteria",
-        ],
-        &[],
-        &mut failures,
-    )?;
-    check_document_contract(
-        root,
         "docs/wiki/Tutorial-14-Verified-Artifacts-and-Executable-Tests.md",
         &["four-file bundle", "cellc test --backend all", "structurally_verified"],
         &[],
         &mut failures,
     )?;
-    for relative in ["roadmap/CELLSCRIPT_ROADMAP.md", "roadmap/CELLSCRIPT_ROADMAP_OVERVIEW.md"] {
-        check_document_contract(
-            root,
-            relative,
-            &["0.24", "independent", "CELLSCRIPT_0_24_ROADMAP.md"],
-            &["Myelin vendored fork re-converges"],
-            &mut failures,
-        )?;
-    }
-
     let mut wiki_docs = Vec::new();
     collect_markdown(&root.join("docs/wiki"), &mut wiki_docs)?;
     for path in wiki_docs {
@@ -328,7 +298,6 @@ pub fn check_markdown_links(root: &Path) -> Result<()> {
     let starts = [
         root.join("README.md"),
         root.join("docs"),
-        root.join("roadmap"),
         root.join("editors/vscode-cellscript/README.md"),
         root.join("editors/vscode-cellscript/docs"),
     ];
@@ -392,7 +361,7 @@ pub fn check_package_contents(path: &Path) -> Result<()> {
         "LICENSE-MIT",
         "README.md",
     ];
-    let allowed_dirs = ["assets", "examples", "roadmap", "scripts", "src", "tests"];
+    let allowed_dirs = ["assets", "examples", "scripts", "src", "tests"];
     let mut unexpected = Vec::new();
     let contents = fs::read_to_string(path)?;
     for raw in contents.lines() {
@@ -439,6 +408,7 @@ mod tests {
         assert!(forbidden_source_artifact(Path::new("scripts/legacy.py")));
         assert!(forbidden_source_artifact(Path::new("src/__pycache__/legacy.pyc")));
         assert!(forbidden_source_artifact(Path::new(".cap/logs/run.log")));
+        assert!(forbidden_source_artifact(Path::new(".playwright-mcp/page.yml")));
         assert!(!forbidden_source_artifact(Path::new("src/main.rs")));
     }
 

@@ -483,10 +483,10 @@ impl<'a> TypeChecker<'a> {
         let mut seen_symbols = HashSet::new();
         let mut seen_type_ids = HashMap::new();
         for item in &module.items {
-            if let Some((symbol, span)) = item_symbol_name_and_span(item) {
-                if !seen_symbols.insert(symbol.to_string()) {
-                    diagnostics.push(CompileError::new(format!("duplicate symbol '{}'", symbol), span));
-                }
+            if let Some((symbol, span)) = item_symbol_name_and_span(item)
+                && !seen_symbols.insert(symbol.to_string())
+            {
+                diagnostics.push(CompileError::new(format!("duplicate symbol '{}'", symbol), span));
             }
             match item {
                 Item::Const(const_def) => {
@@ -844,35 +844,29 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn flow_states_for_decl(&self, machine: &FlowDef, field_ty: &Type) -> Result<(Vec<String>, Option<String>)> {
-        if let Type::Named(enum_name) = field_ty {
-            if let Some(variants) = self.resolve_enum_variants(enum_name) {
-                if variants.iter().any(|variant| self.enum_variant_has_payload(enum_name, variant)) {
-                    return Err(CompileError::new(
-                        format!(
-                            "flow field '{}.{}' enum '{}' must not have payload variants",
-                            machine.target.base, machine.target.field, enum_name
-                        ),
-                        machine.target.span,
-                    ));
-                }
-                for transition in &machine.transitions {
-                    self.canonical_state_name_for_flow(
-                        &machine.target.base,
-                        Some(enum_name),
-                        &variants,
-                        &transition.from,
-                        transition.span,
-                    )?;
-                    self.canonical_state_name_for_flow(
-                        &machine.target.base,
-                        Some(enum_name),
-                        &variants,
-                        &transition.to,
-                        transition.span,
-                    )?;
-                }
-                return Ok((variants, Some(enum_name.clone())));
+        if let Type::Named(enum_name) = field_ty
+            && let Some(variants) = self.resolve_enum_variants(enum_name)
+        {
+            if variants.iter().any(|variant| self.enum_variant_has_payload(enum_name, variant)) {
+                return Err(CompileError::new(
+                    format!(
+                        "flow field '{}.{}' enum '{}' must not have payload variants",
+                        machine.target.base, machine.target.field, enum_name
+                    ),
+                    machine.target.span,
+                ));
             }
+            for transition in &machine.transitions {
+                self.canonical_state_name_for_flow(
+                    &machine.target.base,
+                    Some(enum_name),
+                    &variants,
+                    &transition.from,
+                    transition.span,
+                )?;
+                self.canonical_state_name_for_flow(&machine.target.base, Some(enum_name), &variants, &transition.to, transition.span)?;
+            }
+            return Ok((variants, Some(enum_name.clone())));
         }
 
         if !is_state_storage_type(field_ty) {
@@ -1018,10 +1012,10 @@ impl<'a> TypeChecker<'a> {
                 if !self.is_bool_type(&ty) {
                     return Err(CompileError::new(format!("validity predicate for '{}' must be boolean", type_name), require.span));
                 }
-                if let Some(message) = &require.message {
-                    if !matches!(message.as_ref(), Expr::String(_)) {
-                        return Err(CompileError::new("validity require message must be a string literal", expr_span(message)));
-                    }
+                if let Some(message) = &require.message
+                    && !matches!(message.as_ref(), Expr::String(_))
+                {
+                    return Err(CompileError::new("validity require message must be a string literal", expr_span(message)));
                 }
             }
             Ok(())
@@ -2090,27 +2084,27 @@ impl<'a> TypeChecker<'a> {
         for state_edge in &action.state_edges {
             let from_path = &state_edge.path;
             let to_path = &state_edge.to_path;
-            if let Some(previous_output) = lineage_inputs.insert(from_path.base.clone(), to_path.base.clone()) {
-                if previous_output != to_path.base {
-                    return Err(CompileError::new(
-                        format!(
-                            "state transition binding '{}' points to both '{}' and '{}'; split/merge lineage is not supported",
-                            from_path.base, previous_output, to_path.base
-                        ),
-                        state_edge.span,
-                    ));
-                }
+            if let Some(previous_output) = lineage_inputs.insert(from_path.base.clone(), to_path.base.clone())
+                && previous_output != to_path.base
+            {
+                return Err(CompileError::new(
+                    format!(
+                        "state transition binding '{}' points to both '{}' and '{}'; split/merge lineage is not supported",
+                        from_path.base, previous_output, to_path.base
+                    ),
+                    state_edge.span,
+                ));
             }
-            if let Some(previous_input) = lineage_outputs.insert(to_path.base.clone(), from_path.base.clone()) {
-                if previous_input != from_path.base {
-                    return Err(CompileError::new(
-                        format!(
-                            "state transition output '{}' is reached from both '{}' and '{}'; split/merge lineage is not supported",
-                            to_path.base, previous_input, from_path.base
-                        ),
-                        state_edge.span,
-                    ));
-                }
+            if let Some(previous_input) = lineage_outputs.insert(to_path.base.clone(), from_path.base.clone())
+                && previous_input != from_path.base
+            {
+                return Err(CompileError::new(
+                    format!(
+                        "state transition output '{}' is reached from both '{}' and '{}'; split/merge lineage is not supported",
+                        to_path.base, previous_input, from_path.base
+                    ),
+                    state_edge.span,
+                ));
             }
         }
 
@@ -2402,34 +2396,31 @@ impl<'a> TypeChecker<'a> {
                 span,
             ));
         }
-        if let Type::Named(enum_name) = return_type {
-            if let Some(variants) = self.resolve_enum_variant_fields(enum_name) {
-                let has_payload = variants.values().any(|fields| !fields.is_empty());
-                if has_payload && callable_kind != "function" {
+        if let Type::Named(enum_name) = return_type
+            && let Some(variants) = self.resolve_enum_variant_fields(enum_name)
+        {
+            let has_payload = variants.values().any(|fields| !fields.is_empty());
+            if has_payload && callable_kind != "function" {
+                return Err(CompileError::new(
+                    format!(
+                        "{} '{}' cannot return a payload enum across an entry ABI; payload enum returns are pure-helper ABI values",
+                        callable_kind, callable_name
+                    ),
+                    span,
+                ));
+            }
+            if has_payload {
+                let width = self.payload_type_runtime_width(return_type, &mut HashSet::new()).ok_or_else(|| {
+                    CompileError::new(format!("function '{}' payload enum return has no fixed-width ABI layout", callable_name), span)
+                })?;
+                if width > 16 {
                     return Err(CompileError::new(
                         format!(
-                            "{} '{}' cannot return a payload enum across an entry ABI; payload enum returns are pure-helper ABI values",
-                            callable_kind, callable_name
+                            "function '{}' payload enum return is {} bytes; 0.22 register-pair return ABI supports at most 16 bytes",
+                            callable_name, width
                         ),
                         span,
                     ));
-                }
-                if has_payload {
-                    let width = self.payload_type_runtime_width(return_type, &mut HashSet::new()).ok_or_else(|| {
-                        CompileError::new(
-                            format!("function '{}' payload enum return has no fixed-width ABI layout", callable_name),
-                            span,
-                        )
-                    })?;
-                    if width > 16 {
-                        return Err(CompileError::new(
-                            format!(
-                                "function '{}' payload enum return is {} bytes; 0.22 register-pair return ABI supports at most 16 bytes",
-                                callable_name, width
-                            ),
-                            span,
-                        ));
-                    }
                 }
             }
         }
@@ -2663,13 +2654,13 @@ impl<'a> TypeChecker<'a> {
                     param.span,
                 ));
             }
-            if let Some(collection) = parse_bounded_collection_type(&param.ty) {
-                if collection.kind != BoundedCollectionKind::List {
-                    return Err(CompileError::new(
-                        format!("witness parameter '{}' may use BoundedList<T, N>, not BoundedCellSet<T, N>", param.name),
-                        param.span,
-                    ));
-                }
+            if let Some(collection) = parse_bounded_collection_type(&param.ty)
+                && collection.kind != BoundedCollectionKind::List
+            {
+                return Err(CompileError::new(
+                    format!("witness parameter '{}' may use BoundedList<T, N>, not BoundedCellSet<T, N>", param.name),
+                    param.span,
+                ));
             }
         } else if callable_kind != "lock" {
             return Err(CompileError::new(
@@ -2805,9 +2796,10 @@ impl<'a> TypeChecker<'a> {
                 param.span,
             ));
         }
-        if let Type::Ref(inner) | Type::MutRef(inner) = &param.ty {
-            if self.reference_target_is_cell_backed_aggregate(inner) {
-                return Err(CompileError::new(
+        if let Type::Ref(inner) | Type::MutRef(inner) = &param.ty
+            && self.reference_target_is_cell_backed_aggregate(inner)
+        {
+            return Err(CompileError::new(
                     format!(
                         "parameter '{}' in {} '{}' cannot use reference to aggregate containing cell-backed values {}; use a direct '&T' helper view or named action outputs instead",
                         param.name,
@@ -2817,7 +2809,6 @@ impl<'a> TypeChecker<'a> {
                     ),
                     param.span,
                 ));
-            }
         }
         Ok(())
     }
@@ -3223,10 +3214,10 @@ impl<'a> TypeChecker<'a> {
             return;
         }
 
-        if let BindingPattern::Name(name) = &let_stmt.pattern {
-            if let Some(fd_key) = self.spawn_ipc_fd_key(&let_stmt.value, state) {
-                self.register_spawn_ipc_fd_alias(name, fd_key, state);
-            }
+        if let BindingPattern::Name(name) = &let_stmt.pattern
+            && let Some(fd_key) = self.spawn_ipc_fd_key(&let_stmt.value, state)
+        {
+            self.register_spawn_ipc_fd_alias(name, fd_key, state);
         }
     }
 
@@ -3415,10 +3406,10 @@ impl<'a> TypeChecker<'a> {
         if self.loop_labels.is_empty() {
             return Err(CompileError::new("break and continue are only valid inside a loop", control.span));
         }
-        if let Some(label) = &control.label {
-            if !self.loop_labels.iter().rev().any(|candidate| candidate.as_deref() == Some(label.as_str())) {
-                return Err(CompileError::new(format!("unknown loop label '{label}'"), control.span));
-            }
+        if let Some(label) = &control.label
+            && !self.loop_labels.iter().rev().any(|candidate| candidate.as_deref() == Some(label.as_str()))
+        {
+            return Err(CompileError::new(format!("unknown loop label '{label}'"), control.span));
         }
         Ok(())
     }
@@ -3523,18 +3514,18 @@ impl<'a> TypeChecker<'a> {
         if let Some(declared_ty) = &let_stmt.ty {
             return self.infer_expr_with_expected_type(env, &let_stmt.value, declared_ty, let_stmt.span);
         }
-        if let Expr::Array(elems) = &let_stmt.value {
-            if elems.is_empty() {
-                return match &let_stmt.ty {
-                    Some(declared @ Type::Array(_, 0)) => Ok(declared.clone()),
-                    Some(Type::Array(_, size)) => Err(CompileError::new(
-                        format!("empty array literal cannot initialize non-empty array of length {}", size),
-                        let_stmt.span,
-                    )),
-                    Some(_) => Err(CompileError::new("empty array literal requires an array type annotation", let_stmt.span)),
-                    None => Err(CompileError::new("empty array literal requires an explicit array type annotation", let_stmt.span)),
-                };
-            }
+        if let Expr::Array(elems) = &let_stmt.value
+            && elems.is_empty()
+        {
+            return match &let_stmt.ty {
+                Some(declared @ Type::Array(_, 0)) => Ok(declared.clone()),
+                Some(Type::Array(_, size)) => Err(CompileError::new(
+                    format!("empty array literal cannot initialize non-empty array of length {}", size),
+                    let_stmt.span,
+                )),
+                Some(_) => Err(CompileError::new("empty array literal requires an array type annotation", let_stmt.span)),
+                None => Err(CompileError::new("empty array literal requires an explicit array type annotation", let_stmt.span)),
+            };
         }
         self.infer_expr(env, &let_stmt.value)
     }
@@ -3666,28 +3657,28 @@ impl<'a> TypeChecker<'a> {
         expected_ty: &Type,
         span: Span,
     ) -> Result<Type> {
-        if let Type::Named(name) = expected_ty {
-            if let Some(item_ty) = self.parse_named_collection_item_type(name) {
-                for elem in elems {
-                    let actual_ty = self.infer_expr_with_expected_type(env, elem, &item_ty, expr_span(elem))?;
-                    if self.type_contains_reference(&actual_ty) {
-                        return Err(CompileError::new(
-                            format!(
-                                "Vec literal cannot store reference type {}; Vec<T> values must use owned non-reference items",
-                                type_repr(&actual_ty)
-                            ),
-                            expr_span(elem),
-                        ));
-                    }
-                    if !self.types_equal(&actual_ty, &item_ty) {
-                        return Err(CompileError::new(
-                            format!("Vec literal type mismatch: expected {:?}, found {:?}", item_ty, actual_ty),
-                            expr_span(elem),
-                        ));
-                    }
+        if let Type::Named(name) = expected_ty
+            && let Some(item_ty) = self.parse_named_collection_item_type(name)
+        {
+            for elem in elems {
+                let actual_ty = self.infer_expr_with_expected_type(env, elem, &item_ty, expr_span(elem))?;
+                if self.type_contains_reference(&actual_ty) {
+                    return Err(CompileError::new(
+                        format!(
+                            "Vec literal cannot store reference type {}; Vec<T> values must use owned non-reference items",
+                            type_repr(&actual_ty)
+                        ),
+                        expr_span(elem),
+                    ));
                 }
-                return Ok(expected_ty.clone());
+                if !self.types_equal(&actual_ty, &item_ty) {
+                    return Err(CompileError::new(
+                        format!("Vec literal type mismatch: expected {:?}, found {:?}", item_ty, actual_ty),
+                        expr_span(elem),
+                    ));
+                }
             }
+            return Ok(expected_ty.clone());
         }
 
         if let Type::Array(item_ty, expected_len) = expected_ty {
@@ -3980,10 +3971,10 @@ impl<'a> TypeChecker<'a> {
                 if !self.is_bool_type(&cond_ty) {
                     return Err(CompileError::new("require condition must be boolean", require_expr.span));
                 }
-                if let Some(message) = &require_expr.message {
-                    if !matches!(message.as_ref(), Expr::String(_)) {
-                        return Err(CompileError::new("require message must be a string literal", expr_span(message)));
-                    }
+                if let Some(message) = &require_expr.message
+                    && !matches!(message.as_ref(), Expr::String(_))
+                {
+                    return Err(CompileError::new("require message must be a string literal", expr_span(message)));
                 }
                 Ok(Type::Bool)
             }
@@ -5325,15 +5316,15 @@ impl<'a> TypeChecker<'a> {
         if self.types_equal(left_ty, right_ty) {
             return Ok(true);
         }
-        if let Expr::Integer(value) = left {
-            if Self::is_integer_literal_target_type(right_ty) {
-                return Self::integer_literal_type_for_expected(*value, right_ty, span).map(|ty| ty.is_some());
-            }
+        if let Expr::Integer(value) = left
+            && Self::is_integer_literal_target_type(right_ty)
+        {
+            return Self::integer_literal_type_for_expected(*value, right_ty, span).map(|ty| ty.is_some());
         }
-        if let Expr::Integer(value) = right {
-            if Self::is_integer_literal_target_type(left_ty) {
-                return Self::integer_literal_type_for_expected(*value, left_ty, span).map(|ty| ty.is_some());
-            }
+        if let Expr::Integer(value) = right
+            && Self::is_integer_literal_target_type(left_ty)
+        {
+            return Self::integer_literal_type_for_expected(*value, left_ty, span).map(|ty| ty.is_some());
         }
         Ok(false)
     }
@@ -5342,17 +5333,17 @@ impl<'a> TypeChecker<'a> {
         if self.types_equal(left_ty, right_ty) {
             return Ok(left_ty.clone());
         }
-        if let Expr::Integer(value) = left {
-            if Self::is_integer_literal_target_type(right_ty) {
-                Self::integer_literal_type_for_expected(*value, right_ty, span)?;
-                return Ok(right_ty.clone());
-            }
+        if let Expr::Integer(value) = left
+            && Self::is_integer_literal_target_type(right_ty)
+        {
+            Self::integer_literal_type_for_expected(*value, right_ty, span)?;
+            return Ok(right_ty.clone());
         }
-        if let Expr::Integer(value) = right {
-            if Self::is_integer_literal_target_type(left_ty) {
-                Self::integer_literal_type_for_expected(*value, left_ty, span)?;
-                return Ok(left_ty.clone());
-            }
+        if let Expr::Integer(value) = right
+            && Self::is_integer_literal_target_type(left_ty)
+        {
+            Self::integer_literal_type_for_expected(*value, left_ty, span)?;
+            return Ok(left_ty.clone());
         }
         if let Some(ty) = Self::unsigned_widening_result_type(left_ty, right_ty) {
             return Ok(ty);
@@ -5545,10 +5536,10 @@ impl<'a> TypeChecker<'a> {
         match expr {
             Expr::Identifier(name) => {
                 self.reject_active_borrow_root_lifecycle(name, "move", expr_span(expr))?;
-                if let Some(ty) = env.lookup(name).cloned() {
-                    if self.is_linear_type(&ty) {
-                        env.consume(name)?;
-                    }
+                if let Some(ty) = env.lookup(name).cloned()
+                    && self.is_linear_type(&ty)
+                {
+                    env.consume(name)?;
                 }
                 Ok(())
             }
@@ -5699,18 +5690,17 @@ impl<'a> TypeChecker<'a> {
     fn reject_stored_linear_reference_alias(&self, env: &TypeEnv, expr: &Expr, span: Span) -> Result<()> {
         match expr {
             Expr::Unary(unary) if matches!(unary.op, UnaryOp::Ref) => {
-                if let Some(root) = assignment_root_name(&unary.expr) {
-                    if let Some(root_ty) = env.lookup(root) {
-                        if self.is_linear_type(root_ty) {
-                            return Err(CompileError::new(
+                if let Some(root) = assignment_root_name(&unary.expr)
+                    && let Some(root_ty) = env.lookup(root)
+                    && self.is_linear_type(root_ty)
+                {
+                    return Err(CompileError::new(
                                 format!(
                                     "local binding cannot store a read-only reference rooted at linear/resource value '{}'; pass the reference directly to a helper call",
                                     root
                                 ),
                                 span,
                             ));
-                        }
-                    }
                 }
                 Ok(())
             }
@@ -5756,13 +5746,13 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn reject_unrooted_linear_reference_type(&self, ty: &Type, span: Span) -> Result<()> {
-        if let Type::Ref(inner) = ty {
-            if self.is_linear_type(inner) {
-                return Err(CompileError::new(
+        if let Type::Ref(inner) = ty
+            && self.is_linear_type(inner)
+        {
+            return Err(CompileError::new(
                     "local binding cannot store a read-only reference to a linear/resource value; bind the cell value itself or pass the reference directly",
                     span,
                 ));
-            }
         }
         Ok(())
     }
@@ -6052,10 +6042,10 @@ impl<'a> TypeChecker<'a> {
                         _ => Err(CompileError::new(format!("unknown ScriptArgs field '{}'; expected len or is_empty", field), span)),
                     };
                 }
-                if let Some(fields) = self.resolve_named_type_fields(base_name) {
-                    if let Some(field_ty) = fields.get(field) {
-                        return Ok(field_ty.clone());
-                    }
+                if let Some(fields) = self.resolve_named_type_fields(base_name)
+                    && let Some(field_ty) = fields.get(field)
+                {
+                    return Ok(field_ty.clone());
                 }
                 Err(CompileError::new(format!("unknown field '{}' on type '{}'", field, base_name), span))
             }
@@ -6304,13 +6294,13 @@ impl<'a> TypeChecker<'a> {
                     return Ok(self.function_return_type(&function).unwrap_or(Type::Unit));
                 }
                 if let Some((prefix, suffix)) = name.rsplit_once("::") {
-                    if self.current_module.as_deref() == Some(prefix) {
-                        if let Some(signature) = self.functions.get(suffix).cloned() {
-                            self.validate_call_allowed(name, signature.kind, signature.effect, call.span)?;
-                            self.validate_borrow_call(name, signature.kind, signature.effect, &signature.params, call)?;
-                            self.validate_call_args(name, &signature.params, arg_types, &call.args, call.span)?;
-                            return Ok(signature.return_type.unwrap_or(Type::Unit));
-                        }
+                    if self.current_module.as_deref() == Some(prefix)
+                        && let Some(signature) = self.functions.get(suffix).cloned()
+                    {
+                        self.validate_call_allowed(name, signature.kind, signature.effect, call.span)?;
+                        self.validate_borrow_call(name, signature.kind, signature.effect, &signature.params, call)?;
+                        self.validate_call_args(name, &signature.params, arg_types, &call.args, call.span)?;
+                        return Ok(signature.return_type.unwrap_or(Type::Unit));
                     }
                     self.reject_borrow_view_in_builtin_call(name, call)?;
                     return Ok(match (prefix, suffix) {
@@ -7641,18 +7631,18 @@ impl<'a> TypeChecker<'a> {
             )
             .with_code("E2111"));
         }
-        if base_name == "Vec" && name.contains('<') {
-            if let Some(item_ty) = self.parse_named_collection_item_type(name) {
-                if Self::base_type_name(&item_ty).and_then(|item| self.resolve_cell_type_kind(item)).is_some() {
-                    return Err(CompileError::new(
-                        format!(
-                            "type '{}' cannot store a cell-backed resource; use a source-aware BoundedCellSet<T, N> with explicit ownership",
-                            name
-                        ),
-                        Span::default(),
-                    ));
-                }
-            }
+        if base_name == "Vec"
+            && name.contains('<')
+            && let Some(item_ty) = self.parse_named_collection_item_type(name)
+            && Self::base_type_name(&item_ty).and_then(|item| self.resolve_cell_type_kind(item)).is_some()
+        {
+            return Err(CompileError::new(
+                format!(
+                    "type '{}' cannot store a cell-backed resource; use a source-aware BoundedCellSet<T, N> with explicit ownership",
+                    name
+                ),
+                Span::default(),
+            ));
         }
         if base_name == "Vec" && name.contains('<') && self.named_type_contains_reference(name) {
             return Err(CompileError::new(
@@ -7981,10 +7971,10 @@ impl<'a> TypeChecker<'a> {
             return Ok(());
         }
 
-        if let Expr::Integer(value) = expr {
-            if Self::integer_literal_fits_expected_type(*value, target) {
-                return Ok(());
-            }
+        if let Expr::Integer(value) = expr
+            && Self::integer_literal_fits_expected_type(*value, target)
+        {
+            return Ok(());
         }
 
         if self.is_numeric_type(source) && self.is_numeric_type(target) {
@@ -8465,10 +8455,10 @@ fn action_param_owned_named_type<'a>(action: &'a ActionDef, name: &str) -> Optio
 }
 
 fn action_param_output_named_type<'a>(action: &'a ActionDef, name: &str) -> Option<&'a str> {
-    if let Some(output) = action.outputs.iter().find(|output| output.name == name) {
-        if let Type::Named(type_name) = &output.ty {
-            return Some(type_name.split('<').next().unwrap_or(type_name.as_str()));
-        }
+    if let Some(output) = action.outputs.iter().find(|output| output.name == name)
+        && let Type::Named(type_name) = &output.ty
+    {
+        return Some(type_name.split('<').next().unwrap_or(type_name.as_str()));
     }
     None
 }
@@ -8683,10 +8673,10 @@ fn collect_consumed_bindings_from_expr(expr: &Expr, bindings: &mut HashSet<Strin
             let qualified = format!("std::{}::{}", call.namespace, call.name);
             match qualified.as_str() {
                 "std::lifecycle::transfer" | "std::receipt::claim" | "std::lifecycle::settle" => {
-                    if !call.args.is_empty() {
-                        if let Expr::Identifier(name) = &call.args[0] {
-                            bindings.insert(name.clone());
-                        }
+                    if !call.args.is_empty()
+                        && let Expr::Identifier(name) = &call.args[0]
+                    {
+                        bindings.insert(name.clone());
                     }
                 }
                 _ => {}
@@ -9024,10 +9014,10 @@ action main(a: TokenA) -> u64 {
 
         for stmt in &action.body {
             checker.check_stmt(&mut env, stmt).unwrap();
-            if let Stmt::Let(let_stmt) = stmt {
-                if matches!(&let_stmt.pattern, BindingPattern::Tuple(_)) {
-                    break;
-                }
+            if let Stmt::Let(let_stmt) = stmt
+                && matches!(&let_stmt.pattern, BindingPattern::Tuple(_))
+            {
+                break;
             }
         }
 

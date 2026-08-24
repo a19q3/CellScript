@@ -420,13 +420,13 @@ fn validate_state_transitions(scenario: &Scenario) -> Result<StateReport> {
                     scenario.name, step.name, cell.name
                 )));
             }
-            if let Some(prior) = &cell.prior_output {
-                if !consumed.contains(prior) {
-                    return Err(CompileError::without_span(format!(
-                        "scenario '{}' step '{}' output '{}' names unconsumed prior output '{}'",
-                        scenario.name, step.name, cell.name, prior
-                    )));
-                }
+            if let Some(prior) = &cell.prior_output
+                && !consumed.contains(prior)
+            {
+                return Err(CompileError::without_span(format!(
+                    "scenario '{}' step '{}' output '{}' names unconsumed prior output '{}'",
+                    scenario.name, step.name, cell.name, prior
+                )));
             }
             all_names.insert(cell.name.clone());
             produced.push(cell.name.clone());

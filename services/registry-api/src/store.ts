@@ -138,6 +138,19 @@ export interface PackageEvidenceRecord {
   created_at: string;
 }
 
+export interface ScriptInterfaceLookup {
+  code_hash: string;
+  network: "mainnet" | "testnet";
+  hash_type?: "data" | "data1" | "data2" | "type";
+  data_hash?: string;
+  limit: number;
+}
+
+export interface ScriptInterfaceCandidate {
+  version: PackageVersionRecord;
+  deployment: PackageEvidenceRecord;
+}
+
 export interface PromotePackageVersionInput {
   namespace: string;
   name: string;
@@ -391,6 +404,7 @@ export interface RegistryStore {
   admitPackageVersion(input: PublishAdmissionInput): Promise<PackageVersionRecord>;
   listPackageEvidence(namespace: string, name: string, version: string): Promise<PackageEvidenceRecord[]>;
   listPackageEvidenceForPackage(namespace: string, name: string): Promise<PackageEvidenceRecord[]>;
+  findScriptInterfaceCandidates(input: ScriptInterfaceLookup): Promise<ScriptInterfaceCandidate[]>;
   promotePackageVersion(input: PromotePackageVersionInput): Promise<{
     version: PackageVersionRecord;
     evidence: PackageEvidenceRecord;
@@ -1021,6 +1035,35 @@ export class MemoryRegistryStore implements RegistryStore {
       .filter(([key]) => key.startsWith(prefix))
       .map(([, record]) => record)
       .sort((left, right) => left.created_at.localeCompare(right.created_at));
+  }
+
+  async findScriptInterfaceCandidates(input: ScriptInterfaceLookup): Promise<ScriptInterfaceCandidate[]> {
+    const normalize = (value: unknown): string => typeof value === "string" ? value.replace(/^0x/i, "").toLowerCase() : "";
+    const codeHash = normalize(input.code_hash);
+    const dataHash = input.data_hash ? normalize(input.data_hash) : undefined;
+    const candidates: ScriptInterfaceCandidate[] = [];
+    for (const version of this.packageVersions.values()) {
+      if (!packageVersionIsPublic(version)
+        || version.availability_status !== "active"
+        || version.deployment_status !== "chain_verified"
+        || version.artifact.kind !== "deployable_contract"
+        || version.artifact.profile !== "ckb_executable") continue;
+      const release = version.registry_entry.versions.find((entry) => entry.version === version.version) as Record<string, unknown> | undefined;
+      const profileContract = release?.["profile_contract"] as Record<string, unknown> | undefined;
+      const interfaceContract = profileContract?.["interface"] as Record<string, unknown> | undefined;
+      if (interfaceContract?.["format"] !== "ls-idl") continue;
+      const evidence = await this.listPackageEvidence(version.namespace, version.name, version.version);
+      const deployment = evidence.filter((item) => item.kind === "deployed").at(-1);
+      if (!deployment) continue;
+      const value = deployment.evidence;
+      if (value["network"] !== input.network
+        || normalize(value["code_hash"]) !== codeHash
+        || (input.hash_type && value["hash_type"] !== input.hash_type)
+        || (dataHash && normalize(value["data_hash"]) !== dataHash)) continue;
+      candidates.push({ version, deployment });
+      if (candidates.length >= input.limit) break;
+    }
+    return candidates.sort((left, right) => right.deployment.created_at.localeCompare(left.deployment.created_at));
   }
 
   async promotePackageVersion(input: PromotePackageVersionInput): Promise<{

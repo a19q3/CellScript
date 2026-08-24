@@ -140,6 +140,13 @@ CKB/ABI, verifier IPC, reproducibility, or copy semantics to the immutable
 objects. The bundle is bounded to 5 MiB. Unknown fields and unknown or duplicate
 roles fail closed in admission, publisher CLI, and isolated verifier.
 
+Deployable Lock Scripts may attach
+`cellscript-registry-ls-idl-interface-v1`. It binds SHA-256 of the exact ABI
+object bytes to the executable's final 32 bytes. The read API resolves those
+bytes only from active chain-verified deployment evidence and preserves them
+without JSON reserialisation. This is interface identity evidence, not proof of
+implementation correctness or a security audit.
+
 ## Verification Boundary
 
 The worker leases jobs with `FOR UPDATE SKIP LOCKED`, bounded retry, dead-letter
@@ -218,6 +225,11 @@ Static release objects use:
 https://registry.cellscript.dev/artifacts/:namespace/:name/releases/:release.json
 ```
 
+LS-IDL adds a dynamic, chain-identity read at
+`/v1/ckb/scripts/:code_hash/interfaces/ls-idl` and the upstream-compatible
+`/idl/:code_hash` alias. `hash_type=type` requires a data hash, and ambiguity
+fails closed rather than selecting one deployment.
+
 The static origin does not require Postgres. Objects include immutable bundle
 identity, artifact descriptor, all state axes, and accepted evidence. Consumers
 verify object, file, source, build, and deployment hashes independently.
@@ -273,6 +285,10 @@ deployment shape.
 Migrations are additive after the frozen `0001` baseline. The artifact-model
 migration intentionally refuses to transform non-empty legacy release data
 because no released public contract exists that would justify a lossy mapping.
+
+Migration `0010_ls_idl_interfaces.sql` adds only a partial functional index for
+eligible deployment evidence; exact release, bundle, ABI, digest, and suffix
+checks still run on every response.
 
 Readiness covers database/object access, admin configuration, and the verifier
 heartbeat. Backups contain a Postgres custom dump, object archive, image

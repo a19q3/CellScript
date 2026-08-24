@@ -346,9 +346,9 @@ website/scripts/build-wasm.sh
 0.20 closes the source / build / deployment identity loop and the
 generated-builder boundary. 0.21 starts from there and pushes on
 five things at once, with the rest of the deferred list still
-tracked. The full direction is in `docs/CELLSCRIPT_0_21_ROADMAP.md`;
-this section is the headline of what I am signalling to users
-right now.
+tracked. The shipped result is recorded in
+`docs/releases/CELLSCRIPT_0_21_RELEASE_NOTES.md`; this section is the headline
+of what was signalled to users at the 0.20 boundary.
 
 **Auditability is the centre of gravity.** The 0.20 metadata stream
 is already rich — `CompileMetadata`, `ProofPlan`, audit bundles,
@@ -469,8 +469,8 @@ slice, iCKB production equivalence with the original iCKB family
 
 ## Cross-References
 
-- Open direction: `docs/archive/0.20/CELLSCRIPT_0_20_ROADMAP.md` and the
-  planning draft for the next line at `docs/CELLSCRIPT_0_21_ROADMAP.md`.
+- Subsequent shipped boundary:
+  `docs/releases/CELLSCRIPT_0_21_RELEASE_NOTES.md`.
 - Public registry RFC thread:
   [Package Management for CellScript: A Go-style, GitHub-based
   Package Management Registry for CKB Contracts](https://talk.nervos.org/t/rfc-cellscript-go-github-ckb/10238).

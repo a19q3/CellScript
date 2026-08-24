@@ -25,6 +25,8 @@ import {
   type ReservedNamespaceRecord,
   type RegistryStore,
   type SnapshotRecord,
+  type ScriptInterfaceCandidate,
+  type ScriptInterfaceLookup,
   type VerificationJobRecord,
   type VerificationJobStatus,
   type VerificationQueueMetrics,
@@ -1136,6 +1138,63 @@ export class SqlRegistryStore implements RegistryStore {
         [namespace, name],
       );
       return result.rows.map(packageEvidenceFromRow);
+    });
+  }
+
+  async findScriptInterfaceCandidates(input: ScriptInterfaceLookup): Promise<ScriptInterfaceCandidate[]> {
+    return this.withClient(async (client) => {
+      const result = await client.query(
+        `select pv.namespace, pv.name, pv.version, pv.status, pv.artifact,
+                pv.verification_status, pv.deployment_status, pv.availability_status,
+                pv.current_commitment_evidence_hash,
+                pv.source_hash, pv.manifest_hash, pv.edition, pv.compatibility_profile_hash,
+                pv.capability_key_id, pv.principal_type, pv.principal_id, pv.registry_entry,
+                pv.snapshot_hash, pv.direct_url, pv.created_at,
+                pv.registry_environment, pv.chain_network, pv.expires_at, pv.expired_at, pv.purge_after,
+                pv.static_purged_at, pv.source_purged_at,
+                e.kind as evidence_kind, e.evidence_hash, e.evidence,
+                e.request_id as evidence_request_id, e.admin_actor as evidence_admin_actor,
+                e.created_at as evidence_created_at
+         from package_versions pv
+         join lateral (
+           select candidate.*
+           from package_version_evidence candidate
+           where candidate.namespace = pv.namespace
+             and candidate.name = pv.name
+             and candidate.version = pv.version
+             and candidate.kind = 'deployed'
+           order by candidate.created_at desc
+           limit 1
+         ) e on true
+         where pv.artifact->>'kind' = 'deployable_contract'
+           and pv.artifact->>'profile' = 'ckb_executable'
+           and pv.registry_entry #>> '{versions,0,profile_contract,interface,format}' = 'ls-idl'
+           and pv.verification_status in ('hash_bound', 'verified', 'evidence_required')
+           and pv.deployment_status = 'chain_verified'
+           and pv.availability_status = 'active'
+           and (pv.expires_at is null or pv.expires_at > now())
+           and lower(regexp_replace(e.evidence->>'code_hash', '^0x', '', 'i')) = lower(regexp_replace($1, '^0x', '', 'i'))
+           and e.evidence->>'network' = $2
+           and ($3::text is null or e.evidence->>'hash_type' = $3)
+           and ($4::text is null or lower(regexp_replace(e.evidence->>'data_hash', '^0x', '', 'i')) = lower(regexp_replace($4, '^0x', '', 'i')))
+         order by e.created_at desc
+         limit $5`,
+        [input.code_hash, input.network, input.hash_type ?? null, input.data_hash ?? null, input.limit],
+      );
+      return result.rows.map((row) => ({
+        version: packageVersionFromRow(row),
+        deployment: {
+          namespace: String(row.namespace),
+          name: String(row.name),
+          version: String(row.version),
+          kind: row.evidence_kind,
+          evidence_hash: String(row.evidence_hash),
+          evidence: row.evidence,
+          request_id: String(row.evidence_request_id),
+          admin_actor: String(row.evidence_admin_actor),
+          created_at: new Date(row.evidence_created_at).toISOString(),
+        },
+      }));
     });
   }
 

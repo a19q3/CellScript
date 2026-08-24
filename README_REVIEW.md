@@ -18,7 +18,6 @@ overstating production equivalence.
 ## Recommended Review Surface
 
 - `BRANCHES.md`
-- `docs/archive/0.18/CELLSCRIPT_0_18_ROADMAP.md`
 - `docs/archive/0.17/CELLSCRIPT_0_17_ICKB_PRODUCTION_EQUIVALENCE_GATE.md`
 - `tests/benchmarks/ickb_diff/matrix.json`
 

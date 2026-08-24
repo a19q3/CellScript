@@ -2,14 +2,16 @@
 //!
 //! This crate exposes the pure in-memory compile path
 //! (`lex -> parse -> types -> flow -> ir -> metadata`) to JavaScript
-//! via `wasm-bindgen`. It does NOT expose the ELF codegen path in v1
-//! (that would inflate the bundle beyond the 600KB budget and is
-//! tracked as RFC path B / v2).
+//! via `wasm-bindgen`. It does NOT expose the ELF codegen path in v1. The
+//! default bundle returns a bounded authoring summary rather than the native
+//! public-interface, typed-semantics, ProofPlan, or verified-artifact records.
+//! Those records and the optional semantic language service would inflate the
+//! default bundle beyond the 600 KB budget.
 //!
 //! The single exported function `compile_metadata_json` takes source text, a
 //! mandatory edition, and an optional target profile, and returns a JSON
 //! string.
-//! On success the string is the serialized `CompileMetadata`; on
+//! On success the string is the serialized browser metadata summary; on
 //! failure it is `{"error": "..."}` so the playground can parse it
 //! uniformly and render diagnostics.
 
@@ -67,6 +69,7 @@ impl<T: Serialize> CompileDiagnosticResult<T> {
     }
 }
 
+#[cfg(feature = "language-service")]
 #[derive(Serialize)]
 struct LanguageServiceResult {
     completions: Vec<cellscript::lsp::CompletionItem>,
@@ -78,7 +81,7 @@ struct LanguageServiceResult {
 /// Compile CellScript source to metadata JSON (path A, no ELF).
 ///
 /// Returns a JSON string. On success this is the serialized
-/// `CompileMetadata` (module, types, actions with effect_class /
+/// browser metadata summary (module, types, actions with effect_class /
 /// consume_set / create_set / estimated_cycles, etc.). On error it
 /// is `{"error": "<message>"}`.
 ///
@@ -91,7 +94,8 @@ pub fn compile_metadata_json(source: &str, edition: &str, target: Option<String>
         Err(error) => return error_json(&error.to_string()),
     };
     match cellscript::compile_metadata(source, edition, target) {
-        Ok(metadata) => serde_json::to_string(&metadata).unwrap_or_else(|e| error_json(&format!("failed to serialize metadata: {e}"))),
+        Ok(metadata) => serde_json::to_string(&browser_metadata_value(&metadata))
+            .unwrap_or_else(|e| error_json(&format!("failed to serialize metadata: {e}"))),
         Err(e) => error_json(&e.to_string()),
     }
 }
@@ -99,7 +103,7 @@ pub fn compile_metadata_json(source: &str, edition: &str, target: Option<String>
 /// Compile CellScript source and return a stable result envelope for tools.
 ///
 /// On success the response is:
-/// `{ "metadata": <CompileMetadata>, "diagnostic_count": 0, "error_count": 0, "warning_count": 0, "diagnostics": [] }`
+/// `{ "metadata": <browser summary>, "diagnostic_count": 0, "error_count": 0, "warning_count": 0, "diagnostics": [] }`
 ///
 /// On failure the response is:
 /// `{ "metadata": null, "diagnostic_count": N, "error_count": E, "warning_count": W, "diagnostics": [{ message, severity, code, range }, ...] }`
@@ -115,7 +119,7 @@ pub fn compile_metadata_json_diagnostics(source: &str, edition: &str, target: Op
     };
     let report = cellscript::compile_metadata_with_diagnostics(source, edition, target);
     let diagnostics = report.diagnostics.iter().map(|error| diagnostic_from_error(error, source)).collect();
-    let result = CompileDiagnosticResult::new(report.metadata, diagnostics);
+    let result = CompileDiagnosticResult::new(report.metadata.as_ref().map(browser_metadata_value), diagnostics);
     serde_json::to_string(&result)
         .unwrap_or_else(|e| diagnostic_error_json(&format!("failed to serialize diagnostic report: {e}"), source))
 }
@@ -147,7 +151,7 @@ pub fn compile_metadata_json_sources(sources_json: &str, entry_path: &str, editi
     let report = cellscript::compile_sources_metadata_with_diagnostics(&sources, entry_path, edition, target);
     let diagnostics =
         report.diagnostics.iter().map(|error| diagnostic_from_error_for_sources(error, &source_by_path, fallback_source)).collect();
-    let result = CompileDiagnosticResult::new(report.metadata, diagnostics);
+    let result = CompileDiagnosticResult::new(report.metadata.as_ref().map(browser_metadata_value), diagnostics);
     serde_json::to_string(&result)
         .unwrap_or_else(|e| diagnostic_error_json(&format!("failed to serialize multi-file diagnostic report: {e}"), fallback_source))
 }
@@ -158,6 +162,7 @@ pub fn compile_metadata_json_sources(sources_json: &str, entry_path: &str, editi
 /// The result contains completion, hover, definition and current document
 /// diagnostics in one JSON payload so the playground can avoid multiple
 /// WASM calls per cursor move.
+#[cfg(feature = "language-service")]
 #[wasm_bindgen]
 pub fn language_service_json(source: &str, line: u32, character: u32) -> String {
     if source.len() > cellscript::MAX_SOURCE_BYTES {
@@ -182,6 +187,76 @@ pub fn language_service_json(source: &str, line: u32, character: u32) -> String 
 #[wasm_bindgen]
 pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+fn browser_metadata_value(metadata: &cellscript::CompileMetadata) -> serde_json::Value {
+    let types = metadata
+        .types
+        .iter()
+        .map(|ty| {
+            serde_json::json!({
+                "name": ty.name,
+                "kind": ty.kind,
+                "capabilities": ty.capabilities,
+                "encoded_size": ty.encoded_size,
+                "hash_type_source": ty.hash_type_source,
+            })
+        })
+        .collect::<Vec<_>>();
+    let actions = metadata
+        .actions
+        .iter()
+        .map(|action| {
+            let params =
+                action.params.iter().map(|param| serde_json::json!({ "name": param.name, "ty": param.ty })).collect::<Vec<_>>();
+            let consume_set = action
+                .consume_set
+                .iter()
+                .map(|item| serde_json::json!({ "binding": item.binding, "type_hash": item.type_hash }))
+                .collect::<Vec<_>>();
+            let read_refs = action
+                .read_refs
+                .iter()
+                .map(|item| serde_json::json!({ "binding": item.binding, "type_hash": item.type_hash }))
+                .collect::<Vec<_>>();
+            let create_set =
+                action.create_set.iter().map(|item| serde_json::json!({ "binding": item.binding, "ty": item.ty })).collect::<Vec<_>>();
+            let mutate_set =
+                action.mutate_set.iter().map(|item| serde_json::json!({ "binding": item.binding, "ty": item.ty })).collect::<Vec<_>>();
+            serde_json::json!({
+                "name": action.name,
+                "params": params,
+                "effect_class": action.effect_class,
+                "estimated_cycles": action.estimated_cycles,
+                "consume_set": consume_set,
+                "read_refs": read_refs,
+                "create_set": create_set,
+                "mutate_set": mutate_set,
+                "ckb_runtime_features": action.ckb_runtime_features,
+                "fail_closed_runtime_features": action.fail_closed_runtime_features,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "metadata_scope": "cellscript-browser-summary-v1",
+        "metadata_schema_version": metadata.metadata_schema_version,
+        "compiler_version": metadata.compiler_version,
+        "edition": metadata.edition.to_string(),
+        "module": metadata.module,
+        "artifact_format": metadata.artifact_format,
+        "artifact_hash": metadata.artifact_hash,
+        "artifact_size_bytes": metadata.artifact_size_bytes,
+        "target_profile": { "name": metadata.target_profile.name },
+        "types": types,
+        "actions": actions,
+        "native_records_omitted": [
+            "public_interface",
+            "typed_semantics",
+            "generic_instantiations",
+            "verified_artifact",
+            "proof_plan",
+        ],
+    })
 }
 
 fn error_json(message: &str) -> String {
@@ -259,13 +334,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wasm_success_returns_bounded_browser_summary() {
+        let source = "module demo\n\npublic fn answer() -> u64 { return 42 }\n";
+        let result: serde_json::Value = serde_json::from_str(&compile_metadata_json(source, "2026", None)).unwrap();
+        assert_eq!(result["metadata_scope"], "cellscript-browser-summary-v1");
+        assert_eq!(result["module"], "demo");
+        assert!(result["native_records_omitted"].as_array().is_some_and(|records| {
+            records.iter().any(|record| record == "public_interface") && records.iter().any(|record| record == "typed_semantics")
+        }));
+        assert!(result.get("public_interface").is_none());
+        assert!(result.get("typed_semantics").is_none());
+    }
+
+    #[test]
     fn wasm_single_source_entrypoints_reject_oversized_input() {
         let source = " ".repeat(cellscript::MAX_SOURCE_BYTES + 1);
         let compile: serde_json::Value = serde_json::from_str(&compile_metadata_json(&source, "2026", None)).unwrap();
         assert!(compile["error"].as_str().is_some_and(|message| message.contains("source exceeds")));
 
-        let language: serde_json::Value = serde_json::from_str(&language_service_json(&source, 0, 0)).unwrap();
-        assert!(language["error"].as_str().is_some_and(|message| message.contains("source exceeds")));
+        #[cfg(feature = "language-service")]
+        {
+            let language: serde_json::Value = serde_json::from_str(&language_service_json(&source, 0, 0)).unwrap();
+            assert!(language["error"].as_str().is_some_and(|message| message.contains("source exceeds")));
+        }
     }
 
     #[test]

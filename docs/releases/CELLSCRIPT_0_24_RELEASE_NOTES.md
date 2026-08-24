@@ -1,9 +1,13 @@
-# CellScript 0.24 Development Release Notes
+# CellScript 0.24 Release Notes
 
-**Status**: implementation-complete merge candidate; `dev`, `ci`, and
-`backend` passed on 2026-08-10. The refreshed iCKB evidence submodule commit
-`0e18ccd97bd75cac7de9211dc8d344c0bc08942f` is published and bound by the
-parent gitlink; the full release gate remains required before production claims
+**Status**: stable release at `refs/tags/v0.24.0`. Final `dev`, `ci`, `backend`,
+`release-quick`, and `release` evidence is recorded in the validation section.
+The refreshed iCKB
+evidence submodule commit `0e18ccd97bd75cac7de9211dc8d344c0bc08942f` is
+published and bound by the parent gitlink. External ecosystem claims remain
+limited to the explicit integration status below.
+
+**Release date**: 2026-08-22
 
 **Source edition**: 2026
 
@@ -13,7 +17,7 @@ parent gitlink; the full release gate remains required before production claims
 
 ## Highlights
 
-The 0.24 line closes two trust gaps without adding a new language edition:
+The 0.24 line closes four trust gaps without adding a new language edition:
 
 1. CKB ELF builds emit a canonical verified lowering record and source map,
    and a smaller compiler-independent checker recomputes bounded structural
@@ -25,6 +29,9 @@ The 0.24 line closes two trust gaps without adding a new language edition:
    manifest-bound dependency graph, exact source identities, feature/test and
    CKB-environment roots, while ordinary builds never perform mutable version
    selection.
+4. Deployable CKB Lock Scripts can publish LS-IDL as a byte-exact Registry
+   interface, with the raw IDL SHA-256 committed in the executable suffix and
+   resolvable by deployed Script identity.
 
 The Registry can now admit artifact-only CKB bundles through a least-privilege
 worker that depends on the standalone checker, not the CellScript compiler.
@@ -81,12 +88,159 @@ no-argument standalone ELF and fails closed for parameter or transaction/
 syscall context. Development interpretation requires explicit `--simulate`;
 there is no silent evidence-tier fallback.
 
+## LS-IDL Lock Script Interfaces
+
+0.24 adds an end-to-end LS-IDL path without inventing a second ABI format.
+`cellc artifact ls-idl` can validate the bounded upstream 0.1 document, append
+`SHA-256(raw idl.json bytes)` to a CKB executable, generate a publish-ready
+artifact bundle, and fetch the original bytes by deployed Script identity.
+
+Registry admission accepts the interface only for a deployable
+`ckb_executable` Lock Script. The compiler-backed worker and least-privilege
+artifact verifier independently check the IDL schema, raw ABI digest, and
+executable's final 32 bytes. The API returns the stored bytes directly through
+the canonical Script-identity route and the existing-client `/idl/:code_hash`
+compatibility route; it never parses and reserialises the committed JSON.
+
+The website now has a standalone Script-identity lookup under the explicit
+`LS-IDL` tab and a dedicated LS-IDL document section on matching artifact
+pages. The lookup surface is full-width and aligned with Registry browsing
+rather than presented as a smaller generic “Interface” utility. The VS Code
+extension exposes validate, bind, and fetch commands.
+
+Compatibility evidence pins all 17 current `ckb-idl-client` vectors and all
+seven checked-in IDLs from `ckb-idl-derive` and `ckb_sudt_script`. An opt-in
+checkout-level acceptance script validates their raw hashes and runs the actual
+upstream Rust client against Registry's `/idl/:code_hash` handler, covering
+fetch, SHA-256 suffix verification, cache use, and witness decoding. The
+runnable `examples/registry_ls_idl` remains the smaller explanatory fixture.
+
+This is deliberately a narrow trust claim. Schema and suffix binding prove
+which bytes were published and committed. They do not prove that a Lock Script
+implements the described decoder correctly, and they are not a security audit.
+The full profile and operator boundary are documented in the
+[LS-IDL Registry profile](../CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md).
+
+## Mainnet And Testnet Registry Parity
+
+The production and Pudge Testnet Registry websites now build from one shared
+interface contract. Browse, Publish, LS-IDL, API, Manage, and dynamic artifact
+detail are present in both outputs and load the same byte-identical generated
+CSS and JavaScript. The website CI build produces both environments and rejects
+a missing route, divergent asset, or missing shared workflow hook.
+
+Network context remains explicit rather than cosmetically erased. Testnet uses
+its own API and object origins, `ckt` address prefix, Pudge chain, expiry policy,
+and isolated records. Its LS-IDL form and copied API example default to
+`testnet`; Manage and artifact details do not preload or fall back to mainnet
+records. Production continues to default to mainnet. The environment control
+is the intended visible distinction between otherwise matching interfaces.
+
+## Registry Type Script Release Identity
+
+The independently versioned Registry Type Script has a reproducible 0.24.0
+artifact at
+`contracts/registry-type-script/artifacts/v0.24.0/cellscript-registry-type-script`.
+The 3,352-byte ELF has SHA-256
+`0f48a8736360c121f6ae0f04ab4b0496834f6715d47e3284a0a07add609dede9`
+and CKB data hash
+`0x0dd596ade29e06e5bcc00f56abf36ecbe9afaa09f1b26a64436aa37854da622b`.
+The canonical Linux x86_64 rebuild matches the tracked bytes exactly, and the
+Registry API's production configuration gate binds this identity.
+
+This artifact identity is release evidence, not a claim of mainnet
+deployment. Production chain commitments remain disabled until the artifact
+and all required Script/CellDep values are deployed, confirmed, and explicitly
+configured.
+
+## Playground Experience Upgrade
+
+The browser Playground is now a recoverable Cell-oriented workbench rather
+than a one-shot compiler demo. Local workspace snapshots retain source files,
+entry selection, active panels, and saved/dirty state across refreshes. A
+failed compile keeps the previous successful output visible but explicitly
+marks it stale, and a failed compiler Worker can restart without a page reload.
+
+The new Cell Flow view derives actions and type transitions from compiler
+metadata, with source-linked selection and a contextual Inspector. A short,
+optional guide helps first-time users through the workbench while raw actions,
+types, diagnostics, and metadata remain directly accessible. Focus mode keeps
+the same workbench but expands it to the viewport; mobile retains a compact
+panel switcher. The WASM boundary remains metadata-only: the Playground does
+not claim to emit or execute a production ELF.
+
+## Website Release Identity
+
+The 0.24 website carries forward the corrected release boundary. Its homepage
+names `v0.24.0` as the current stable release, while its Playground worker,
+compiler sample, and distribution checks use the matching 0.24 compiler
+identity. Its 0.24 release branch removes the forward-looking 0.25-only
+package-interface, typed-semantics, and syntax-highlighting presentation
+fields; those remain outside the 0.24 release. The canonical Playground asset
+is
+`20260819-v0.24.0-19ce8898`; its WASM SHA-256 is
+`19ce8898e8161f100edebf6f982d856f3e59bfac31572642b53f2e01c70a1a17`.
+The raw module is 1,485,936 bytes and 567,048 bytes under the gate's gzip
+measurement, below the 600 KiB budget.
+
+The Node 22 website build validates both production and Pudge Testnet outputs,
+the six-route byte-identical asset parity boundary, the current `v0.24.0`
+release URL and tag, the compiler asset identity, and the exact WASM digest.
+The parent repository pins website commit
+`9849c0cb051439901bd3d9c01bd6ba58e8e40751` on the published
+`codex/nightly-0.24-release` branch.
+
+The 0.25-only Playground verification surface remains on the separate
+`codex/nightly-0.25-release` website branch at commit
+`3db5838ef1ba4b93fb0fc0f188c5374696e27377`. That is the exact website gitlink
+used by parent branch `nightly-0.25`; neither release line depends on a hidden
+or unreachable submodule commit.
+
+## Compatibility And Migration
+
+The CKB adapter no longer exports the deprecated, permanently fail-closed
+`deploy_artifact` and `build_deploy` methods. Integrations must construct a
+verified unsigned transaction with `build_deploy_transaction`, hand signing to
+an external wallet, and submit the signed transaction explicitly.
+
+CKB ELF generation now always uses the audited internal assembler. The
+unreachable external RISC-V toolchain fallback and its environment-controlled
+paths have been removed. Diagnostic `E2400` now identifies failure at the
+verified lowering/source-map boundary; assembler layout, encoding, and ELF
+failures retain the `E220x`/`E2300` families.
+
+The code generator has been split along its documented ABI, assembler, call,
+collection, expression, frame, runtime, schema, and Cell-operation boundaries.
+This is an internal ownership refactor, not a new source-language or ABI claim.
+The Fiber configuration renderer replaces the deprecated `serde_yaml` crate
+with the maintained `serde_yaml_ng` continuation without promoting a Fiber
+target profile.
+
+These are repository-local integration changes. The Fiber migration updates
+CellScript's Cargo dependency selection and lockfile; it does not patch or
+publish upstream Fiber, CKB, CKB SDK, NovaSeal, or third-party crate source.
+The website and editor gitlinks are project-owned release components rather
+than upstream protocol dependencies.
+
+The Registry website refresh adds route-specific headers, a shared content
+grid, clearer evidence hierarchy, refined substrate material, and the restored
+homepage brand animation. These presentation changes do not alter Registry
+evidence semantics or the mainnet/testnet isolation boundary.
+
+Final release hardening resolves dynamic Molecule-backed `u128` pointers once
+before limb loads and spills the first wide operand while loading the second,
+so schema validation cannot overwrite live arithmetic state. Mixed
+`u128 +/- u64` operations now reject overflow and underflow with runtime error
+49. Exact CKB-VM vectors cover both boundaries. Registry admission now rejects
+non-canonical SemVer forms such as leading-zero core or numeric prerelease
+identifiers.
+
 ## Integration Status
 
 - The CellScript side of the Myelin 0.24 handoff is versioned and tested. The
-  external Myelin lock update remains pending until this branch has a clean
-  exact release revision. No raw-witness alias or Myelin target profile is
-  added.
+  external Myelin lock update remains pending until the final 0.24 tag supplies
+  an exact CellScript source revision. No raw-witness alias or Myelin target
+  profile is added.
 - Fiber remains no-profile. Static compiler/CKB-VM evidence is retained, but
   the complete external lifecycle and negative matrix has no complete evidence
   bundle and remains pending.
@@ -207,24 +361,34 @@ or conversion of executable/copy artifacts into source dependencies.
 
 ## Validation
 
-The package/Registry closure passed `dev` and `ci` on 2026-08-10, with the CI
-website phase using the required Node 22 toolchain. The complete `backend` gate
-then passed from an isolated clean checkout containing the refreshed iCKB
-differential evidence, pinned CKB revision
-`f7fa4436737756f97a24e254f22c13a36316ecea`, and CKB SDK `v5.1.0`. This
-covered the compiler tests, Clippy, full strict backend audit, all 218 iCKB
-differential cases, and the production stateful CKB scenario harness:
+The exact source identified by `refs/tags/v0.24.0` passed all five canonical
+gates on the release date 2026-08-22. The environment used Rust `1.97.1`, Node
+`22.23.2`, CKB revision
+`f7fa4436737756f97a24e254f22c13a36316ecea`, CKB SDK `v5.1.0`, the
+`riscv64imac-unknown-none-elf` target, and the pinned Docker base
+`rust:1.97.1-slim-bookworm@sha256:99e09cb2284e2ddbb73a995deee3e91783fd04d177602ccf6eab326d778ee777`:
 
 ```bash
 ./scripts/cellscript_gate.sh dev
 ./scripts/cellscript_gate.sh ci
 ./scripts/cellscript_gate.sh backend
+./scripts/cellscript_gate.sh release-quick --ckb-repo /path/to/pinned/ckb
+./scripts/cellscript_gate.sh release --ckb-repo /path/to/pinned/ckb
 ```
 
-`release`/`release-quick` still require the pinned CKB, CKB SDK, NovaSeal,
-Docker, Node 22, and RISC-V tooling described in the gate policy. Passing the
-three merge gates is not a substitute for the release gate or public-chain
-evidence; neither release mode has been run for this merge candidate.
+The run covered compiler and workspace tests, Clippy, the full strict backend
+audit, all 218 iCKB differential cases, simulator and CKB-VM package scenarios,
+Registry API and independent-verifier tests, package construction, website
+production/testnet parity, VS Code packaging, the canonical Docker WASM build,
+NovaSeal RISC-V reproducibility and pinning, and the non-compile-only production
+stateful CKB acceptance harness. The Registry Type Script rebuilt byte-for-byte
+to the 3,352-byte artifact recorded above. The NovaSeal verifier rebuilt to
+100,912 bytes with SHA-256
+`be66f22507b734c8a432c4c85f0079cc7461caaa92ee3277d50ea8f62ce95ff7`
+and CKB data hash
+`0x988bab12eab02ebfccc2d2a84da46f4119c5343797ada24104683e61cd07d26e`.
+Its RWA profile source binding is
+`0x779dad4139b1ffbbfa774d9e9d82b9765d4c23b62a86accd395e0b15bef4db47`.
 
 The refreshed iCKB matrix is versioned in the benchmark submodule rather than
 copied into the parent repository. Commit
@@ -232,10 +396,16 @@ copied into the parent repository. Commit
 `main` branch, and the parent repository binds the same gitlink, so a clean
 clone can reconstruct the exact evidence tree that passed `backend`.
 
+The canonical website build produced the 0.24 WASM identity recorded above and
+passed the 600 KiB gzip budget. Gates establish source and artifact evidence;
+they do not publish either crates.io package or deploy the Registry Type
+Script. Publication and deployment remain explicit release-operator actions
+and must preserve the validated source and artifact identities.
+
 ## Detailed References
 
 - [Verified artifact boundary](../CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md)
 - [Executable test scenarios](../CELLSCRIPT_EXECUTABLE_TEST_SCENARIOS.md)
+- [LS-IDL Registry profile](../CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md)
 - [Myelin handoff](../CELLSCRIPT_MYELIN_0_24_HANDOFF.md)
 - [Gate policy](../CELLSCRIPT_GATE_POLICY.md)
-- [0.24 roadmap](../../roadmap/CELLSCRIPT_0_24_ROADMAP.md)

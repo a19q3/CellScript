@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { SignChallengeResponseData } from "@joyid/ckb";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { blake2b } from "@noble/hashes/blake2.js";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import {
   AUTH_ACTION,
   AUTH_PROTOCOL,
@@ -26,6 +32,7 @@ import {
   joyidPrincipalIdFromBinding,
   interfacePredecessorVersion,
   scopeAllows,
+  sha256Hex,
   validatePublishPayload,
   validateInterfaceUpgrade,
   validateArtifactDescriptor,
@@ -56,6 +63,7 @@ import type { PackageVersionRecord } from "../src/store";
 import { nodeCkbRpcEnv } from "../src/node-runtime-env";
 
 const now = new Date("2026-06-23T12:00:00Z");
+const execFileAsync = promisify(execFile);
 const ckbPrivateKey = Uint8Array.from({ length: 32 }, (_, index) => index === 31 ? 7 : 0);
 const reproducerPublicKeys = {
   "builder-a": "p256-spki:MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2GpMwoWK1SO7Vrd_Rn3kxf_VllpSMGMu1Mo40vH2IotxFkJwZwO7acw8A-lZB7z4l5QAYDKTP4ua7YilwZQfBw",
@@ -90,6 +98,20 @@ describe("capability scopes", () => {
     expect(scopeAllows(scopes, "availability", "cellscript", "demo")).toBe(false);
     expect(scopeAllows(scopes, "publish", "cellscript", "other")).toBe(false);
   });
+});
+
+describe("SemVer admission", () => {
+  it("accepts canonical release, prerelease, and build metadata forms", () => {
+    expect(validateVersion("0.24.0")).toBe("0.24.0");
+    expect(validateVersion("1.2.3-rc.1+build.7")).toBe("1.2.3-rc.1+build.7");
+  });
+
+  it.each(["01.2.3", "1.02.3", "1.2.03", "1.2.3-01", "1.2.3-rc..1", "1.2.3+"])(
+    "rejects non-canonical version %s",
+    (version) => {
+      expect(() => validateVersion(version)).toThrow(ApiError);
+    },
+  );
 });
 
 function bytesHex(value: Uint8Array): string {
@@ -579,6 +601,33 @@ describe("generic artifact profile contracts", () => {
 
     expect(validatePublishPayload(payload, DEFAULT_REGISTRY_ORIGIN, now).artifact.profile).toBe("ckb_executable");
   });
+
+  it("admits only the exact LS-IDL 0.1 lock-script profile shape", async () => {
+    const payload = await ckbExecutablePublishPayload("cap_test");
+    const release = payload.registry_entry.versions[0];
+    const contract = release.profile_contract!;
+    (contract["ckb"] as Record<string, unknown>)["script_role"] = "lock";
+    contract["interface"] = {
+      schema: "cellscript-registry-ls-idl-interface-v1",
+      format: "ls-idl",
+      format_version: "0.1",
+      object_role: "abi",
+      content_type: "application/vnd.ckb.ls-idl+json",
+      encoding: "linear-le-v0",
+      commitment: {
+        algorithm: "sha256",
+        placement: "code-cell-data-suffix-32",
+        digest: `0x${"77".repeat(32)}`,
+      },
+    };
+    payload.manifest_hash = ckbBlake2bHex(canonicalJson(contract));
+    expect(validatePublishPayload(payload, DEFAULT_REGISTRY_ORIGIN, now).registry_entry.versions[0].profile_contract)
+      .toMatchObject({ interface: { format: "ls-idl", format_version: "0.1" } });
+
+    (contract["ckb"] as Record<string, unknown>)["script_role"] = "type";
+    payload.manifest_hash = ckbBlake2bHex(canonicalJson(contract));
+    expect(() => validatePublishPayload(payload, DEFAULT_REGISTRY_ORIGIN, now)).toThrow(/script_role must be 'lock'/);
+  });
 });
 
 function deploymentPayload(keyId: string): DeploymentPayload {
@@ -710,7 +759,182 @@ async function completeBrowserAuthorisationSession(
   }, {}, { authorization: `Bearer ${browserToken}` });
 }
 
+async function lsIdlLookupApp(idlBytes: Uint8Array) {
+  const store = new MemoryRegistryStore();
+  const idl = new TextDecoder().decode(idlBytes);
+  const digest = await sha256Hex(idlBytes);
+  const codeHash = `0x${"31".repeat(32)}`;
+  const payload = await ckbExecutablePublishPayload("cap_test");
+  const release = payload.registry_entry.versions[0];
+  const contract = release.profile_contract!;
+  (contract["ckb"] as Record<string, unknown>)["script_role"] = "lock";
+  contract["interface"] = {
+    schema: "cellscript-registry-ls-idl-interface-v1",
+    format: "ls-idl",
+    format_version: "0.1",
+    object_role: "abi",
+    content_type: "application/vnd.ckb.ls-idl+json",
+    encoding: "linear-le-v0",
+    commitment: { algorithm: "sha256", placement: "code-cell-data-suffix-32", digest: `0x${digest}` },
+  };
+  payload.manifest_hash = ckbBlake2bHex(canonicalJson(contract));
+  const version: PackageVersionRecord = {
+    namespace: "cellscript",
+    name: "demo",
+    version: "1.2.3",
+    status: "deployed",
+    artifact: payload.artifact,
+    verification_status: "hash_bound",
+    deployment_status: "chain_verified",
+    availability_status: "active",
+    source_hash: payload.source_hash,
+    manifest_hash: payload.manifest_hash,
+    capability_key_id: "cap_test",
+    principal_type: "joyid_ckb",
+    principal_id: `0x${"11".repeat(20)}`,
+    registry_entry: payload.registry_entry,
+    snapshot_hash: `sha256:${"ab".repeat(32)}`,
+    direct_url: "https://registry.cellscript.dev/artifacts/cellscript/demo/releases/1.2.3.json",
+    created_at: now.toISOString(),
+    registry_environment: "production",
+    network: "mainnet",
+  };
+  store.packageVersions.set("cellscript/demo@1.2.3", version);
+  store.packageEvidence.set("cellscript/demo@1.2.3:deployed:test", {
+    namespace: "cellscript",
+    name: "demo",
+    version: "1.2.3",
+    kind: "deployed",
+    evidence_hash: `sha256:${"cd".repeat(32)}`,
+    evidence: {
+      network: "mainnet",
+      code_hash: codeHash,
+      data_hash: codeHash,
+      hash_type: "data1",
+      dep_type: "code",
+    },
+    request_id: "test",
+    admin_actor: "test",
+    created_at: now.toISOString(),
+  });
+  store.snapshots.set(version.snapshot_hash, {
+    snapshot_hash: version.snapshot_hash,
+    r2_key: "source-snapshots/cellscript/demo/1.2.3/bundle.json",
+    source_hash: version.source_hash,
+    size_bytes: 1,
+    content_type: "application/vnd.cellscript.artifact-bundle+json",
+  });
+  const bundle = JSON.stringify({
+    schema: "cellscript-registry-bundle",
+    namespace: "cellscript",
+    name: "demo",
+    release: "1.2.3",
+    profile: "ckb_executable",
+    manifest_json: canonicalJson(contract),
+    objects: [
+      { role: "source", content_base64: base64("source") },
+      { role: "executable", content_base64: base64("binary") },
+      { role: "abi", content_base64: Buffer.from(idlBytes).toString("base64") },
+    ],
+  });
+  const app = createApp({
+    store,
+    registryObjectReader: {
+      async get(key) {
+        expect(key).toBe("source-snapshots/cellscript/demo/1.2.3/bundle.json");
+        return { body: bundle, contentType: "application/json" };
+      },
+    },
+  });
+  return { app, codeHash, digest, idl };
+}
+
 describe("registry api", () => {
+  it("serves exact LS-IDL bytes by chain-verified code hash without JSON reserialization", async () => {
+    const idl = "{\n  \"witness\": [{\"name\":\"signature\",\"type\":\"secp256k1_sig\",\"required\":true}]\n}\n";
+    const { app, codeHash, digest } = await lsIdlLookupApp(new TextEncoder().encode(idl));
+
+    const compatibility = await get(app, `/idl/${codeHash.slice(2)}`);
+    expect(compatibility.status).toBe(200);
+    expect(await compatibility.text()).toBe(idl);
+    expect(compatibility.headers.get("x-ls-idl-sha256")).toBe(digest);
+    expect(compatibility.headers.get("x-ls-idl-verification")).toBe("schema-and-suffix-bound");
+
+    const formal = await get(app, `/v1/ckb/scripts/${codeHash}/interfaces/ls-idl?hash_type=data1&data_hash=${codeHash}`);
+    expect(formal.status).toBe(200);
+    expect(await formal.text()).toBe(idl);
+  });
+
+  it.runIf(Boolean(process.env.CELLSCRIPT_CKB_IDL_CLIENT_REPO))(
+    "interoperates with the pinned upstream Rust client over the compatibility route",
+    async () => {
+      const upstreamClientRepo = String(process.env.CELLSCRIPT_CKB_IDL_CLIENT_REPO);
+      const encodedFixture = await readFile(
+        new URL("../../../tests/compat/ls_idl/scripts/simple-lock.idl.json.b64", import.meta.url),
+        "utf8",
+      );
+      const idlBytes = Buffer.from(encodedFixture.replace(/\s/g, ""), "base64");
+      const { app, codeHash } = await lsIdlLookupApp(idlBytes);
+      const server = createServer(async (request, response) => {
+        try {
+          const registryResponse = await app.fetch(
+            new Request(`http://127.0.0.1${request.url ?? "/"}`),
+            { REGISTRY_ORIGIN: DEFAULT_REGISTRY_ORIGIN },
+          );
+          const headers: Record<string, string> = {};
+          registryResponse.headers.forEach((value, name) => { headers[name] = value; });
+          response.writeHead(registryResponse.status, headers);
+          response.end(Buffer.from(await registryResponse.arrayBuffer()));
+        } catch (error) {
+          response.writeHead(500, { "content-type": "text/plain" });
+          response.end(error instanceof Error ? error.message : "Registry bridge failed");
+        }
+      });
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+      });
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Registry bridge did not bind a TCP port");
+
+      const temporaryProject = await mkdtemp(join(tmpdir(), "cellscript-ls-idl-upstream-"));
+      try {
+        await writeFile(
+          join(temporaryProject, "Cargo.toml"),
+          `[package]\nname = "cellscript-ls-idl-upstream-probe"\nversion = "0.0.0"\nedition = "2024"\n\n[[bin]]\nname = "cellscript-ls-idl-upstream-probe"\npath = "main.rs"\n\n[dependencies]\nckb-idl-client = { path = ${JSON.stringify(upstreamClientRepo)} }\nhex = "0.4"\nsha2 = "0.11.0"\ntokio = { version = "1", features = ["rt-multi-thread", "macros"] }\n`,
+        );
+        await writeFile(
+          join(temporaryProject, "main.rs"),
+          `use ckb_idl_client::IdlClient;\nuse sha2::{Digest as _, Sha256};\n\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n    let arguments: Vec<String> = std::env::args().collect();\n    let base_url = &arguments[1];\n    let code_hash_bytes = hex::decode(&arguments[2])?;\n    let code_hash: [u8; 32] = code_hash_bytes.try_into().map_err(|_| std::io::Error::other("code hash must be 32 bytes"))?;\n    let idl_path = &arguments[3];\n\n    let mut client = IdlClient::new();\n    let document = client.fetch(base_url, code_hash).await?;\n    assert_eq!(document.witness.len(), 1);\n    assert_eq!(document.witness[0].name, "preimage");\n    assert_eq!(document.witness[0].type_, "bytes");\n\n    let expected_idl_bytes = std::fs::read(idl_path)?;\n    let raw_url = format!("{}/idl/{}", base_url, hex::encode(code_hash));\n    let fetched_idl_bytes = client.http.get(raw_url).send().await?.bytes().await?;\n    assert_eq!(fetched_idl_bytes.as_ref(), expected_idl_bytes.as_slice());\n    let mut code_cell_data = b"fixture executable".to_vec();\n    code_cell_data.extend_from_slice(&Sha256::digest(&expected_idl_bytes));\n    client.verify(code_hash, &fetched_idl_bytes, &code_cell_data)?;\n\n    let cached = client.witness_requirements(base_url, code_hash).await?;\n    assert_eq!(cached, document.witness);\n    let decoded = client.validate_witness_bytes(&cached, &[5, 0, 0, 0, b'h', b'e', b'l', b'l', b'o'])?;\n    assert_eq!(decoded.len(), 1);\n    println!("upstream client fetch, SHA-256 verify, cache, and witness decode passed");\n    Ok(())\n}\n`,
+        );
+        const idlPath = join(temporaryProject, "simple-lock.idl.json");
+        await writeFile(idlPath, idlBytes);
+        const targetDir = process.env.CELLSCRIPT_LS_IDL_CARGO_TARGET_DIR ?? join(temporaryProject, "target");
+        const result = await execFileAsync(
+          "cargo",
+          [
+            "run",
+            "--quiet",
+            "--manifest-path",
+            join(temporaryProject, "Cargo.toml"),
+            "--target-dir",
+            targetDir,
+            "--",
+            `http://127.0.0.1:${address.port}`,
+            codeHash.slice(2),
+            idlPath,
+          ],
+          { env: process.env, maxBuffer: 1024 * 1024 },
+        );
+        expect(result.stdout).toContain("upstream client fetch, SHA-256 verify, cache, and witness decode passed");
+      } finally {
+        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        await rm(temporaryProject, { recursive: true, force: true });
+      }
+    },
+    180_000,
+  );
+
   it("matches the canonical CKB Molecule Script hash", () => {
     expect(ckbScriptHash({
       code_hash: `0x${"11".repeat(32)}`,

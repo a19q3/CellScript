@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.25.0 - Unreleased
+
+- Rebase the 0.25 development line on the complete 0.24 trust boundary,
+  including the lock-authoritative package graph, standalone artifact checker,
+  sole internal assembler, modular code generator, executable scenarios,
+  LS-IDL Registry path, and production/testnet website parity. Align the
+  compiler, checker, adapters, verifiers, workspace lockfiles, and editor with
+  the 0.25 development identity. Preserve the independently deployed Registry
+  Type Script as the byte-identical 0.24.0 artifact whose package version and
+  CKB data hash are already part of its published trust identity. Keep the
+  website's public release badge on stable `v0.24.0` while giving the 0.25
+  Playground compiler its own asset identity
+  (`20260824-v0.25.0-32dc571c`, SHA-256
+  `32dc571c2e8e32134460cb45e2329ddd29d754959d9cfe4478c638aa5fc4c7d7`).
 
 - Harden bounded lifecycle collections at the production boundary. The typed
   IR now retains `consume_each` predicates and the `create_each` output
@@ -28,6 +41,9 @@
   runs keep their diagnostic artifacts; release automation can request
   unlimited local retention explicitly. `cellc clean --cache` now removes
   nested workspace `.cell/build/cache` directories as well as the root cache.
+  Cache payloads must be regular files, stores create a fresh entry instead of
+  overwriting a pre-populated one, and recency updates use create-new plus
+  rename so malicious cache symlinks cannot redirect compiler writes.
 
 - Begin the 0.25 language-completeness implementation with a compiler-owned
   executable-surface registry, pre-codegen production rejection, full-range
@@ -50,8 +66,11 @@
   templates now specialize across package boundaries in their owning module;
   implementation monomorphizations no longer pollute package interfaces. Add
   labeled break/continue CFG lowering and CKB-VM evidence. Upgrade the VS Code
-  grammar and Playground highlighting, and show interface and typed-semantics
-  identities in the Playground Inspector. Route all wide u128 binary operands
+  grammar and Playground highlighting. Keep the default Playground bundle
+  under its 600 KB gzip budget with a bounded authoring summary; complete
+  public-interface, typed-semantics, ProofPlan, verified-artifact, and semantic
+  language-service output remains on native `cellc` and the VS Code extension.
+  Route all wide u128 binary operands
   through shared stack-spilled loading so dynamic Molecule-table field
   validation can no longer clobber live limbs, keep constant folding from
   wrapping arithmetic the runtime would trap on, decide match exhaustiveness
@@ -61,6 +80,75 @@
   registry. Dynamic-schema u128 bitwise, addition, and shift paths now carry
   exact CKB-VM execution vectors.
 
+## 0.24.0 - 2026-08-22
+
+- Align the complete 0.24 release identity across every workspace and verifier
+  crate, the independent checker dependency, lockfiles, Registry Type Script,
+  Myelin handoff, VS Code extension, website WASM bundle, README, and release
+  documentation. Restore the 0.23 release hardening that propagates one pinned
+  CKB checkout through backend scenarios and transaction-measure tooling.
+
+- Remove the unreachable external RISC-V toolchain fallback and make the
+  audited internal assembler the sole ELF-emission path. Reassign `E2400` to
+  the verified lowering/source-map boundary that already uses it, so the
+  compiler error registry now matches live diagnostics.
+- Split the code generator into its documented ABI, assembler, call,
+  collection, expression, frame, runtime, schema, and Cell-operation modules;
+  remove crate-wide Clippy exemptions; and replace long positional helper
+  signatures with named context records.
+- Harden the final wide-integer boundary: resolve dynamic Molecule-backed
+  `u128` fields before loading limbs, preserve the left operand across a
+  second dynamic load, and make `u128 +/- u64` overflow and underflow fail
+  closed with runtime error 49. Add exact CKB-VM regression vectors, remove
+  zero-divisor paths from the NFT and vesting examples, and reject
+  non-canonical SemVer at Registry admission.
+- Remove the CKB adapter's deprecated, permanently fail-closed automatic
+  deployment methods. Callers must build a verified unsigned deployment
+  transaction and hand signing to an external wallet.
+- Replace the deprecated `serde_yaml` crate with the maintained
+  `serde_yaml_ng` continuation in the Fiber configuration renderer.
+- Remove tracked browser-session traces and unused design captures, ignore
+  local Codex state, and make the native source-policy check reject future
+  `.playwright-mcp` artifacts.
+- Keep the production and Pudge Testnet Registry websites on one UI contract.
+  The website gate now builds both environments from the same source, verifies
+  six shared Registry routes, and requires every generated CSS/JavaScript asset
+  to be byte-identical. Testnet now ships the LS-IDL route, defaults LS-IDL
+  lookups and API examples to `testnet`, and no longer preloads production
+  package records into Manage or artifact-detail fallbacks. Network-specific
+  origins, chain selection, sandbox expiry, no-index policy, and storage remain
+  isolated.
+- Preserve the corrected website release lineage that removed stale 0.22
+  metadata. Publish the homepage as `v0.24.0` while keeping the Playground on
+  the matching 0.24 compiler identity. The canonical WASM bundle uses asset
+  identity `20260819-v0.24.0-19ce8898` and SHA-256
+  `19ce8898e8161f100edebf6f982d856f3e59bfac31572642b53f2e01c70a1a17`;
+  distribution checks bind the current stable release URL and displayed tag
+  separately from the compiler version, asset identity, and digest.
+  Remove inherited 0.25-only package-interface, typed-semantics, and future-
+  syntax presentation fields from the 0.24 website branch while retaining the
+  0.24 LS-IDL surface. Publish the exact 0.24 and 0.25 website gitlinks on
+  separate release branches so both parent lines clone without hidden commits.
+- Add first-class LS-IDL publication and discovery for CKB Lock Scripts.
+  `cellc artifact ls-idl` validates the bounded 0.1 schema, appends
+  `SHA-256(raw idl.json)` to an executable, generates a publish-ready bundle,
+  and fetches byte-exact IDL by deployed Script identity. Registry admission,
+  both verifier boundaries, immutable object storage, Postgres lookup,
+  canonical `/v1/ckb/scripts/:code_hash/interfaces/ls-idl` reads, and the
+  compatibility `/idl/:code_hash` route all enforce the same schema and
+  executable-suffix contract. Pin all 17 current upstream client vectors and
+  seven derive/example IDLs, and add an opt-in test that runs the actual
+  upstream Rust client against Registry's compatibility handler. Extend that
+  opt-in acceptance through the fixes merged upstream in `ckb_sudt_script`
+  PR #7, real RISC-V contract builds, LS-IDL-bound ELFs, and all 25 example
+  CKB-VM tests without a local compatibility overlay. Add a
+  runnable Rust example, website lookup/detail surfaces, and VS Code
+  validate/bind/fetch commands. Name the website tab `LS-IDL` rather than the
+  ambiguous `Interface`, give it the canonical `/registry/LS-IDL` route with a
+  permanent redirect from `/registry/interface`, and align its lookup panel
+  with the full-width Browse surface.
+  Keep implementation correctness and security review outside this
+  byte-identity claim.
 - Ship the 0.24 package and Registry trust closure, informed by Sui Move's
   package-alt separation of resolution from compilation. Replace permissive
   custom version checks with standard SemVer; make `Cell.lock` v3 a
@@ -112,6 +200,9 @@
   roadmap for an independent bounded artifact checker, executable package
   tests, source maps, the Myelin adapter handoff, and conditional ecosystem
   evidence promotion.
+
+## 0.23.0 - 2026-08-11
+
 - Make Registry chain confirmation compatible with the standard CKB v0.207.0
   RPC schema by resolving a live Cell's committed block through
   `get_transaction.tx_status` instead of depending on a proxy-specific
@@ -119,7 +210,12 @@
   methods while historical evidence identifiers remain readable. Make the
   tooling-release gate parse website scripts structurally and enforce the
   stable build steps in order, so adding intermediate regression checks no
-  longer breaks CI through an obsolete exact-string comparison.
+  longer breaks CI through an obsolete exact-string comparison. Let the full
+  backend stateful audit use an explicit isolated pinned CKB checkout through
+  `CELLSCRIPT_CKB_REPO`, avoiding any need to modify an unrelated sibling CKB
+  worktree during release validation. Propagate the release gate's existing
+  `--ckb-repo` selection to its independent `ckb-tx-measure` workspace as
+  well, so every CKB-dependent release check resolves against the same pin.
 - Turn the browser Playground into a recoverable Cell-oriented workbench.
   Browser-local workspace snapshots now retain source files, entry selection,
   active panels, and an honest saved/dirty state across refreshes. Failed
@@ -361,7 +457,9 @@
 - Close the 0.23 syntax-audit consistency gaps: canonical type declarations
   now use comma-terminated fields, syntax-combination gates cover canonical and
   comma-free compatibility input, checked example mirrors use named `U64_MAX`
-  overflow expressions, and `dev` / `ci` reject regressions. CKB-VM crypto
+  overflow expressions, and `dev` / `ci` reject regressions. Rebind the three
+  affected timelock transaction recipes to the deterministic scoped ELF data
+  hashes produced by those equivalent named expressions. CKB-VM crypto
   primitive fixtures now place `CSARGv1` through the current
   `WitnessArgs.input_type` adapter path instead of the retired raw-witness
   alias.
@@ -399,9 +497,11 @@
   and emitted `source_provenance` CKB boundaries plus the Rust-backed NovaSeal
   acceptance summary instead of retired temporary-directory, helper, and shell
   field names, and refresh the NovaSeal external TCB review template to the
-  current Rust-migrated verifier source-tree hash. CKB transaction-recipe
-  replay now tops up fresh devnet funding when a fixture has no disposable
-  change output and its replacement input cannot fund every typed output.
+  current Rust-migrated verifier source-tree hash. Refresh the RWA legal-review
+  template's profile source-tree hash after its manifest declares Edition
+  2026. CKB transaction-recipe replay now tops up fresh devnet funding when a
+  fixture has no disposable change output and its replacement input cannot
+  fund every typed output.
   Rebuild the website WASM bundle with the witness-placement-v2 compiler so the
   playground and native release artifacts expose the same ABI.
 - Add the explicit `cellscript-witnessargs-input-type-v2` placement ABI for

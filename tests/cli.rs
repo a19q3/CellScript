@@ -267,9 +267,9 @@ fn cellscript_mcp_reads_the_diagnostics_topic() {
 #[test]
 fn cellscript_mcp_reads_the_022_language_and_fiber_topics() {
     for (topic, expected_path) in [
-        ("language-0.22", "roadmap/CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md"),
+        ("language-0.22", "docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md"),
         ("fiber-interop", "examples/fiber/README.md"),
-        ("roadmap-0.22", "docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md"),
+        ("release-0.22", "docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md"),
     ] {
         let responses = run_mcp_messages(vec![serde_json::json!({
             "jsonrpc": "2.0",
@@ -1401,6 +1401,79 @@ repository = "https://example.com/cellscript/rust-contract"
         ]
     });
     std::fs::write(root.join("artifact-bundle.json"), serde_json::to_vec_pretty(&bundle).unwrap()).unwrap();
+}
+
+#[test]
+fn cellc_ls_idl_validate_bind_and_bundle_preserve_raw_digest() {
+    let temp = tempfile::tempdir().unwrap();
+    let idl = br#"{"idl_version":"0.1","name":"demo_lock","witness":[{"name":"signature","type":"secp256k1_sig","required":true}]}"#;
+    let idl_path = temp.path().join("idl.json");
+    let executable_path = temp.path().join("lock");
+    let bound_path = temp.path().join("lock.ls-idl");
+    let source_path = temp.path().join("lock.rs");
+    std::fs::write(&idl_path, idl).unwrap();
+    std::fs::write(&executable_path, b"\x7fELFdemo-lock").unwrap();
+    std::fs::write(&source_path, b"fn main() {}").unwrap();
+
+    let validate = cellc_command().args(["artifact", "ls-idl", "validate", "--idl"]).arg(&idl_path).arg("--json").output().unwrap();
+    assert!(validate.status.success(), "stderr: {}", String::from_utf8_lossy(&validate.stderr));
+
+    let bind = cellc_command()
+        .args(["artifact", "ls-idl", "bind", "--idl"])
+        .arg(&idl_path)
+        .arg("--executable")
+        .arg(&executable_path)
+        .arg("--output")
+        .arg(&bound_path)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(bind.status.success(), "stderr: {}", String::from_utf8_lossy(&bind.stderr));
+    let bound = std::fs::read(&bound_path).unwrap();
+    let digest: [u8; 32] = Sha256::digest(idl).into();
+    assert_eq!(&bound[bound.len() - 32..], digest);
+
+    let bundle = cellc_command()
+        .args(["artifact", "ls-idl", "bundle", "--idl"])
+        .arg(&idl_path)
+        .arg("--executable")
+        .arg(&bound_path)
+        .arg("--source")
+        .arg(&source_path)
+        .args([
+            "--namespace",
+            "cellscript",
+            "--name",
+            "demo-ls-idl-lock",
+            "--release",
+            "0.1.0",
+            "--language",
+            "rust",
+            "--hash-type",
+            "data1",
+            "--dep-type",
+            "code",
+            "--toolchain",
+            "rustc-1.97.1",
+            "--source-revision",
+            "0123456789abcdef0123456789abcdef01234567",
+            "--output",
+            "artifact.bundle.json",
+            "--artifact-manifest-output",
+            "Artifact.toml",
+            "--json",
+        ])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    assert!(bundle.status.success(), "stderr: {}", String::from_utf8_lossy(&bundle.stderr));
+
+    let publish = cellc_command()
+        .args(["publish", "--artifact-manifest", "Artifact.toml", "--dry-run", "--json"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    assert!(publish.status.success(), "stderr: {}", String::from_utf8_lossy(&publish.stderr));
 }
 
 #[test]

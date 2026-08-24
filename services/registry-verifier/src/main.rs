@@ -319,6 +319,19 @@ fn verify_artifact_bundle(args: Args, snapshot: &[u8]) -> Result<VerificationOut
         "copy_material" => (None, None, None, "copy-material", "hash_bound"),
         _ => unreachable!("profile was checked before bundle verification"),
     };
+    let (abi_sha256, executable_ls_idl_bound) = if manifest.get("interface").is_some() {
+        use sha2::Digest as _;
+        let abi = bundle_object(&bundle, "abi")?;
+        cellscript::package::registry::validate_ls_idl_document(&abi)
+            .map_err(anyhow::Error::msg)
+            .context("LS-IDL schema validation failed")?;
+        let digest = sha2::Sha256::digest(&abi);
+        let executable = bundle_object(&bundle, "executable")?;
+        let digest: [u8; 32] = digest.into();
+        (Some(hex::encode(digest)), Some(executable.ends_with(&digest)))
+    } else {
+        (None, None)
+    };
     cellscript::package::registry::validate_artifact_profile_contract(
         &args.artifact_kind,
         &args.profile,
@@ -326,6 +339,8 @@ fn verify_artifact_bundle(args: Args, snapshot: &[u8]) -> Result<VerificationOut
         cellscript::package::registry::ArtifactContractHashes {
             artifact_hash: artifact_hash.as_deref(),
             abi_hash: abi_hash.as_deref(),
+            abi_sha256: abi_sha256.as_deref(),
+            executable_ls_idl_bound,
             build_recipe_hash: build_recipe_hash.as_deref(),
             audit_report_hash: audit_report_hash.as_deref(),
         },

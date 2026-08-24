@@ -1,0 +1,22 @@
+{
+  "witness": [
+    {
+      "name": "sig_a",
+      "type": "secp256k1_sig",
+      "required": true,
+      "description": "Signature from the first co-signer"
+    },
+    {
+      "name": "sig_b",
+      "type": "secp256k1_sig",
+      "required": true,
+      "description": "Signature from the second co-signer"
+    },
+    {
+      "name": "nonce",
+      "type": "uint32",
+      "required": true,
+      "description": "Replay-protection nonce; must match the value stored in cell data"
+    }
+  ]
+}

@@ -46,8 +46,7 @@ else
 fi
 run cargo test --locked -p cellscript --test fuzzy_debug -- --test-threads=1
 
-require_doc_boundary roadmap/CELLSCRIPT_0_14_ROADMAP.md 'v0.14 does not ship a source-level `max_cycles` spawn parameter'
-require_doc_boundary roadmap/CELLSCRIPT_0_14_ROADMAP.md 'dedicated accepted/rejected CKB transaction fixture matrices to the later standard compatibility suite'
+require_doc_boundary docs/releases/CELLSCRIPT_0_14_RELEASE_NOTES.md 'Dedicated accepted/rejected CKB transaction fixture matrices for TYPE_ID'
 require_doc_boundary docs/releases/CELLSCRIPT_0_14_RELEASE_NOTES.md 'Action Builder, CellFabric, CCC integration, or automatic transaction'
 require_doc_boundary docs/releases/CELLSCRIPT_0_14_RELEASE_NOTES.md 'a portable target profile; `ckb` is the implemented release profile'
 require_doc_boundary README.md '0.14 release notes'

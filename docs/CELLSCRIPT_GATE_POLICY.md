@@ -38,6 +38,14 @@ running during locked builds. Registry API checks also validate the complete
 `cellscript-registry-profile-catalog-v1` and prove that only CellScript source
 profiles are dependency-resolving.
 
+The same Registry matrix covers
+`cellscript-registry-ls-idl-interface-v1`: raw ABI schema and size budgets,
+SHA-256 binding, executable suffix placement, publish-time rejection cases,
+SQL/in-memory Script lookup, byte-preserving canonical and compatibility
+responses, ambiguous type-hash rejection, CLI validate/bind/fetch/bundle, and
+both compiler-backed and least-privilege verifier outputs. Passing this matrix
+does not assert that a Lock Script semantically implements its IDL.
+
 `dev` and `ci` run `cellc fmt --check` against
 `examples/language/canonical_style.cell`. The formatter's comma-terminated
 field form is the canonical checked-in surface; the parser may continue to
@@ -71,7 +79,10 @@ Node-backed CI uses Node 22. After one checked Registry-data generation pass,
 the unified gate and manual website workflow both run
 `npm --prefix website run build:ci`; that target owns the complete Registry,
 playground, visual, homepage, preference, documentation, dist, deploy, Astro
-check, and Astro build regression contract.
+check, and Astro build regression contract. It builds both production and
+Pudge Testnet Registry outputs, checks the six shared routes in each, and
+requires their generated CSS and JavaScript assets to be byte-identical while
+allowing only explicit network authority and admitted-data differences.
 
 The 0.23 line also has one edition contract: every package declares
 `edition = "2026"`, and all emitted evidence binds the resolved compatibility
@@ -440,13 +451,19 @@ release-evidence boundary.
 
 The following ecosystem/bridge scripts are standalone manual tools that are
 **not** wired into any gate mode and are **not** part of the release-evidence
-boundary. They require sibling checkouts (`../ckb`, `../CellFabric`) or external
-runtimes and are documented in their respective guides for focused, opt-in use:
+boundary. They require sibling or explicitly selected external checkouts and
+runtimes, and are documented in their respective guides for focused, opt-in
+use:
 
 - `./scripts/cellscript_ckb_ecosystem_reuse_gate.sh` — CKB-ecosystem reuse
   checks; see `docs/CELLSCRIPT_CKB_ADAPTER.md`.
 - `./scripts/cellscript_ckb_adapter_acceptance.sh` — adapter acceptance against
   a sibling CKB checkout; see `docs/CELLSCRIPT_CKB_STD_COMPAT.md`.
+- `./scripts/cellscript_ls_idl_upstream_acceptance.sh` — exact-pinned LS-IDL
+  derive, client, and example-script compatibility, including the actual
+  upstream Rust client calling the Registry compatibility handler, unmodified
+  upstream RISC-V builds, LS-IDL-bound ELFs, and example CKB-VM execution; see
+  `docs/CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md`.
 - `./scripts/cellscript_cellfabric_bridge_smoke.sh` — CellFabric bridge smoke
   test; see `docs/CELLSCRIPT_CELLFABRIC_BRIDGE.md`.
 
