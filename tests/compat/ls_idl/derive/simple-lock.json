@@ -1,0 +1,10 @@
+{
+    "witness": [
+        {
+            "description": "Preimage whose blake2b-256 hash must match the hash in script args",
+            "name": "preimage",
+            "required": true,
+            "type": "bytes"
+        }
+    ]
+}

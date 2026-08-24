@@ -16,8 +16,9 @@ cellc examples/token.cell --target riscv64-elf --target-profile ckb --primitive-
 cellc verify-artifact /tmp/token.elf --expect-target-profile ckb
 ```
 
-This proves that the artifact and metadata agree under the CKB profile. It does
-not prove that a complete CKB transaction has been built or accepted.
+This proves that the ELF, metadata, lowering record, and source map agree under
+the bounded structural checker and CKB profile. It does not prove complete
+source equivalence or that a CKB transaction has been built or accepted.
 
 ## Recipe: Create A Linear Resource
 
@@ -320,7 +321,10 @@ cellc entry-witness . --target-profile ckb --action transfer
 ```
 
 These reports tell builders and reviewers what data the entry expects. They do
-not prove that the transaction has been assembled correctly.
+not prove that the transaction has been assembled correctly. Under Edition
+2026, place the reported `CSARGv1` payload in the selected group witness's
+Molecule `WitnessArgs.input_type`. Preserve `lock` and `output_type`, and fail
+if `input_type` is already occupied; a raw payload is not a supported alias.
 
 ## Recipe: Sign And Verify A Compile Receipt
 

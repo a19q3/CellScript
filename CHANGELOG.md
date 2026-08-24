@@ -1,5 +1,441 @@
 # Changelog
 
+## 0.24.0 - 2026-08-22
+
+- Align the complete 0.24 release identity across every workspace and verifier
+  crate, the independent checker dependency, lockfiles, Registry Type Script,
+  Myelin handoff, VS Code extension, website WASM bundle, README, and release
+  documentation. Restore the 0.23 release hardening that propagates one pinned
+  CKB checkout through backend scenarios and transaction-measure tooling.
+
+- Remove the unreachable external RISC-V toolchain fallback and make the
+  audited internal assembler the sole ELF-emission path. Reassign `E2400` to
+  the verified lowering/source-map boundary that already uses it, so the
+  compiler error registry now matches live diagnostics.
+- Split the code generator into its documented ABI, assembler, call,
+  collection, expression, frame, runtime, schema, and Cell-operation modules;
+  remove crate-wide Clippy exemptions; and replace long positional helper
+  signatures with named context records.
+- Harden the final wide-integer boundary: resolve dynamic Molecule-backed
+  `u128` fields before loading limbs, preserve the left operand across a
+  second dynamic load, and make `u128 +/- u64` overflow and underflow fail
+  closed with runtime error 49. Add exact CKB-VM regression vectors, remove
+  zero-divisor paths from the NFT and vesting examples, and reject
+  non-canonical SemVer at Registry admission.
+- Remove the CKB adapter's deprecated, permanently fail-closed automatic
+  deployment methods. Callers must build a verified unsigned deployment
+  transaction and hand signing to an external wallet.
+- Replace the deprecated `serde_yaml` crate with the maintained
+  `serde_yaml_ng` continuation in the Fiber configuration renderer.
+- Remove tracked browser-session traces and unused design captures, ignore
+  local Codex state, and make the native source-policy check reject future
+  `.playwright-mcp` artifacts.
+- Keep the production and Pudge Testnet Registry websites on one UI contract.
+  The website gate now builds both environments from the same source, verifies
+  six shared Registry routes, and requires every generated CSS/JavaScript asset
+  to be byte-identical. Testnet now ships the LS-IDL route, defaults LS-IDL
+  lookups and API examples to `testnet`, and no longer preloads production
+  package records into Manage or artifact-detail fallbacks. Network-specific
+  origins, chain selection, sandbox expiry, no-index policy, and storage remain
+  isolated.
+- Preserve the corrected website release lineage that removed stale 0.22
+  metadata. Publish the homepage as `v0.24.0` while keeping the Playground on
+  the matching 0.24 compiler identity. The canonical WASM bundle uses asset
+  identity `20260819-v0.24.0-19ce8898` and SHA-256
+  `19ce8898e8161f100edebf6f982d856f3e59bfac31572642b53f2e01c70a1a17`;
+  distribution checks bind the current stable release URL and displayed tag
+  separately from the compiler version, asset identity, and digest.
+  Remove inherited 0.25-only package-interface, typed-semantics, and future-
+  syntax presentation fields from the 0.24 website branch while retaining the
+  0.24 LS-IDL surface. Publish the exact 0.24 and 0.25 website gitlinks on
+  separate release branches so both parent lines clone without hidden commits.
+- Add first-class LS-IDL publication and discovery for CKB Lock Scripts.
+  `cellc artifact ls-idl` validates the bounded 0.1 schema, appends
+  `SHA-256(raw idl.json)` to an executable, generates a publish-ready bundle,
+  and fetches byte-exact IDL by deployed Script identity. Registry admission,
+  both verifier boundaries, immutable object storage, Postgres lookup,
+  canonical `/v1/ckb/scripts/:code_hash/interfaces/ls-idl` reads, and the
+  compatibility `/idl/:code_hash` route all enforce the same schema and
+  executable-suffix contract. Pin all 17 current upstream client vectors and
+  seven derive/example IDLs, and add an opt-in test that runs the actual
+  upstream Rust client against Registry's compatibility handler. Extend that
+  opt-in acceptance through the fixes merged upstream in `ckb_sudt_script`
+  PR #7, real RISC-V contract builds, LS-IDL-bound ELFs, and all 25 example
+  CKB-VM tests without a local compatibility overlay. Add a
+  runnable Rust example, website lookup/detail surfaces, and VS Code
+  validate/bind/fetch commands. Name the website tab `LS-IDL` rather than the
+  ambiguous `Interface`, give it the canonical `/registry/LS-IDL` route with a
+  permanent redirect from `/registry/interface`, and align its lookup panel
+  with the full-width Browse surface.
+  Keep implementation correctness and security review outside this
+  byte-identity claim.
+- Ship the 0.24 package and Registry trust closure, informed by Sui Move's
+  package-alt separation of resolution from compilation. Replace permissive
+  custom version checks with standard SemVer; make `Cell.lock` v3 a
+  manifest-digest-bound dependency graph with exact source/content identity,
+  outgoing alias edges, runtime/test feature roots, and genesis-bound CKB
+  environments. Add explicit `cellc lock`, lock-authoritative build/check/test,
+  `--locked`/`--frozen`/`--offline`, package aliases, optional features,
+  test-only dependencies, environment overrides, immutable Git-commit and
+  Registry-snapshot caches, and bounded hash-pinned external resolvers that
+  normalize to an ordinary source pin and never execute during locked builds.
+  Keep build dependencies fail-closed until isolated execution exists. Replace
+  scattered Registry artifact-profile conditionals with the versioned,
+  fail-closed `cellscript-registry-profile-catalog-v1`; only CellScript source
+  profiles are dependency-resolving, while executable, reproducible, and copy
+  profiles remain explicit non-resolving artifacts. Add a portable
+  `examples/package_graph` fixture that executes alias, SemVer, feature,
+  test-only, environment, and override selection from the frozen graph.
+- Implement the 0.24 trust-closure core. CKB ELF builds now emit canonical
+  `cellscript-verified-lowering-record-v1` and
+  `cellscript-source-artifact-map-v1` sidecars, bound by metadata schema 58 and
+  checked by the compiler-independent, budgeted
+  `cellscript-artifact-checker`. The checker independently parses static
+  ELF64/RISC-V layout, decodes the emitted instruction/call/branch surface,
+  checks CFG reachability, frames and stack restoration, ABI/ProofPlan/syscall
+  contracts, block digests, source ranges, and cross-file identities with
+  stable `V2400`-`V2418` rejection codes and deterministic mutations. Package
+  the checker independently and require checker-first crates.io publication
+  before the matching compiler crate. Extend
+  `verify-artifact` with separate binding, structural, lowering-record,
+  CKB-VM, chain, and semantic-equivalence states. Make `cellc test` require an
+  explicit simulator/CKB-VM backend for execution and add versioned,
+  fail-closed scenarios with exact runtime errors, local multi-step live-Cell
+  replacement, source-linked coverage, cycle/size/capacity limits, and exact
+  artifact/checker bindings. Add a least-privilege Registry artifact worker
+  whose production graph excludes the compiler. Freeze the CellScript side of
+  the Myelin handoff without a new profile or raw-witness alias; keep external
+  Myelin adoption and the incomplete Fiber/RGB++ matrices explicitly pending.
+  Add `examples/scenario_basics` as the runnable positive/exact-negative
+  scenario and four-file verified-artifact walkthrough.
+- Freeze the 0.23 implementation scope around Edition 2026 and its resolved
+  profile/entry identities, the deployed Registry and publisher-session path,
+  native gate tooling, the recoverable website workbench, and the bounded Fiber
+  evidence actually obtained on this line. Keep mainnet Registry Script
+  activation, publisher-owned wallet adoption, and incomplete Fiber/RGB++
+  matrices as explicit external checkpoints. Retire the proposed CellScript
+  Off-Chain Session Runtime target: current Myelin uses an attested external
+  compiler process, production requests stay on `ckb`, and Myelin-owned
+  extended semantics remain outside the compiler. Add the 0.24 trust-closure
+  roadmap for an independent bounded artifact checker, executable package
+  tests, source maps, the Myelin adapter handoff, and conditional ecosystem
+  evidence promotion.
+
+## 0.23.0 - 2026-08-11
+
+- Make Registry chain confirmation compatible with the standard CKB v0.207.0
+  RPC schema by resolving a live Cell's committed block through
+  `get_transaction.tx_status` instead of depending on a proxy-specific
+  `get_live_cell.block_hash` extension. Recorded evidence now names both RPC
+  methods while historical evidence identifiers remain readable. Make the
+  tooling-release gate parse website scripts structurally and enforce the
+  stable build steps in order, so adding intermediate regression checks no
+  longer breaks CI through an obsolete exact-string comparison. Let the full
+  backend stateful audit use an explicit isolated pinned CKB checkout through
+  `CELLSCRIPT_CKB_REPO`, avoiding any need to modify an unrelated sibling CKB
+  worktree during release validation. Propagate the release gate's existing
+  `--ckb-repo` selection to its independent `ckb-tx-measure` workspace as
+  well, so every CKB-dependent release check resolves against the same pin.
+- Turn the browser Playground into a recoverable Cell-oriented workbench.
+  Browser-local workspace snapshots now retain source files, entry selection,
+  active panels, and an honest saved/dirty state across refreshes. Failed
+  compiles preserve the last valid output as explicitly stale evidence, and a
+  failed compiler Worker can be restarted without reloading the page. Add a
+  metadata-derived Cell Flow view, source-linked action/type selection, a
+  contextual Inspector, and an optional three-step guide while keeping raw
+  actions, types, metadata, diagnostics, and the existing no-ELF WASM boundary
+  available. Unify the site's interactive controls around dense, standard, and
+  workflow button sizes with distinct neutral, selected, and primary states.
+  Registry and Playground actions now share the same contrast-safe treatment,
+  compact copy controls, focus rings, press feedback, and Phosphor interaction
+  icons. The Playground compile action keeps a stable label and exposes busy
+  state without turning the action itself into a transient status display.
+- Bound Registry discovery requests so the interface can no longer remain in
+  an indefinite loading state. The browser now delays skeletons to avoid
+  flashes on fast responses, reports slow and retrying requests, retries once
+  with a strict deadline, preserves stale or mirrored results when available,
+  and otherwise presents an explicit recovery action. Registry rows and empty
+  states use compact artifact identity marks and low-motion transitions instead
+  of generic placeholder panels. Redesign the global navigation around three
+  primary destinations, quieter utility controls, Phosphor SVG icons, and a
+  touch-safe mobile drawer with focus containment, Escape/backdrop dismissal,
+  scroll locking, and persistent theme and language controls. Source discovery
+  now has a quiet hover/focus label, while fixed full and compact language
+  controls prevent locale changes from shifting the desktop navigation.
+  The Playground now places its toolbar, compiler panels, and status bar in a
+  centred wide-screen Studio frame instead of switching ambiguously between
+  the site frame and an edge-to-edge editor. An explicit, persisted focus mode
+  removes site chrome and expands the same workbench to the viewport without a
+  first-paint flash; phones retain the existing panel switcher and site header.
+  Registry discovery now translates verification, deployment, availability,
+  and consumption mode into one consumer-facing use conclusion, supports
+  URL-restored intent filters, and shows the latest release date without
+  replacing the canonical status axes. Artifact details split the consumer
+  action from the maintainer's current evidence or deployment task, explain
+  each accepted evidence kind while keeping full hashes and raw JSON
+  accessible, and avoid presenting build verification as a security audit.
+  Maintenance keeps the selected task visible while progressively disclosing
+  alternate and destructive operations.
+- Close the first-publish browser/CLI loop with `cellc publish --authorise`.
+  cellc now creates and stores the delegated P-256 publishing key locally,
+  opens a 15-minute exact-coordinate wallet session, and resumes publishing
+  automatically after Registry approval; `--no-open` supports remote and
+  terminal-only environments. Session reads expose neither the polling secret
+  nor the resulting key ID to the browser. The publishing key is written to
+  the OS keychain as `pending` before the browser opens, promoted to `active`
+  only when either successful status returns the matching key ID, and removed
+  only after the Registry confirms cancellation or pending-session expiry. A
+  local polling deadline performs one final authoritative read and otherwise
+  preserves the pending key. Completed sessions remain poll-readable for 24
+  hours after their 15-minute approval window, closing the boundary race in
+  which wallet approval commits just before the CLI's next poll. This closes
+  the process-exit window after wallet approval without treating local state
+  as Registry authority. The browser
+  token survives same-tab refresh in `sessionStorage` and is removed on
+  completion or expiry, with an executable storage-lifecycle regression test.
+  Session mode now
+  lists only connectors that can actually complete the browser flow and folds
+  challenge creation, wallet signing, and completion into one **Approve
+  publishing access** action; the full external-wallet directory remains in
+  the explicit manual CLI path. Session completion atomically consumes the
+  nonce, records the publishing key, claims or reviews the namespace, updates
+  the session, and writes its audit trail. Concurrent or replayed completion
+  returns the committed result without duplicating authority. The Publish page
+  is now session-first: a direct visit presents one `cellc publish --authorise`
+  starting command, while a CLI session becomes a one-screen wallet approval
+  surface with one current action and end-to-end release progress. Artifact
+  identity is read-only in session mode because cellc and the manifest remain
+  authoritative. External signing, manifest scaffolding, and existing-key
+  checks remain available in a deliberately secondary advanced workspace.
+  Technical scope and session identifiers stay collapsed by default, and
+  loading, expiry, retry, review-pending, and terminal-continuation states keep
+  the same stable layout. Safe publishing-access reads retry once with bounded
+  deadlines, while signed writes are never retried automatically; an unchanged
+  failed request keeps its signature, and any coordinate or payload change
+  clears it with an explicit explanation.
+- Add an isolated Pudge Testnet Registry Sandbox. Its API, Postgres database,
+  object volume, signing origin, RPC identity, website build, wallet storage,
+  and deployment evidence are separate from production. Sandbox releases are
+  hidden 72 hours after admission; version JSON is deleted at expiry and source
+  objects are deleted after a 24-hour grace period, while minimal audit
+  tombstones remain. The API rejects a wrong-network RPC and cross-environment
+  deployment payloads. `cellc artifact record-deployment --network testnet`
+  defaults to the Pudge Registry API, and `cell-dep` revalidates liveness on the
+  network recorded in accepted evidence. Pudge chain history remains immutable:
+  expiry removes Registry indexing and off-chain objects, not on-chain Cells.
+- Complete the Registry's generalized artifact and chain-evidence path. Rust,
+  C, JavaScript, and other CKB artifacts now keep explicit source, build,
+  deployment, TCB, and copy-only identities instead of being presented as
+  CellScript dependencies. Reproducible profiles require P-256-signed reports
+  from two to sixteen policy-approved builders spanning the configured minimum
+  number of independent trust domains. Reports bind the signed environment,
+  source, recipe, executable, build log, builder identity, and predecessor
+  evidence before verification becomes `verified`; deployment is rejected
+  until that evidence exists. Add `cellc artifact reproduction-report` and
+  `cellc artifact reproduction-evidence`, wallet-ready mainnet commitment
+  transaction intents, and `cellc auth reproducer create` for generating a
+  builder-local P-256 key plus a public policy enrollment record without
+  exposing PKCS#8 material. Explicit CI-key output is mode 0600 on Unix and
+  no-overwrite. Add fixed Registry Type/commitment Lock configuration,
+  Type-Script-indexed `CSREGv1` scans, and scheduled lifecycle reconciliation
+  that demotes spent commitments or stale deployment Cells without deleting
+  historical evidence. Both Script code CellDeps must be live and sufficiently
+  confirmed before the chain path becomes ready. The chain path is implemented
+  but remains operationally disabled until the canonical mainnet Registry Type
+  Script, commitment custody Lock, and both CellDeps are deployed and configured.
+- Harden the unified artifact Registry boundary: default discovery now hides
+  pending/rejected releases and paginates by package coordinate; deployment
+  records and admin recovery must match the immutable CKB `hash_type` and
+  `dep_type`; generated CellDep descriptors re-query mainnet and reject spent
+  code/DepGroup Cells; RPC calls are time- and size-bounded; and deployment
+  capability use commits with the chain-verified state. Positive static-mirror
+  publication now follows database admission, while suppressive states are
+  mirrored first to fail closed; deferred sync is audited rather than
+  advertising uncommitted positive state. Add the capability-signed
+  `cellc artifact set-availability` publisher path used by Manage, defensive
+  frontend page deduplication, and complete `Artifact.toml` plus bundle
+  scaffolding for non-CellScript submissions.
+- Split delegated Registry authority into independent `publish`, `deployment`,
+  and `availability` scopes. Release admission no longer grants permission to
+  attach CKB deployment evidence or change a release's public availability;
+  exact-coordinate and namespace-wildcard grants remain supported. In a
+  package directory the CLI infers only the exact `publish` scope; deployment
+  and availability grants require explicit `--scope` flags. The API, Submit command builder,
+  validation, tests, and operator documentation now share this contract.
+- Redesign the Registry submission and package-maintenance surfaces around
+  contextual, task-first workflows: remove the public `Manage` tab and
+  redundant form controls, link maintenance from package details, guide first
+  publication through explicit connect, sign, submit, and namespace-claim actions, show the publication
+  orientation only once per browser, replace the CCC post-connect surface with
+  a compact Registry-owned wallet chooser that has no unrelated `Manage`
+  action, reveal yank fields only for the yank task, and close write commands
+  over verify, dry-run, and publish. Registry route and workflow state changes
+  now use reduced-motion-aware transitions instead of abrupt swaps. Browse and
+  Submit share one DOM-persistent Registry header through navigation, avoiding
+  replacement flicker while retaining the active locale; wallet connection no
+  longer gates artifact definition or local preflight, and appears only after
+  the developer has chosen an artifact coordinate and the new-capability path.
+  Existing capability keys use a read-only server check for live status,
+  expiry, exact publish scope, and active namespace ownership; entering a key
+  ID never unlocks the UI locally. Final publish commands include the
+  server-confirmed `--capability-key-id`. Primary authorisation controls use
+  larger, shorter-reach interaction targets. Client-routed returns now
+  reinitialize Submit and artifact-detail behavior instead of leaving stale
+  event handlers behind. The advanced publisher keeps a per-environment,
+  same-tab draft of non-secret artifact fields and UI state while explicitly
+  excluding wallet signatures, challenge/browser tokens, capability payloads,
+  and private keys. Registry, Publish, and API also share one route-transition,
+  vertical-rhythm, active-tab, and localized-title contract; Browse reuses its
+  latest in-memory result during background refresh rather than flashing a
+  skeleton on every return.
+  Browse uses a no-flash loading state, URL-backed server search, and API
+  pagination; bundled data appears only as an explicitly labelled error
+  fallback. Static and live package details share one responsive view with
+  localized statuses and copyable audit values. Publisher authorisation now
+  accepts both JoyID
+  (`joyid_ckb`) and standard CKB secp256k1 (`ckb_secp256k1`) principals through
+  the CCC CKB-signer boundary. Production exposes only mainnet; the separately
+  built Pudge Sandbox constructs a testnet client without adding a network
+  selector to either environment. The frontend never accepts
+  mnemonic words; traditional recovery phrases remain inside the wallet. CLI
+  auth commands use `--wallet-signature`, with `--joyid-signature` retained as
+  a visible compatibility alias, and the API adds the corresponding typed
+  principal migration and signature verification. The compact chooser now
+  preserves the complete twelve-wallet CKB directory: compatible CCC CKB
+  signers connect directly, while other entries are explicitly labelled as
+  external links for importing a compatible `wallet-signature.json`; opening a
+  link is never represented as a wallet connection. The browser checks the
+  signature shape and principal binding before submission, while the API
+  remains authoritative for cryptographic verification. Every entry
+  now uses the corresponding official Nervos wallet-directory SVG rather than
+  an autogenerated letter mark or a runtime favicon. The chooser header no
+  longer reserves space for a hidden back control, so its title, explanatory
+  text, and wallet list share one left alignment edge. Submit now asks for the
+  artifact kind and source language independently, and Manage groups publish,
+  inspection, reproduction, deployment, commitment, and availability as
+  isolated task flows; hidden task fields can no longer leak into the selected
+  workflow.
+- Deploy the public Registry production slice at
+  `api.registry.cellscript.dev` and `registry.cellscript.dev`: Postgres 17 is
+  the authoritative write store, the Node 22 adapter persists source snapshots
+  and version-addressed JSON to an isolated object volume, and a read-only
+  nginx service exposes `/packages/*` independently of the API/database
+  process. The production stack adds live dependency-aware readiness, bounded
+  request bodies, structured logs, health checks, log rotation, generated
+  secrets, HTTPS, and an 8 MiB proxy admission limit sized for the 5 MiB source
+  snapshot contract. Public package search, package detail, and ordered
+  evidence promotion APIs are live. A daily systemd job writes atomic,
+  checksum-protected Postgres/object-store backups with bounded retention; its
+  first backup passed database and archive restore inspection. Public version
+  responses now expose immutable snapshot descriptors, the read-only service
+  serves those content-addressed snapshots, and the CLI verifies object SHA-256,
+  safe paths, per-file BLAKE2b, and the whole-tree source hash before atomically
+  materialising a dependency. The CLI uses the public API's accepted status as
+  the default resolution authority while retaining the explicit
+  `CELLSCRIPT_REGISTRY_URL` Git/offline override, and the website renders the
+  live Registry with a clearly labelled read-only bundled mirror only when the
+  API is unavailable. The former Registry Coming Soon surface is removed.
+  First-publish admission is now user-reachable end to end: `cellc auth
+  namespace claim` and the submit page's **Claim namespace** action explicitly
+  establish namespace ownership between capability registration and publish.
+  Publish admission now commits package, snapshot, version, capability-use,
+  acceptance-audit, and completed-idempotency state in one database transaction;
+  pre-admission failures release the request-owned nonce and retry reservation,
+  while production readiness verifies both managed object-store prefixes and
+  volume initialization repairs their ownership and modes recursively.
+  Explicit unverified/quarantined install acknowledgements are persisted in
+  dependency tables, preventing lock refreshes and later builds from losing the
+  caller's risk policy. Publish admission now transactionally creates a leased,
+  bounded verification job. A separate least-privilege worker authenticates the
+  immutable snapshot, compiles it with the current CellScript compiler, checks
+  the signed manifest and compatibility-profile identities, atomically records
+  `verified_build` evidence, and then converges the static version object.
+  PostgreSQL `FOR UPDATE SKIP LOCKED` claims, expiring leases, three-attempt
+  retry/dead-letter handling, operator queue metrics/requeue endpoints, bounded
+  subprocess time/output/memory, and API readiness tied to the worker heartbeat
+  make the formerly documented asynchronous queue real. Public search/list now
+  excludes `source_published` and `indexed_pending` by default while preserving
+  explicit status queries and direct audit URLs. Package-manifest identity uses
+  canonical recursively sorted JSON, eliminating cross-process `HashMap` order
+  drift between publisher and verifier. Deploy that worker to the live
+  production topology and exercise external publish, queue claim, real
+  compilation, evidence promotion, static convergence, default visibility, and
+  a fresh consumer install/check/build without an unverified override. The
+  one-time seeded smoke identity and live objects were removed afterward, queue
+  counts returned to zero, and a checksum-verified backup captured the migrated
+  clean state. Production Compose now accepts explicit prebuilt API/verifier
+  image references so shared hosts can deploy with `--no-build`. Harden the API
+  and static Registry response boundary with HSTS, anti-framing, no-sniff,
+  permissions policy, cross-domain-policy denial, and a deny-all CSP for JSON
+  surfaces. Add a reproducible website production Compose/nginx contract with
+  a read-only root filesystem, bounded temporary filesystems, health checks,
+  log rotation, `no-new-privileges`, and matching browser security headers. A
+  production recovery drill restores the post-`0002` dump into an isolated
+  Postgres 17 container, extracts the object archive into an isolated volume,
+  verifies both migrations and all seven core Registry tables, and removes the
+  temporary restore resources afterward.
+- Close the 0.23 syntax-audit consistency gaps: canonical type declarations
+  now use comma-terminated fields, syntax-combination gates cover canonical and
+  comma-free compatibility input, checked example mirrors use named `U64_MAX`
+  overflow expressions, and `dev` / `ci` reject regressions. Rebind the three
+  affected timelock transaction recipes to the deterministic scoped ELF data
+  hashes produced by those equivalent named expressions. CKB-VM crypto
+  primitive fixtures now place `CSARGv1` through the current
+  `WitnessArgs.input_type` adapter path instead of the retired raw-witness
+  alias.
+- Make `edition = "2026"` the single mandatory CellScript package contract.
+  Edition is now explicitly a long-lived source-semantics epoch rather than an
+  annual release or complete ABI bundle. The resolved compatibility profile
+  independently composes source semantics, target, primitive assurance, entry
+  payload and placement ABIs, and metadata schemas under
+  `cellscript-resolved-compatibility-profile-v1`. Metadata schema 57 carries
+  those axes, and their hash remains bound across cache keys, registry records,
+  `Cell.lock` v2, `Deployed.toml` v2, compile receipts v2, generated builders,
+  native APIs, WASM, LSP, and the playground. Missing or different editions
+  and older persisted schemas are rejected; no migration or compatibility
+  reader is provided. Generated CKB entries also remove the raw-`CSARGv1`
+  witness fallback, so placement ABI v2 accepts the payload only inside
+  canonical `WitnessArgs.input_type`. The deployed public registry uses one
+  current contract: signed entries, the production database schema,
+  version-addressed static JSON, and the website require both Edition 2026 and
+  the separate compatibility-profile hash, with no fallback reader for
+  incomplete entries. Generic admin status changes cannot manufacture
+  `verified_build`, `deployed`, or `on_chain_committed` claims; those states
+  require the ordered evidence-promotion path. See the
+  [0.23 development release notes](docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md).
+- Complete the native-tooling cleanup: neutralize migration-era identifiers,
+  remove tracked legacy traceback logs and cache exclusions, rename the native
+  tooling integration suite, and add a repository-wide source-policy command
+  to every gate. The policy traverses initialized submodules and rejects
+  retired interpreter sources, generated bytecode/cache artifacts, capture
+  logs, and active tooling references before they can re-enter the release
+  contract. The canonical WASM container now explicitly selects its already
+  installed pinned Rust toolchain, avoiding an unnecessary network sync during
+  release builds.
+- Restore the 0.23 release gate after the Python-to-Rust tooling migration by
+  checking the semantic `requires_all_bundled_examples_strict_original_ckb`
+  and emitted `source_provenance` CKB boundaries plus the Rust-backed NovaSeal
+  acceptance summary instead of retired temporary-directory, helper, and shell
+  field names, and refresh the NovaSeal external TCB review template to the
+  current Rust-migrated verifier source-tree hash. Refresh the RWA legal-review
+  template's profile source-tree hash after its manifest declares Edition
+  2026. CKB transaction-recipe replay now tops up fresh devnet funding when a
+  fixture has no disposable change output and its replacement input cannot
+  fund every typed output.
+  Rebuild the website WASM bundle with the witness-placement-v2 compiler so the
+  playground and native release artifacts expose the same ABI.
+- Add the explicit `cellscript-witnessargs-input-type-v2` placement ABI for
+  parameterized CKB entries. Generated wrappers now resolve witnesses relative
+  to the active script group, decode the `CSARGv1` payload from
+  `WitnessArgs.input_type`, preserve wallet/multisig ownership of `lock`, reject
+  malformed or wrongly placed payloads, and reject group-relative raw-v1
+  placement. Builders place `input_type` before SDK signing because the
+  complete `WitnessArgs` is signed. A canonical signed multisig-v2 CKB-VM
+  regression covers a type group whose first input is not transaction input
+  zero and rejects post-signing witness mutation. The Rust-native v0.23
+  transaction recipes are rebound to the resulting audited ELF data hashes so
+  the production stateful gate cannot silently replay stale code identities.
+
 ## 0.22.0 - 2026-07-19
 
 - Make GitHub publication depend on the full release gate. Release evidence now

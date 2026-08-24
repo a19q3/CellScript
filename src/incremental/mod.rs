@@ -256,13 +256,13 @@ impl ChangeDetector {
             return true;
         }
 
-        if let Ok(mtime) = metadata.modified() {
-            if mtime != snapshot.mtime {
-                let Ok(hash) = compute_file_hash(path) else {
-                    return true;
-                };
-                return hash != snapshot.hash;
-            }
+        if let Ok(mtime) = metadata.modified()
+            && mtime != snapshot.mtime
+        {
+            let Ok(hash) = compute_file_hash(path) else {
+                return true;
+            };
+            return hash != snapshot.hash;
         }
 
         false

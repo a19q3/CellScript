@@ -1,8 +1,10 @@
 //! CLI module
 //! Command-line interface and subcommand implementation
 
+mod artifact;
 pub mod commands;
 mod novaseal_certification;
+mod test_runner;
 
 use crate::error::Result;
 use commands::{CliParser, CommandExecutor};

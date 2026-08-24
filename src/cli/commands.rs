@@ -1,3 +1,4 @@
+use super::artifact::{ArtifactArgs, ArtifactOperation};
 use crate::docgen::{DocGenerator, OutputFormat};
 use crate::error::{CompileError, Result};
 use crate::fmt::format_default;
@@ -7,7 +8,8 @@ use crate::{
     compile_path, compile_path_metadata_with_diagnostics, compile_path_with_entry_action, compile_path_with_entry_lock,
     default_metadata_path_for_artifact, default_output_path_for_input, load_modules_for_input, resolve_input_path,
     validate_artifact_metadata, validate_source_units_on_disk, ArtifactFormat, CompileMetadata, CompileOptions, EntryWitnessArg,
-    ParamMetadata, ProofPlanMetadata, TargetProfile, ENTRY_WITNESS_ABI,
+    ParamMetadata, ProofPlanMetadata, TargetProfile, ENTRY_WITNESS_ABI, ENTRY_WITNESS_PLACEMENT_ABI, ENTRY_WITNESS_PLACEMENT_FIELD,
+    ENTRY_WITNESS_PLACEMENT_SOURCE,
 };
 use base64::Engine;
 use camino::Utf8Path;
@@ -41,7 +43,7 @@ const ICKB_REQUIRED_PRODUCTION_EVIDENCE: [&str; 8] = [
 ];
 const ICKB_REQUIRED_HARDENING_EVIDENCE: [&str; 5] =
     ["mutation_coverage", "deterministic_fuzz_seed", "normalized_fixture_generator", "max_cellscript_cycles", "max_tx_size_bytes"];
-const CELLSCRIPT_CKB_RPC_URL_ENV: &str = "CELLSCRIPT_CKB_RPC_URL";
+pub(super) const CELLSCRIPT_CKB_RPC_URL_ENV: &str = "CELLSCRIPT_CKB_RPC_URL";
 const NOVASEAL_CERTIFICATION_PLUGIN: &str = "novaseal-profile-v0";
 const NOVASEAL_CERTIFICATION_REPORT_SCHEMA: &str = "cellscript-certification-report-v0.1";
 const NOVASEAL_PLUGIN_REPORT_SCHEMA: &str = "novaseal-production-gates-v0.4";
@@ -120,6 +122,7 @@ pub enum Command {
     VerifyReceipt(VerifyReceiptArgs),
     VerifyArtifact(VerifyArtifactArgs),
     Run(RunArgs),
+    Artifact(ArtifactArgs),
     Publish(PublishArgs),
     Install(InstallArgs),
     RegistryVerify(RegistryVerifyArgs),
@@ -127,6 +130,7 @@ pub enum Command {
     RegistryAdd(RegistryAddArgs),
     RegistryEdit(RegistryEditArgs),
     Certify(CertifyArgs),
+    Lock(PackageLockArgs),
     Update,
     Info(InfoArgs),
     Login(LoginArgs),
@@ -134,6 +138,8 @@ pub enum Command {
     AuthCapabilityCreate(AuthCapabilityArgs),
     AuthCapabilitySubmit(AuthCapabilitySubmitArgs),
     AuthCapabilityRevoke(AuthCapabilityRevokeArgs),
+    AuthReproducerCreate(AuthReproducerCreateArgs),
+    AuthNamespaceClaim(AuthNamespaceClaimArgs),
 }
 
 #[derive(Debug, Default)]
@@ -147,6 +153,10 @@ pub struct BuildArgs {
     pub features: Vec<String>,
     pub all_features: bool,
     pub no_default_features: bool,
+    pub locked: bool,
+    pub frozen: bool,
+    pub offline: bool,
+    pub environment: Option<String>,
     pub verbose: bool,
     pub json: bool,
     pub production: bool,
@@ -163,6 +173,7 @@ pub struct BuildArgs {
 #[derive(Debug, Default)]
 pub struct TestArgs {
     pub filter: Option<String>,
+    pub backend: Option<String>,
     pub jobs: Option<usize>,
     pub release: bool,
     pub no_run: bool,
@@ -170,6 +181,13 @@ pub struct TestArgs {
     pub fail_fast: bool,
     pub doc: bool,
     pub json: bool,
+    pub features: Vec<String>,
+    pub all_features: bool,
+    pub no_default_features: bool,
+    pub locked: bool,
+    pub frozen: bool,
+    pub offline: bool,
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -209,6 +227,7 @@ pub struct NewArgs {
 #[derive(Debug, Default)]
 pub struct AddArgs {
     pub crates: Vec<String>,
+    pub package: Option<String>,
     pub dev: bool,
     pub build: bool,
     pub git: Option<String>,
@@ -237,10 +256,21 @@ pub struct InfoArgs {
 }
 
 #[derive(Debug, Default)]
+pub struct PackageLockArgs {
+    pub json: bool,
+}
+
+#[derive(Debug, Default)]
 pub struct CheckArgs {
     pub all_targets: bool,
     pub target_profile: Option<String>,
     pub features: Vec<String>,
+    pub all_features: bool,
+    pub no_default_features: bool,
+    pub locked: bool,
+    pub frozen: bool,
+    pub offline: bool,
+    pub environment: Option<String>,
     pub json: bool,
     pub production: bool,
     pub deny_fail_closed: bool,
@@ -509,6 +539,8 @@ pub struct VerifyReceiptArgs {
 pub struct VerifyArtifactArgs {
     pub artifact: PathBuf,
     pub metadata: Option<PathBuf>,
+    pub lowering_record: Option<PathBuf>,
+    pub source_map: Option<PathBuf>,
     pub receipt: Option<PathBuf>,
     pub verify_sources: bool,
     pub json: bool,
@@ -538,10 +570,14 @@ pub struct PublishArgs {
     pub allow_dirty: bool,
     pub api_url: Option<String>,
     pub capability_key_id: Option<String>,
+    pub authorise: bool,
+    pub no_open: bool,
     pub capability_signature: Option<String>,
     pub idempotency_key: Option<String>,
     pub payload: Option<PathBuf>,
     pub source_snapshot: Option<PathBuf>,
+    pub artifact_manifest: Option<PathBuf>,
+    pub artifact_kind: Option<String>,
     pub print_payload: bool,
     pub json: bool,
 }
@@ -578,7 +614,7 @@ pub struct AuthCapabilityArgs {
 pub struct AuthCapabilitySubmitArgs {
     pub api_url: Option<String>,
     pub payload: PathBuf,
-    pub joyid_signature: PathBuf,
+    pub wallet_signature: PathBuf,
     pub json: bool,
 }
 
@@ -590,8 +626,25 @@ pub struct AuthCapabilityRevokeArgs {
     pub principal_id: Option<String>,
     pub capability_key_id: Option<String>,
     pub payload: Option<PathBuf>,
-    pub joyid_signature: Option<PathBuf>,
+    pub wallet_signature: Option<PathBuf>,
     pub reason: Option<String>,
+    pub json: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct AuthReproducerCreateArgs {
+    pub builder_id: String,
+    pub trust_domain: String,
+    pub private_key_output: Option<PathBuf>,
+    pub json: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct AuthNamespaceClaimArgs {
+    pub api_url: Option<String>,
+    pub namespace: String,
+    pub payload: PathBuf,
+    pub wallet_signature: PathBuf,
     pub json: bool,
 }
 
@@ -742,6 +795,7 @@ fn run_entry_outcome(metadata: &CompileMetadata) -> Option<RunEntryOutcome> {
 }
 
 impl CommandExecutor {
+    #[cfg(not(feature = "vm-runner"))]
     fn experimental_command(name: &str, detail: &str) -> Result<()> {
         Err(crate::error::CompileError::without_span(format!("cellc {} is still experimental: {}", name, detail)))
     }
@@ -791,14 +845,18 @@ impl CommandExecutor {
             Command::VerifyReceipt(args) => Self::verify_receipt(args),
             Command::VerifyArtifact(args) => Self::verify_artifact(args),
             Command::Run(args) => Self::run(args),
+            Command::Artifact(args) => super::artifact::execute(args),
             Command::Publish(args) => Self::publish(args),
             Command::Install(args) => Self::install(args),
+            Command::Lock(args) => Self::lock(args),
             Command::Update => Self::update(),
             Command::Info(args) => Self::info(args),
             Command::Login(args) => Self::login(args),
             Command::AuthLogin(args) | Command::AuthCapabilityCreate(args) => Self::auth_capability(args),
             Command::AuthCapabilitySubmit(args) => Self::auth_capability_submit(args),
             Command::AuthCapabilityRevoke(args) => Self::auth_capability_revoke(args),
+            Command::AuthReproducerCreate(args) => Self::auth_reproducer_create(args),
+            Command::AuthNamespaceClaim(args) => Self::auth_namespace_claim(args),
             Command::RegistryVerify(args) => Self::registry_verify(args),
             Command::PackageVerify(args) => Self::package_verify(args),
             Command::RegistryAdd(args) => Self::registry_add(args),
@@ -827,6 +885,7 @@ impl CommandExecutor {
         let opt_level = if args.release { 3 } else { 1 };
         let input = Utf8Path::new(".");
         let options = CompileOptions {
+            edition: crate::CURRENT_EDITION,
             opt_level,
             output: None,
             debug: false,
@@ -838,12 +897,15 @@ impl CommandExecutor {
             return Err(crate::error::CompileError::without_span("--entry-action and --entry-lock are mutually exclusive"));
         }
         let cache_options = options.clone();
-        let result = match (args.entry_action.as_deref(), args.entry_lock.as_deref()) {
-            (Some(action), None) => compile_path_with_entry_action(input, options, action),
-            (None, Some(lock)) => compile_path_with_entry_lock(input, options, lock),
-            (None, None) => compile_path(input, options),
-            (Some(_), Some(_)) => unreachable!("validated above"),
-        }?;
+        let resolution_options = build_resolution_options(&args, crate::package::DependencyScope::Runtime);
+        let result = crate::package::with_resolution_options(resolution_options, || {
+            match (args.entry_action.as_deref(), args.entry_lock.as_deref()) {
+                (Some(action), None) => compile_path_with_entry_action(input, options, action),
+                (None, Some(lock)) => compile_path_with_entry_lock(input, options, lock),
+                (None, None) => compile_path(input, options),
+                (Some(_), Some(_)) => unreachable!("validated above"),
+            }
+        })?;
         let policy_args = effective_build_check_args(&args)?;
         validate_check_policy(&result.metadata, &policy_args)?;
         let resolved = resolve_input_path(input)?;
@@ -851,8 +913,11 @@ impl CommandExecutor {
         result.write_to_path(&output_path)?;
         let metadata_path = default_metadata_path_for_artifact(&output_path);
         result.write_metadata_to_path(&metadata_path)?;
+        let verified_sidecars = result.write_verified_artifact_sidecars(&output_path)?;
 
-        refresh_lockfile_from_build(std::path::Path::new("."), &result.metadata)?;
+        if !args.frozen {
+            refresh_lockfile_from_build(std::path::Path::new("."), &result.metadata)?;
+        }
         if args.entry_action.is_none() && args.entry_lock.is_none() {
             crate::refresh_incremental_cache_for_input(input, &cache_options, &result)?;
         }
@@ -861,7 +926,7 @@ impl CommandExecutor {
             || policy_args.deny_fail_closed
             || policy_args.deny_ckb_runtime
             || policy_args.deny_runtime_obligations;
-        let summary = serde_json::json!({
+        let mut summary = serde_json::json!({
             "status": "ok",
             "artifact": output_path.to_string(),
             "metadata": metadata_path.to_string(),
@@ -903,6 +968,26 @@ impl CommandExecutor {
             "cache_hit": result.cache_hit,
             "constraints": &result.metadata.constraints,
         });
+        if let Some(object) = summary.as_object_mut() {
+            object.insert(
+                "dependency_lock_mode".to_string(),
+                serde_json::json!(if args.frozen {
+                    "frozen"
+                } else if args.locked {
+                    "locked"
+                } else {
+                    "authoritative"
+                }),
+            );
+            object.insert("dependency_environment".to_string(), serde_json::json!(args.environment.as_deref()));
+            object.insert("dependency_offline".to_string(), serde_json::json!(args.offline || args.frozen));
+            object.insert("dependency_features".to_string(), serde_json::json!(&args.features));
+            object.insert("dependency_all_features".to_string(), serde_json::json!(args.all_features));
+            object.insert("dependency_default_features".to_string(), serde_json::json!(!args.no_default_features));
+            object
+                .insert("lowering_record".to_string(), serde_json::json!(verified_sidecars.as_ref().map(|paths| paths.0.to_string())));
+            object.insert("source_map".to_string(), serde_json::json!(verified_sidecars.as_ref().map(|paths| paths.1.to_string())));
+        }
         let mut human_lines = vec![
             "Build complete".green().to_string(),
             format!("  Artifact format: {}", result.artifact_format.display_name()),
@@ -953,6 +1038,7 @@ impl CommandExecutor {
 
         for member_dir in &members {
             let options = CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level,
                 output: None,
                 debug: false,
@@ -961,11 +1047,14 @@ impl CommandExecutor {
                 primitive_compat: args.primitive_compat.clone(),
             };
 
-            let compile_result = match (args.entry_action.as_deref(), args.entry_lock.as_deref()) {
-                (Some(action), None) => compile_path_with_entry_action(member_dir, options, action),
-                (None, Some(lock)) => compile_path_with_entry_lock(member_dir, options, lock),
-                _ => compile_path(member_dir, options),
-            };
+            let resolution_options = build_resolution_options(&args, crate::package::DependencyScope::Runtime);
+            let compile_result = crate::package::with_resolution_options(resolution_options, || {
+                match (args.entry_action.as_deref(), args.entry_lock.as_deref()) {
+                    (Some(action), None) => compile_path_with_entry_action(member_dir, options, action),
+                    (None, Some(lock)) => compile_path_with_entry_lock(member_dir, options, lock),
+                    _ => compile_path(member_dir, options),
+                }
+            });
 
             match compile_result {
                 Ok(result) => {
@@ -986,12 +1075,15 @@ impl CommandExecutor {
                     result.write_to_path(&output_path)?;
                     let metadata_path = default_metadata_path_for_artifact(&output_path);
                     result.write_metadata_to_path(&metadata_path)?;
+                    let verified_sidecars = result.write_verified_artifact_sidecars(&output_path)?;
 
                     member_results.push(serde_json::json!({
                         "member": member_dir.as_str(),
                         "status": "ok",
                         "artifact": output_path.to_string(),
                         "metadata": metadata_path.to_string(),
+                        "lowering_record": verified_sidecars.as_ref().map(|paths| paths.0.to_string()),
+                        "source_map": verified_sidecars.as_ref().map(|paths| paths.1.to_string()),
                         "artifact_format": result.artifact_format.display_name(),
                         "target_profile": result.metadata.target_profile.name,
                         "artifact_hash": result.metadata.artifact_hash,
@@ -1034,9 +1126,13 @@ impl CommandExecutor {
                     lockfile.dependencies.insert(
                         member_name.to_string(),
                         crate::package::LockedDependency {
+                            name: member_name.to_string(),
+                            namespace: None,
                             version: String::new(),
                             source: crate::package::LockedSource::Path { path: member_name.to_string() },
                             source_hash: Some(artifact_hash.to_string()),
+                            manifest_digest: "workspace-member-artifact".to_string(),
+                            dependencies: BTreeMap::new(),
                             build: None,
                         },
                     );
@@ -1063,6 +1159,11 @@ impl CommandExecutor {
     }
 
     fn test(args: TestArgs) -> Result<()> {
+        let options = test_resolution_options(&args);
+        crate::package::with_resolution_options(options, || Self::test_inner(args))
+    }
+
+    fn test_inner(args: TestArgs) -> Result<()> {
         let doc_output = if args.doc {
             Some(Self::generate_docs(&DocArgs { output_format: OutputFormat::Markdown, ..Default::default() })?)
         } else {
@@ -1070,15 +1171,32 @@ impl CommandExecutor {
         };
 
         let mut test_inputs = collect_cell_files(Path::new("tests"))?;
+        let mut scenario_inputs = super::test_runner::collect_scenario_files(Path::new("tests"))?;
         if let Some(filter) = &args.filter {
             test_inputs.retain(|path| path.to_string_lossy().contains(filter));
+            scenario_inputs.retain(|path| path.to_string_lossy().contains(filter));
         }
         test_inputs.sort();
+        scenario_inputs.sort();
+        let backends = if args.no_run {
+            Vec::new()
+        } else {
+            let backend = args.backend.as_deref().ok_or_else(|| {
+                crate::error::CompileError::without_span("cellc test requires --backend simulator|ckb-vm|all unless --no-run is used")
+            })?;
+            if scenario_inputs.is_empty() {
+                return Err(crate::error::CompileError::without_span(
+                    "cellc test cannot pass without an executable *.scenario.json fixture; use --no-run for compile-only checks",
+                ));
+            }
+            super::test_runner::TestBackend::parse(backend)?
+        };
 
         if test_inputs.is_empty() {
             compile_path(
                 ".",
                 CompileOptions {
+                    edition: crate::CURRENT_EDITION,
                     opt_level: 0,
                     output: None,
                     debug: false,
@@ -1110,7 +1228,9 @@ impl CommandExecutor {
                     "execution": if args.no_run { "disabled" } else { "skipped-no-test-files" },
                     "docs_generated": args.doc,
                     "doc_output": doc_output.as_ref().map(|path| path.display().to_string()),
+                    "scenario_files": scenario_inputs.len(),
                     "tests": [],
+                    "scenarios": [],
                 }),
                 human_lines,
             }
@@ -1131,6 +1251,7 @@ impl CommandExecutor {
             let result = compile_path(
                 utf8,
                 CompileOptions {
+                    edition: crate::CURRENT_EDITION,
                     opt_level: 0,
                     output: None,
                     debug: false,
@@ -1182,16 +1303,64 @@ impl CommandExecutor {
                 })));
         }
 
+        let mut scenario_reports = Vec::new();
+        let mut scenario_failures = Vec::new();
+        if !args.no_run {
+            for scenario in &scenario_inputs {
+                for backend in &backends {
+                    match super::test_runner::run_scenario(scenario, *backend) {
+                        Ok(report) => scenario_reports.push(report),
+                        Err(error) => {
+                            let message = format!("{}: {}", scenario.display(), error);
+                            scenario_reports.push(serde_json::json!({
+                                "schema": "cellscript-test-report-v1",
+                                "status": "failed",
+                                "scenario_path": scenario.to_string_lossy(),
+                                "error": error.to_string(),
+                            }));
+                            scenario_failures.push(message);
+                            if args.fail_fast {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if args.fail_fast && !scenario_failures.is_empty() {
+                    break;
+                }
+            }
+        }
+        if !scenario_failures.is_empty() {
+            return Err(crate::error::CompileError::without_span(format!(
+                "scenario test failed:\n  - {}",
+                scenario_failures.join("\n  - ")
+            ))
+            .with_details(serde_json::json!({
+                "mode": "test",
+                "compile_test_files": test_inputs.len(),
+                "scenario_files": scenario_inputs.len(),
+                "backend": args.backend,
+                "scenario_runs_passed": scenario_reports.len().saturating_sub(scenario_failures.len()),
+                "scenario_runs_failed": scenario_failures.len(),
+                "scenarios": scenario_reports,
+            })));
+        }
+
         let mut human_lines = Vec::new();
         if let Some(output) = &doc_output {
             human_lines.push("Documentation generated".green().to_string());
             human_lines.push(format!("  Output: {}", output.display()));
         }
-        human_lines.push("Test compile complete".green().to_string());
+        human_lines.push(if args.no_run { "Test compile complete" } else { "Test execution complete" }.green().to_string());
         human_lines.push(format!("  Compiled {} test file(s)", passed));
-        if !args.no_run {
-            human_lines
-                .push("  Execution: skipped; CellScript test execution is not enabled in the default toolchain yet".to_string());
+        if args.no_run {
+            human_lines.push("  Execution: disabled by --no-run".to_string());
+        } else {
+            human_lines.push(format!(
+                "  Executed {} scenario/backend run(s) with {}",
+                scenario_reports.len(),
+                args.backend.as_deref().unwrap_or("unknown")
+            ));
         }
         CommandOutcome {
             machine: serde_json::json!({
@@ -1202,10 +1371,14 @@ impl CommandExecutor {
                 "failed": 0,
                 "fail_fast": args.fail_fast,
                 "no_run": args.no_run,
-                "execution": if args.no_run { "disabled" } else { "skipped-default-toolchain" },
+                "execution": if args.no_run { "disabled" } else { "executed" },
+                "backend": args.backend,
+                "scenario_files": scenario_inputs.len(),
+                "scenario_runs": scenario_reports.len(),
                 "docs_generated": args.doc,
                 "doc_output": doc_output.as_ref().map(|path| path.display().to_string()),
                 "tests": test_reports,
+                "scenarios": scenario_reports,
             }),
             human_lines,
         }
@@ -1238,7 +1411,15 @@ impl CommandExecutor {
         let modules = load_modules_for_input(".")?;
         let compile_result = compile_path(
             ".",
-            CompileOptions { opt_level: 0, output: None, debug: false, target: None, target_profile: None, primitive_compat: None },
+            CompileOptions {
+                edition: crate::CURRENT_EDITION,
+                opt_level: 0,
+                output: None,
+                debug: false,
+                target: None,
+                target_profile: None,
+                primitive_compat: None,
+            },
         )?;
         let mut generator = DocGenerator::new(args.output_format);
         for module in &modules {
@@ -1421,6 +1602,9 @@ impl CommandExecutor {
         if args.git.is_some() && args.path.is_some() {
             return Err(crate::error::CompileError::without_span("cellc add accepts either --git or --path, not both"));
         }
+        if args.package.is_some() && args.crates.len() != 1 {
+            return Err(crate::error::CompileError::without_span("cellc add --package requires exactly one local dependency alias"));
+        }
 
         let pm = PackageManager::new(".");
         let mut manifest = pm.read_manifest()?;
@@ -1435,6 +1619,7 @@ impl CommandExecutor {
         }
 
         pm.write_manifest(&manifest)?;
+        refresh_lockfile_from_manifest(Path::new("."))?;
 
         CommandOutcome {
             machine: serde_json::json!({
@@ -1465,7 +1650,7 @@ impl CommandExecutor {
         }
 
         pm.write_manifest(&manifest)?;
-        if !args.dev && !args.build && !removed.is_empty() {
+        if !removed.is_empty() {
             refresh_lockfile_from_manifest(Path::new("."))?;
         }
 
@@ -1535,6 +1720,7 @@ impl CommandExecutor {
 
         for target in targets {
             let compile_options = CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level: 0,
                 output: None,
                 debug: false,
@@ -1542,13 +1728,15 @@ impl CommandExecutor {
                 target_profile: compile_target_profile.clone(),
                 primitive_compat: args.primitive_compat.clone(),
             };
-            let result = match compile_path(".", compile_options.clone()) {
-                Ok(result) => result,
-                Err(error) => {
-                    let diagnostics = compile_failure_diagnostics(Utf8Path::new("."), compile_options, error);
-                    return Err(diagnostics_to_error(&diagnostics));
-                }
-            };
+            let resolution_options = check_resolution_options(&args, crate::package::DependencyScope::Runtime);
+            let result =
+                match crate::package::with_resolution_options(resolution_options, || compile_path(".", compile_options.clone())) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let diagnostics = compile_failure_diagnostics(Utf8Path::new("."), compile_options, error);
+                        return Err(diagnostics_to_error(&diagnostics));
+                    }
+                };
             validate_check_policy(&result.metadata, &args)?;
             let target_profile_policy_violations =
                 target_profile_policy_violations(&result.metadata, result.artifact_format, requested_profile);
@@ -1652,17 +1840,18 @@ impl CommandExecutor {
         let mut failed = 0;
 
         for member_dir in &members {
-            let compile_result = compile_path(
-                member_dir,
-                CompileOptions {
-                    opt_level: 0,
-                    output: None,
-                    debug: false,
-                    target: None,
-                    target_profile: args.target_profile.clone(),
-                    primitive_compat: args.primitive_compat.clone(),
-                },
-            );
+            let compile_options = CompileOptions {
+                edition: crate::CURRENT_EDITION,
+                opt_level: 0,
+                output: None,
+                debug: false,
+                target: None,
+                target_profile: args.target_profile.clone(),
+                primitive_compat: args.primitive_compat.clone(),
+            };
+            let resolution_options = check_resolution_options(&args, crate::package::DependencyScope::Runtime);
+            let compile_result =
+                crate::package::with_resolution_options(resolution_options, || compile_path(member_dir, compile_options));
 
             match compile_result {
                 Ok(result) => {
@@ -1717,6 +1906,7 @@ impl CommandExecutor {
         let input = Utf8Path::from_path(&input_path)
             .ok_or_else(|| crate::error::CompileError::without_span(format!("path '{}' is not valid UTF-8", input_path.display())))?;
         let options = CompileOptions {
+            edition: crate::CURRENT_EDITION,
             opt_level: 0,
             output: None,
             debug: false,
@@ -1754,6 +1944,7 @@ impl CommandExecutor {
         let input = Utf8Path::from_path(&input_path)
             .ok_or_else(|| crate::error::CompileError::without_span(format!("path '{}' is not valid UTF-8", input_path.display())))?;
         let options = CompileOptions {
+            edition: crate::CURRENT_EDITION,
             opt_level: 0,
             output: None,
             debug: false,
@@ -1794,6 +1985,7 @@ impl CommandExecutor {
         let result = compile_path(
             input,
             CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level: 0,
                 output: None,
                 debug: false,
@@ -1863,6 +2055,10 @@ impl CommandExecutor {
         let summary = serde_json::json!({
             "status": if entry_constraints.unsupported { "fail" } else { "ok" },
             "abi": ENTRY_WITNESS_ABI,
+            "placement_abi": ENTRY_WITNESS_PLACEMENT_ABI,
+            "witness_args_field": ENTRY_WITNESS_PLACEMENT_FIELD,
+            "witness_source": ENTRY_WITNESS_PLACEMENT_SOURCE,
+            "raw_v1_compatible": false,
             "target_profile": result.metadata.target_profile.name,
             "entry_kind": selected.kind,
             "entry": selected.name,
@@ -1894,6 +2090,7 @@ impl CommandExecutor {
         let result = compile_path(
             input,
             CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level: 0,
                 output: None,
                 debug: false,
@@ -2085,9 +2282,12 @@ impl CommandExecutor {
             },
             "witness_args_policy": {
                 "entry_payload_abi": ENTRY_WITNESS_ABI,
+                "placement_abi": ENTRY_WITNESS_PLACEMENT_ABI,
                 "entry_payload_owner": "compiler",
                 "final_witness_args_owner": "adapter",
-                "default_action_payload_field": "input_type",
+                "default_action_payload_field": ENTRY_WITNESS_PLACEMENT_FIELD,
+                "runtime_source": ENTRY_WITNESS_PLACEMENT_SOURCE,
+                "raw_v1_compatible": false,
                 "lock_signature_policy": "explicit-adapter-owned-do-not-overwrite",
                 "placement_requires_deployment_role": true,
                 "ckb_reference": "ckb_types::packed::WitnessArgs",
@@ -2165,6 +2365,7 @@ impl CommandExecutor {
         let result = compile_path(
             input,
             CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level: 0,
                 output: None,
                 debug: false,
@@ -2206,6 +2407,7 @@ impl CommandExecutor {
         let result = compile_cli_input(
             args.input.as_ref(),
             CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level: 0,
                 output: None,
                 debug: false,
@@ -2264,6 +2466,7 @@ impl CommandExecutor {
         let result = compile_cli_input(
             args.input.as_ref(),
             CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level: 0,
                 output: None,
                 debug: false,
@@ -2318,6 +2521,7 @@ impl CommandExecutor {
         let result = compile_cli_input(
             args.input.as_ref(),
             CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level: 0,
                 output: None,
                 debug: false,
@@ -2362,6 +2566,7 @@ impl CommandExecutor {
         let result = compile_cli_input(
             args.input.as_ref(),
             CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level: 0,
                 output: None,
                 debug: false,
@@ -2387,6 +2592,7 @@ impl CommandExecutor {
         let result = compile_cli_input(
             args.input.as_ref(),
             CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level: 0,
                 output: None,
                 debug: false,
@@ -2419,6 +2625,7 @@ impl CommandExecutor {
         let result = compile_cli_input(
             args.input.as_ref(),
             CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level: 0,
                 output: None,
                 debug: false,
@@ -2462,6 +2669,7 @@ impl CommandExecutor {
         let result = compile_path(
             input,
             CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level: 0,
                 output: None,
                 debug: false,
@@ -2510,6 +2718,7 @@ impl CommandExecutor {
         let result = compile_path(
             input,
             CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level: 0,
                 output: None,
                 debug: false,
@@ -2552,6 +2761,7 @@ impl CommandExecutor {
             let result = compile_path(
                 input,
                 CompileOptions {
+                    edition: crate::CURRENT_EDITION,
                     opt_level,
                     output: None,
                     debug: false,
@@ -2709,6 +2919,7 @@ impl CommandExecutor {
         let result = compile_path(
             input,
             CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level: 1,
                 output: None,
                 debug: false,
@@ -2842,9 +3053,12 @@ impl CommandExecutor {
             "must_emit_lineage": true,
             "witness_policy": {
                 "entry_payload_abi": ENTRY_WITNESS_ABI,
+                "placement_abi": ENTRY_WITNESS_PLACEMENT_ABI,
                 "entry_payload_owner": "compiler",
                 "final_witness_args_owner": "adapter",
-                "default_action_payload_field": "input_type",
+                "default_action_payload_field": ENTRY_WITNESS_PLACEMENT_FIELD,
+                "runtime_source": ENTRY_WITNESS_PLACEMENT_SOURCE,
+                "raw_v1_compatible": false,
                 "lock_signature_policy": "explicit-adapter-owned-do-not-overwrite",
                 "placement_requires_deployment_role": true,
             },
@@ -2956,6 +3170,7 @@ impl CommandExecutor {
             compile_path(
                 input,
                 CompileOptions {
+                    edition: crate::CURRENT_EDITION,
                     opt_level: 1,
                     output: None,
                     debug: false,
@@ -3026,6 +3241,7 @@ impl CommandExecutor {
         let result = compile_path(
             input,
             CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level: 0,
                 output: None,
                 debug: false,
@@ -3099,6 +3315,10 @@ impl CommandExecutor {
             machine: serde_json::json!({
                 "status": "ok",
                 "abi": ENTRY_WITNESS_ABI,
+                "placement_abi": ENTRY_WITNESS_PLACEMENT_ABI,
+                "witness_args_field": ENTRY_WITNESS_PLACEMENT_FIELD,
+                "witness_source": ENTRY_WITNESS_PLACEMENT_SOURCE,
+                "raw_v1_compatible": false,
                 "entry_kind": selected.kind,
                 "entry": selected.name,
                 "witness_hex": witness_hex,
@@ -3119,7 +3339,12 @@ impl CommandExecutor {
         let input_path = resolve_input_path(input)?;
         let compile_result = compile_path(
             &input_path,
-            CompileOptions { target: args.target.clone(), target_profile: args.target_profile.clone(), ..CompileOptions::default() },
+            CompileOptions {
+                edition: crate::CURRENT_EDITION,
+                target: args.target.clone(),
+                target_profile: args.target_profile.clone(),
+                ..CompileOptions::default()
+            },
         )?;
         let receipt = compile_receipt_json(&compile_result.metadata)?;
         if let Some(parent) = args.output.parent() {
@@ -3256,8 +3481,8 @@ impl CommandExecutor {
         let artifact_path = Utf8Path::from_path(&args.artifact).ok_or_else(|| {
             crate::error::CompileError::without_span(format!("artifact path '{}' is not valid UTF-8", args.artifact.display()))
         })?;
-        let metadata_path = match args.metadata {
-            Some(path) => path,
+        let metadata_path = match args.metadata.as_ref() {
+            Some(path) => path.clone(),
             None => default_metadata_path_for_artifact(artifact_path).into_std_path_buf(),
         };
 
@@ -3270,6 +3495,46 @@ impl CommandExecutor {
         let metadata: CompileMetadata = serde_json::from_slice(&metadata_bytes).map_err(|error| {
             crate::error::CompileError::without_span(format!("failed to parse metadata '{}': {}", metadata_path.display(), error))
         })?;
+        let (checker_report, lowering_record_path, source_map_path) = if metadata.artifact_format == "RISC-V ELF" {
+            let lowering_record_path = args
+                .lowering_record
+                .clone()
+                .unwrap_or_else(|| crate::lowering_record_output_path_from_artifact(artifact_path).into_std_path_buf());
+            let source_map_path = args
+                .source_map
+                .clone()
+                .unwrap_or_else(|| crate::source_map_output_path_from_artifact(artifact_path).into_std_path_buf());
+            let lowering_record_bytes = std::fs::read(&lowering_record_path).map_err(|error| {
+                crate::error::CompileError::without_span(format!(
+                    "failed to read lowering record '{}': {}",
+                    lowering_record_path.display(),
+                    error
+                ))
+            })?;
+            let source_map_bytes = std::fs::read(&source_map_path).map_err(|error| {
+                crate::error::CompileError::without_span(format!(
+                    "failed to read source map '{}': {}",
+                    source_map_path.display(),
+                    error
+                ))
+            })?;
+            let report = cellscript_artifact_checker::check_bundle(
+                &artifact_bytes,
+                &metadata_bytes,
+                &lowering_record_bytes,
+                &source_map_bytes,
+                &crate::CheckerBudgets::default(),
+            )
+            .map_err(|error| crate::error::CompileError::without_span(error.to_string()))?;
+            (Some(report), Some(lowering_record_path), Some(source_map_path))
+        } else {
+            if args.lowering_record.is_some() || args.source_map.is_some() {
+                return Err(crate::error::CompileError::without_span(
+                    "--lowering-record/--source-map are only valid for RISC-V ELF artifacts",
+                ));
+            }
+            (None, None, None)
+        };
         let result = validate_artifact_metadata(artifact_bytes, metadata)?;
         if args.verify_sources {
             validate_source_units_on_disk(&result.metadata)?;
@@ -3353,6 +3618,27 @@ impl CommandExecutor {
                 "constraints": &result.metadata.constraints,
             });
             if let Some(object) = summary.as_object_mut() {
+                object.insert(
+                    "lowering_record".to_string(),
+                    serde_json::json!(lowering_record_path.as_ref().map(|path| path.display().to_string())),
+                );
+                object.insert(
+                    "source_map".to_string(),
+                    serde_json::json!(source_map_path.as_ref().map(|path| path.display().to_string())),
+                );
+                object.insert("binding_verification".to_string(), serde_json::json!("verified"));
+                object.insert(
+                    "structural_verification".to_string(),
+                    serde_json::json!(if checker_report.is_some() { "verified" } else { "not-applicable" }),
+                );
+                object.insert(
+                    "lowering_record_verification".to_string(),
+                    serde_json::json!(if checker_report.is_some() { "verified" } else { "not-applicable" }),
+                );
+                object.insert("ckb_vm_evidence".to_string(), serde_json::json!("not-executed"));
+                object.insert("chain_evidence".to_string(), serde_json::json!("not-provided"));
+                object.insert("semantic_equivalence_claimed".to_string(), serde_json::json!(false));
+                object.insert("checker_report".to_string(), serde_json::json!(&checker_report));
                 object.insert("receipt_verified".to_string(), serde_json::json!(receipt_report.is_some()));
                 object.insert(
                     "receipt_payload_hash".to_string(),
@@ -3389,6 +3675,23 @@ impl CommandExecutor {
         println!("  Target profile: {}", result.metadata.target_profile.name);
         println!("  Hash: {}", result.metadata.artifact_hash.as_deref().unwrap_or("missing"));
         println!("  Size: {} bytes", result.artifact_bytes.len());
+        println!("  Binding verification: verified");
+        if checker_report.is_some() {
+            println!("  Structural verification: verified");
+            println!("  Lowering-record verification: verified");
+            if let Some(path) = lowering_record_path {
+                println!("  Lowering record: {}", path.display());
+            }
+            if let Some(path) = source_map_path {
+                println!("  Source map: {}", path.display());
+            }
+        } else {
+            println!("  Structural verification: not applicable to assembly");
+            println!("  Lowering-record verification: not applicable to assembly");
+        }
+        println!("  CKB-VM evidence: not executed");
+        println!("  Chain evidence: not provided");
+        println!("  Semantic equivalence: not claimed");
         if expected_target_profile_verified {
             println!("  Expected target profile: verified");
         }
@@ -3418,6 +3721,7 @@ impl CommandExecutor {
         let compile_result = compile_path(
             ".",
             CompileOptions {
+                edition: crate::CURRENT_EDITION,
                 opt_level,
                 output: None,
                 debug: false,
@@ -3445,32 +3749,23 @@ impl CommandExecutor {
                 .chain(result.metadata.locks.iter().filter(|lock| !lock.params.is_empty()).map(|lock| format!("lock {}", lock.name)))
                 .collect::<Vec<_>>();
             if !parameterized_entries.is_empty() {
-                eprintln!(
-                    "{}",
-                    format!(
-                        "Warning: {} requires transaction/parameter ABI context; falling back to simulate mode",
-                        parameterized_entries.join(", ")
-                    )
-                    .yellow()
-                );
-                return Self::run_simulate(&result, &args);
+                return Err(crate::error::CompileError::without_span(format!(
+                    "cellc run executes only no-argument pure ELF entrypoints; {} requires transaction/parameter ABI context; use --simulate explicitly for development interpretation",
+                    parameterized_entries.join(", ")
+                )));
             }
 
             if result.metadata.runtime.ckb_runtime_required {
-                eprintln!(
-                    "{}",
-                    format!(
-                        "Warning: CKB runtime required ({}); falling back to simulate mode",
-                        result.metadata.runtime.ckb_runtime_features.join(", ")
-                    )
-                    .yellow()
-                );
-                return Self::run_simulate(&result, &args);
+                return Err(crate::error::CompileError::without_span(format!(
+                    "cellc run cannot provide CKB transaction/syscall context required by {}; use --simulate explicitly or an executable transaction scenario",
+                    result.metadata.runtime.ckb_runtime_features.join(", ")
+                )));
             }
 
             if !result.metadata.runtime.standalone_runner_compatible {
-                eprintln!("{}", "Warning: ELF is not standalone-compatible; falling back to simulate mode".yellow());
-                return Self::run_simulate(&result, &args);
+                return Err(crate::error::CompileError::without_span(
+                    "cellc run requires a standalone-compatible pure ELF; use --simulate explicitly or an executable transaction scenario",
+                ));
             }
 
             let vm_args = args.args.into_iter().map(|arg| arg.into_bytes()).collect::<Vec<_>>();
@@ -3551,8 +3846,12 @@ impl CommandExecutor {
     }
 
     fn publish(args: PublishArgs) -> Result<()> {
+        if let Some(manifest_path) = args.artifact_manifest.clone() {
+            return publish_declared_artifact(args, &manifest_path);
+        }
         let pm = PackageManager::new(".");
         let manifest = pm.read_manifest()?;
+        let artifact = cellscript_artifact_descriptor(args.artifact_kind.as_deref())?;
 
         if args.dry_run {
             let mut issues = Vec::<String>::new();
@@ -3648,19 +3947,23 @@ impl CommandExecutor {
             let api_base = resolve_registry_api_base(args.api_url)?;
             let registry_origin = registry_origin_from_api_base(&api_base)?;
             let endpoint = registry_publish_endpoint(&api_base, &namespace, &manifest.package.name);
-            let registry_entry = build_publish_registry_entry(&manifest, &namespace, version_entry)?;
+            let registry_entry = build_publish_registry_entry(&manifest, &namespace, version_entry, &artifact)?;
             let payload = if let Some(payload_path) = args.payload.as_deref() {
                 read_registry_publish_payload(payload_path)?
             } else {
-                let capability_key_id = args
-                    .capability_key_id
-                    .or_else(|| std::env::var("CELLSCRIPT_CAPABILITY_KEY_ID").ok())
-                    .ok_or_else(|| {
-                        crate::error::CompileError::without_span(format!(
-                            "capability key id is required for public publish; connect JoyID through the registry submit page to derive <principal_id>, run `cellc auth capability create --principal-id <principal_id> --scope publish:{}/{} --expires 90d --json > capability-payload.json`, sign that payload with JoyID through CCC, then run `cellc auth capability submit --payload capability-payload.json --joyid-signature joyid-signature.json`; after registration, pass --capability-key-id or set CELLSCRIPT_CAPABILITY_KEY_ID",
+                let capability_key_id = match args.capability_key_id.or_else(|| std::env::var("CELLSCRIPT_CAPABILITY_KEY_ID").ok()) {
+                    Some(key_id) => key_id,
+                    None if args.authorise => {
+                        authorise_registry_publish_key(&api_base, &namespace, &manifest.package.name, &artifact.kind, args.no_open)?
+                    }
+                    None => {
+                        return Err(crate::error::CompileError::without_span(format!(
+                            "publishing {}/{} requires a wallet-authorised publishing key; run `cellc publish --authorise` for the continuous browser flow, or pass an existing --capability-key-id",
                             namespace, manifest.package.name
                         ))
-                    })?;
+                        .with_category(crate::error::CompileErrorCategory::Authentication));
+                    }
+                };
                 let issued_at = current_utc_timestamp();
                 let expires_at = utc_timestamp_after_seconds(10 * 60);
                 let nonce = registry_publish_nonce(
@@ -3680,12 +3983,13 @@ impl CommandExecutor {
                     name: manifest.package.name.clone(),
                     version: manifest.package.version.clone(),
                     source_hash: source_hash.clone(),
-                    manifest_hash: Some(hash_json_value("package manifest", &manifest)?),
+                    manifest_hash: crate::package::registry::compute_package_manifest_hash(&manifest)?,
                     capability_key_id,
                     nonce,
                     issued_at,
                     expires_at,
                     cli_version: crate::VERSION.to_string(),
+                    artifact: artifact.clone(),
                     registry_entry,
                 }
             };
@@ -3746,6 +4050,8 @@ impl CommandExecutor {
             let dep = DetailedDependency {
                 version: args.version.clone().unwrap_or_else(|| "*".to_string()),
                 namespace: None,
+                package: None,
+                resolver: None,
                 git: Some(git_url.clone()),
                 branch: None,
                 tag: None,
@@ -3754,6 +4060,8 @@ impl CommandExecutor {
                 optional: false,
                 features: Vec::new(),
                 default_features: true,
+                allow_unverified: false,
+                allow_quarantined: false,
             };
 
             pm.resolve_from_git(&crate_name, git_url, &dep)?;
@@ -3773,6 +4081,8 @@ impl CommandExecutor {
             let dep = DetailedDependency {
                 version: args.version.clone().unwrap_or_else(|| "*".to_string()),
                 namespace: None,
+                package: None,
+                resolver: None,
                 git: None,
                 branch: None,
                 tag: None,
@@ -3781,6 +4091,8 @@ impl CommandExecutor {
                 optional: false,
                 features: Vec::new(),
                 default_features: true,
+                allow_unverified: false,
+                allow_quarantined: false,
             };
 
             let manifest_for_check = pm.read_manifest()?;
@@ -3829,10 +4141,12 @@ impl CommandExecutor {
                 },
             )?;
 
-            let dep = if resolved_namespace.is_some() {
+            let dep = if resolved_namespace.is_some() || args.allow_unverified || args.allow_quarantined {
                 Dependency::Detailed(DetailedDependency {
                     version,
                     namespace: resolved_namespace.clone(),
+                    package: None,
+                    resolver: None,
                     git: None,
                     branch: None,
                     tag: None,
@@ -3841,6 +4155,8 @@ impl CommandExecutor {
                     optional: false,
                     features: Vec::new(),
                     default_features: true,
+                    allow_unverified: args.allow_unverified,
+                    allow_quarantined: args.allow_quarantined,
                 })
             } else {
                 Dependency::Simple(version)
@@ -3857,12 +4173,7 @@ impl CommandExecutor {
             println!("{}", format!("Installed {}/{} from registry", ns_display, resolved_name).green());
             Ok(())
         } else {
-            let mut pm = PackageManager::new(".");
-            pm.resolve_dependencies()?;
-
-            let mut lockfile = Lockfile::read_from_root(std::path::Path::new("."))?.unwrap_or_default();
-            lockfile.replace_with_resolved(pm.get_resolved());
-            lockfile.write_to_root(std::path::Path::new("."))?;
+            refresh_lockfile_from_manifest(std::path::Path::new("."))?;
 
             println!("{}", "Dependencies resolved and lockfile updated".green());
             Ok(())
@@ -3870,42 +4181,44 @@ impl CommandExecutor {
     }
 
     fn update() -> Result<()> {
-        let mut pm = PackageManager::new(".");
-        let manifest = pm.read_manifest()?;
-
-        pm.resolve_dependencies()?;
-
-        let mut lockfile = Lockfile::read_from_root(std::path::Path::new("."))?.unwrap_or_default();
-
-        lockfile.replace_with_resolved(pm.get_resolved());
-        lockfile.write_to_root(std::path::Path::new("."))?;
-
-        let resolved = pm.get_resolved();
-        if resolved.is_empty() {
+        refresh_lockfile_from_manifest(std::path::Path::new("."))?;
+        let lockfile = Lockfile::read_from_root(std::path::Path::new("."))?.expect("lockfile was just written");
+        if lockfile.dependencies.is_empty() {
             println!("{}", "No dependencies to update".green());
         } else {
-            println!("{}", format!("Updated {} dependencies", resolved.len()).green());
-            for (name, package) in resolved {
+            println!("{}", format!("Updated {} dependency nodes", lockfile.dependencies.len()).green());
+            for (node_id, package) in &lockfile.dependencies {
                 let source = match &package.source {
-                    crate::package::PackageSource::Local(path) => format!("path: {}", path.display()),
-                    crate::package::PackageSource::Git { url, revision } => format!("git: {}#{}", url, revision),
-                    crate::package::PackageSource::Registry { registry, namespace, version, .. } => {
+                    crate::package::LockedSource::Path { path } => format!("path: {}", path),
+                    crate::package::LockedSource::Git { url, revision } => format!("git: {}#{}", url, revision),
+                    crate::package::LockedSource::Registry { registry, namespace, version, .. } => {
                         format!("registry: {}/{}@{}", registry, namespace, version)
                     }
                 };
-                println!("  {} v{} ({})", name, package.version, source);
-            }
-        }
-
-        let lockfile_issues = lockfile.consistency_issues_with_resolved(&manifest, resolved);
-        if !lockfile_issues.is_empty() {
-            println!("{}", "Warning: lockfile is not consistent with Cell.toml".yellow());
-            for issue in lockfile_issues {
-                println!("  - {}", issue);
+                println!("  {} {} v{} ({})", node_id, package.name, package.version, source);
             }
         }
 
         Ok(())
+    }
+
+    fn lock(args: PackageLockArgs) -> Result<()> {
+        refresh_lockfile_from_manifest(std::path::Path::new("."))?;
+        let lockfile = Lockfile::read_from_root(std::path::Path::new("."))?.expect("lockfile was just written");
+        CommandOutcome {
+            machine: serde_json::json!({
+                "status": "ok",
+                "lockfile": "Cell.lock",
+                "schema": lockfile.schema,
+                "dependency_nodes": lockfile.dependencies.len(),
+                "environments": lockfile.environments.keys().collect::<Vec<_>>(),
+            }),
+            human_lines: vec![
+                "Dependency graph locked".green().to_string(),
+                format!("  {} dependency node(s)", lockfile.dependencies.len()),
+            ],
+        }
+        .emit(args.json)
     }
 
     fn info(args: InfoArgs) -> Result<()> {
@@ -3929,6 +4242,10 @@ impl CommandExecutor {
                 "package": manifest.package,
                 "dependencies": manifest.dependencies,
                 "dev_dependencies": manifest.dev_dependencies,
+                "features": manifest.features,
+                "environments": manifest.environments,
+                "dependency_overrides": manifest.dependency_overrides,
+                "resolvers": manifest.resolvers,
                 "build": manifest.build,
                 "policy": manifest.policy,
                 "deploy": manifest.deploy,
@@ -3950,9 +4267,12 @@ impl CommandExecutor {
             .unwrap_or_else(|| crate::package::registry::DEFAULT_PUBLIC_REGISTRY_ORIGIN.to_string());
         let principal_type =
             args.principal_type.or_else(|| std::env::var("CELLSCRIPT_PRINCIPAL_TYPE").ok()).unwrap_or_else(|| "joyid_ckb".to_string());
+        if principal_type != "joyid_ckb" && principal_type != "ckb_secp256k1" {
+            return Err(crate::error::CompileError::without_span("principal type must be joyid_ckb or ckb_secp256k1"));
+        }
         let principal_id = args.principal_id.or_else(|| std::env::var("CELLSCRIPT_PRINCIPAL_ID").ok()).ok_or_else(|| {
             crate::error::CompileError::without_span(
-                "principal id is required; pass --principal-id or set CELLSCRIPT_PRINCIPAL_ID to the normalized JoyID/CKB identity binding",
+                "principal id is required; pass --principal-id or set CELLSCRIPT_PRINCIPAL_ID to the normalized wallet identity binding",
             )
         })?;
         let explicit_capability_pubkey = args.capability_pubkey.or_else(|| std::env::var("CELLSCRIPT_CAPABILITY_PUBKEY").ok());
@@ -3999,9 +4319,70 @@ impl CommandExecutor {
             format!("  Scopes: {}", payload.requested_scopes.join(", ")),
             format!("  Capability expires: {}", payload.capability_expires_at),
             String::new(),
-            "Sign this payload with JoyID, then submit the signed authorisation to the registry write API:".to_string(),
+            "Sign this payload with the matching JoyID or CKB wallet, then submit the signed authorisation to the registry write API:"
+                .to_string(),
             serde_json::to_string_pretty(&payload)?,
         ]);
+        CommandOutcome { machine, human_lines }.emit(args.json)
+    }
+
+    fn auth_reproducer_create(args: AuthReproducerCreateArgs) -> Result<()> {
+        let builder_id = args.builder_id.trim().to_string();
+        if builder_id.is_empty() || builder_id.len() > 200 {
+            return Err(crate::error::CompileError::without_span("builder id must contain 1 to 200 characters"));
+        }
+        let trust_domain = args.trust_domain.trim().to_string();
+        if trust_domain.is_empty() || trust_domain.len() > 200 {
+            return Err(crate::error::CompileError::without_span("trust domain must contain 1 to 200 characters"));
+        }
+
+        let generated = generate_registry_key_material()?;
+        let (private_key_storage, storage_line) = if let Some(path) = args.private_key_output {
+            write_new_reproducer_private_key(&path, &generated.private_key_pkcs8)?;
+            let path_display = path.display().to_string();
+            (
+                serde_json::json!({
+                    "kind": "pkcs8_base64_file",
+                    "path": &path_display,
+                    "environment_variable": "CELLSCRIPT_REPRODUCER_PRIVATE_KEY_PKCS8_B64",
+                }),
+                format!("  Private key: restricted PKCS#8 base64 file at {path_display}"),
+            )
+        } else {
+            store_registry_private_key(&generated.key_id, &generated.private_key_pkcs8)?;
+            (
+                serde_json::json!({
+                    "kind": "os_keychain",
+                    "service": "cellscript-registry",
+                    "key_id": &generated.key_id,
+                }),
+                "  Private key: stored in the OS keychain".to_string(),
+            )
+        };
+        let machine = serde_json::json!({
+            "schema": "cellscript-reproducer-builder-enrollment-v1",
+            "builder_id": &builder_id,
+            "trust_domain": &trust_domain,
+            "builder_key_id": &generated.key_id,
+            "builder_public_key": &generated.public_key,
+            "policy_builder": {
+                "builder_id": &builder_id,
+                "trust_domain": &trust_domain,
+                "public_key": &generated.public_key,
+            },
+            "private_key_storage": private_key_storage,
+        });
+        let human_lines = vec![
+            "Reproducer builder key created".green().to_string(),
+            format!("  Builder: {builder_id}"),
+            format!("  Trust domain: {trust_domain}"),
+            format!("  Builder key id: {}", generated.key_id),
+            format!("  Builder public key: {}", generated.public_key),
+            storage_line,
+            String::new(),
+            "Send only policy_builder to the Registry operator. Keep the private key inside this builder's independent custody."
+                .to_string(),
+        ];
         CommandOutcome { machine, human_lines }.emit(args.json)
     }
 
@@ -4015,10 +4396,10 @@ impl CommandExecutor {
                 payload.registry_origin, registry_origin
             )));
         }
-        let joyid_signature = read_json_value(&args.joyid_signature)?;
+        let wallet_signature = read_json_value(&args.wallet_signature)?;
         let body = serde_json::json!({
             "payload": payload,
-            "joyid_signature": joyid_signature,
+            "wallet_signature": wallet_signature,
         });
         let endpoint = format!("{}/v1/capabilities", api_base.trim_end_matches('/'));
         let response = submit_registry_json_request(&endpoint, &body, "Submitted capability authorisation", args.json)?;
@@ -4033,10 +4414,50 @@ impl CommandExecutor {
         Ok(())
     }
 
+    fn auth_namespace_claim(args: AuthNamespaceClaimArgs) -> Result<()> {
+        let api_base = resolve_registry_api_base(args.api_url)?;
+        let registry_origin = registry_origin_from_api_base(&api_base)?;
+        let namespace = args.namespace.trim();
+        if namespace.is_empty() {
+            return Err(crate::error::CompileError::without_span("namespace is required for registry namespace claim"));
+        }
+        let payload = read_capability_authorisation_payload(&args.payload)?;
+        if payload.registry_origin != registry_origin {
+            return Err(crate::error::CompileError::without_span(format!(
+                "namespace claim payload registry_origin '{}' does not match API origin '{}'",
+                payload.registry_origin, registry_origin
+            )));
+        }
+        let namespace_scope_prefix = format!("publish:{namespace}/");
+        if !payload.requested_scopes.iter().any(|scope| scope.starts_with(&namespace_scope_prefix)) {
+            return Err(crate::error::CompileError::without_span(format!(
+                "namespace claim payload has no publish scope for namespace '{namespace}'"
+            )));
+        }
+        let wallet_signature = read_json_value(&args.wallet_signature)?;
+        let body = serde_json::json!({
+            "namespace": namespace,
+            "payload": payload,
+            "wallet_signature": wallet_signature,
+        });
+        let endpoint = format!("{}/v1/namespaces/claim", api_base.trim_end_matches('/'));
+        let response = submit_registry_json_request(&endpoint, &body, "Claimed registry namespace", args.json)?;
+        if !args.json
+            && let Some(status) = response.get("status").and_then(serde_json::Value::as_str)
+        {
+            println!("  Namespace: {namespace}");
+            println!("  Status: {status}");
+            if status != "active" {
+                println!("  Publishing remains blocked until registry review activates the namespace.");
+            }
+        }
+        Ok(())
+    }
+
     fn auth_capability_revoke(args: AuthCapabilityRevokeArgs) -> Result<()> {
-        if args.payload.is_none() && args.joyid_signature.is_some() {
+        if args.payload.is_none() && args.wallet_signature.is_some() {
             return Err(crate::error::CompileError::without_span(
-                "capability revocation with --joyid-signature must use --payload from a previously generated revoke challenge",
+                "capability revocation with --wallet-signature must use --payload from a previously generated revoke challenge",
             ));
         }
 
@@ -4051,9 +4472,12 @@ impl CommandExecutor {
                 .principal_type
                 .or_else(|| std::env::var("CELLSCRIPT_PRINCIPAL_TYPE").ok())
                 .unwrap_or_else(|| "joyid_ckb".to_string());
+            if principal_type != "joyid_ckb" && principal_type != "ckb_secp256k1" {
+                return Err(crate::error::CompileError::without_span("principal type must be joyid_ckb or ckb_secp256k1"));
+            }
             let principal_id = args.principal_id.or_else(|| std::env::var("CELLSCRIPT_PRINCIPAL_ID").ok()).ok_or_else(|| {
                 crate::error::CompileError::without_span(
-                    "principal id is required for capability revoke; pass --principal-id or set CELLSCRIPT_PRINCIPAL_ID to the normalized JoyID/CKB identity binding",
+                    "principal id is required for capability revoke; pass --principal-id or set CELLSCRIPT_PRINCIPAL_ID to the normalized wallet identity binding",
                 )
             })?;
             let capability_key_id =
@@ -4077,7 +4501,7 @@ impl CommandExecutor {
             )
         };
 
-        let Some(signature_path) = args.joyid_signature.as_deref() else {
+        let Some(signature_path) = args.wallet_signature.as_deref() else {
             if args.json {
                 print_json(&serde_json::to_value(&payload)?)?;
             } else {
@@ -4088,8 +4512,8 @@ impl CommandExecutor {
                 println!("  Principal: {}:{}", payload.principal_type, payload.principal_id);
                 println!("  Capability key id: {}", payload.capability_key_id);
                 println!();
-                println!("Sign this payload with JoyID, then submit it with:");
-                println!("  cellc auth capability revoke --payload <payload.json> --joyid-signature <joyid-signature.json>");
+                println!("Sign this payload with the matching JoyID or CKB wallet, then submit it with:");
+                println!("  cellc auth capability revoke --payload <payload.json> --wallet-signature <wallet-signature.json>");
                 println!("{}", serde_json::to_string_pretty(&payload)?);
             }
             return Ok(());
@@ -4103,10 +4527,10 @@ impl CommandExecutor {
                 payload.registry_origin, registry_origin
             )));
         }
-        let joyid_signature = read_json_value(signature_path)?;
+        let wallet_signature = read_json_value(signature_path)?;
         let mut body = serde_json::json!({
             "payload": payload,
-            "joyid_signature": joyid_signature,
+            "wallet_signature": wallet_signature,
         });
         if let Some(reason) = args.reason.filter(|reason| !reason.trim().is_empty()) {
             body["reason"] = serde_json::Value::String(reason);
@@ -4153,6 +4577,12 @@ impl CommandExecutor {
                 lockfile.package.version, deployed.package.version
             ));
         }
+        if lockfile.package.edition != deployed.package.edition {
+            violations.push(format!(
+                "package edition mismatch: Cell.lock has '{}', Deployed.toml has '{}'",
+                lockfile.package.edition, deployed.package.edition
+            ));
+        }
         if let (Some(lock_hash), Some(deployed_hash)) = (&lockfile.package.source_hash, &deployed.package.source_hash) {
             if lock_hash != deployed_hash {
                 violations.push(format!("source_hash mismatch: Cell.lock has '{}', Deployed.toml has '{}'", lock_hash, deployed_hash));
@@ -4171,6 +4601,18 @@ impl CommandExecutor {
         }
 
         if let (Some(build), Some(deployed_build)) = (&lockfile.package_build, &deployed.build) {
+            if build.edition != deployed_build.edition {
+                violations.push(format!(
+                    "build edition mismatch: Cell.lock has '{}', Deployed.toml has '{}'",
+                    build.edition, deployed_build.edition
+                ));
+            }
+            if build.compatibility_profile_hash != deployed_build.compatibility_profile_hash {
+                violations.push(format!(
+                    "compatibility_profile_hash mismatch: Cell.lock has '{}', Deployed.toml has '{}'",
+                    build.compatibility_profile_hash, deployed_build.compatibility_profile_hash
+                ));
+            }
             compare_optional_build_field(
                 "compiler_version",
                 &build.compiler_version,
@@ -4324,7 +4766,7 @@ impl CommandExecutor {
 
     fn package_verify(args: PackageVerifyArgs) -> Result<()> {
         let root = std::path::Path::new(".");
-        let mut pm = PackageManager::new(root);
+        let pm = PackageManager::new(root);
         let manifest = pm.read_manifest()?;
 
         // Read Cell.lock
@@ -4343,6 +4785,12 @@ impl CommandExecutor {
             violations.push(format!(
                 "package version mismatch: Cell.toml has '{}', Cell.lock has '{}'",
                 manifest.package.version, lockfile.package.version
+            ));
+        }
+        if lockfile.package.edition != manifest.package.edition {
+            violations.push(format!(
+                "package edition mismatch: Cell.toml has '{}', Cell.lock has '{}'",
+                manifest.package.edition, lockfile.package.edition
             ));
         }
         if lockfile.package.namespace != manifest.package.namespace {
@@ -4367,9 +4815,39 @@ impl CommandExecutor {
             None => violations.push("Cell.lock has no [package.build]; run 'cellc build' to populate build identity".to_string()),
         }
 
-        pm.resolve_dependencies()?;
-        for issue in lockfile.consistency_issues_with_resolved(&manifest, pm.get_resolved()) {
+        let computed_manifest_digest = crate::package::compute_manifest_digest(root)?;
+        if lockfile.root.manifest_digest != computed_manifest_digest {
+            violations.push(format!(
+                "manifest digest mismatch: Cell.lock has '{}', computed '{}'",
+                lockfile.root.manifest_digest, computed_manifest_digest
+            ));
+        }
+        for issue in lockfile.consistency_issues(&manifest) {
             violations.push(issue);
+        }
+        let mut verification_modes = Vec::new();
+        if manifest.dependency_overrides.is_empty() {
+            verification_modes.push(None);
+        }
+        verification_modes.extend(manifest.environments.keys().cloned().map(Some));
+        let mut resolved = BTreeMap::new();
+        for environment in verification_modes {
+            let options = crate::package::ResolutionOptions {
+                scope: crate::package::DependencyScope::Test,
+                all_features: true,
+                environment,
+                ..crate::package::ResolutionOptions::default()
+            };
+            let mut mode_manager = PackageManager::new(root);
+            match mode_manager.resolve_locked_dependencies(&options) {
+                Ok(()) => resolved.extend(mode_manager.get_resolved().clone()),
+                Err(error) => violations.push(format!("locked dependency materialization failed: {}", error)),
+            }
+        }
+        for issue in lockfile.consistency_issues_with_resolved(&manifest, &resolved) {
+            if !violations.contains(&issue) {
+                violations.push(issue);
+            }
         }
         for (name, locked) in &lockfile.dependencies {
             if matches!(locked.source, crate::package::LockedSource::Registry { .. }) && locked.source_hash.is_none() {
@@ -4548,12 +5026,12 @@ fn civil_date_from_days(z: i32) -> (i32, u32, u32) {
     (y, m as u32, d as u32)
 }
 
-fn current_utc_timestamp() -> String {
+pub(super) fn current_utc_timestamp() -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
     utc_timestamp_from_unix_secs(secs)
 }
 
-fn utc_timestamp_after_seconds(delta_secs: u64) -> String {
+pub(super) fn utc_timestamp_after_seconds(delta_secs: u64) -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
     utc_timestamp_from_unix_secs(secs.saturating_add(delta_secs))
 }
@@ -4569,28 +5047,64 @@ fn utc_timestamp_from_unix_secs(secs: u64) -> String {
 }
 
 fn resolve_requested_scopes(mut scopes: Vec<String>) -> Result<Vec<String>> {
-    scopes.retain(|scope| !scope.trim().is_empty());
+    if scopes.iter().any(|scope| scope.trim().is_empty()) {
+        return Err(invalid_capability_scope(""));
+    }
+    scopes = scopes.into_iter().map(|scope| scope.trim().to_string()).collect();
     if !scopes.is_empty() {
+        validate_capability_scopes(&scopes)?;
         return Ok(scopes);
     }
 
     let manifest = PackageManager::new(".").read_manifest().map_err(|_| {
         crate::error::CompileError::without_span(
-            "at least one capability scope is required; pass --scope publish:<namespace>/<package> outside a package directory",
+            "at least one capability scope is required outside a package directory; pass --scope <publish|deployment|availability>:<namespace>/<package>",
         )
     })?;
     let namespace = manifest.package.namespace.ok_or_else(|| {
         crate::error::CompileError::without_span(
-            "cannot infer capability scope because [package].namespace is missing; pass --scope publish:<namespace>/<package>",
+            "cannot infer the publish capability scope because [package].namespace is missing; pass --scope publish:<namespace>/<package>",
         )
     })?;
     if manifest.package.name.is_empty() {
         return Err(crate::error::CompileError::without_span(
-            "cannot infer capability scope because [package].name is empty; pass --scope publish:<namespace>/<package>",
+            "cannot infer the publish capability scope because [package].name is empty; pass --scope publish:<namespace>/<package>",
         ));
     }
 
-    Ok(vec![format!("publish:{}/{}", namespace, manifest.package.name)])
+    let coordinate = format!("{}/{}", namespace, manifest.package.name);
+    Ok(vec![format!("publish:{coordinate}")])
+}
+
+fn validate_capability_scopes(scopes: &[String]) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for scope in scopes {
+        if !seen.insert(scope.as_str()) {
+            return Err(crate::error::CompileError::without_span(format!("duplicate capability scope '{scope}'"))
+                .with_category(crate::error::CompileErrorCategory::Usage));
+        }
+        let Some((action, coordinate)) = scope.split_once(':') else {
+            return Err(invalid_capability_scope(scope));
+        };
+        if !matches!(action, "publish" | "deployment" | "availability") {
+            return Err(invalid_capability_scope(scope));
+        }
+        let Some((namespace, name)) = coordinate.split_once('/') else {
+            return Err(invalid_capability_scope(scope));
+        };
+        validate_declared_artifact_ident(namespace, "capability scope namespace").map_err(|_| invalid_capability_scope(scope))?;
+        if name != "*" {
+            validate_declared_artifact_ident(name, "capability scope package").map_err(|_| invalid_capability_scope(scope))?;
+        }
+    }
+    Ok(())
+}
+
+fn invalid_capability_scope(scope: &str) -> CompileError {
+    crate::error::CompileError::without_span(format!(
+        "invalid capability scope '{scope}'; expected <publish|deployment|availability>:<namespace>/<package-or-*>",
+    ))
+    .with_category(crate::error::CompileErrorCategory::Usage)
 }
 
 fn resolve_capability_expires_at(explicit_timestamp: Option<String>, relative: Option<String>) -> Result<String> {
@@ -4675,17 +5189,45 @@ struct GeneratedRegistryCapabilityKey {
     capability_pubkey: String,
 }
 
-fn generate_and_store_registry_capability_key() -> Result<GeneratedRegistryCapabilityKey> {
+struct GeneratedRegistryKeyMaterial {
+    key_id: String,
+    public_key: String,
+    private_key_pkcs8: Vec<u8>,
+}
+
+const REGISTRY_KEYCHAIN_SECRET_SCHEMA: &str = "cellscript-registry-private-key-v1";
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct RegistryKeychainSecret {
+    schema: String,
+    status: String,
+    pkcs8_b64: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_expires_at_unix_seconds: Option<u64>,
+}
+
+fn generate_registry_key_material() -> Result<GeneratedRegistryKeyMaterial> {
     let rng = ring::rand::SystemRandom::new();
     let pkcs8 = ring::signature::EcdsaKeyPair::generate_pkcs8(&ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
-        .map_err(|error| crate::error::CompileError::without_span(format!("failed to generate capability key: {:?}", error)))?;
+        .map_err(|error| crate::error::CompileError::without_span(format!("failed to generate P-256 registry key: {:?}", error)))?;
     let key_pair = ring::signature::EcdsaKeyPair::from_pkcs8(&ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
-        .map_err(|error| crate::error::CompileError::without_span(format!("failed to load generated capability key: {:?}", error)))?;
+        .map_err(|error| {
+            crate::error::CompileError::without_span(format!("failed to load generated P-256 registry key: {:?}", error))
+        })?;
     let spki = p256_spki_der_from_uncompressed_public_key(key_pair.public_key().as_ref())?;
-    let capability_pubkey = format!("p256-spki:{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(spki));
-    let key_id = registry_capability_key_id(&capability_pubkey);
-    store_registry_capability_private_key(&key_id, pkcs8.as_ref())?;
-    Ok(GeneratedRegistryCapabilityKey { key_id, capability_pubkey })
+    let public_key = format!("p256-spki:{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(spki));
+    let key_id = registry_capability_key_id(&public_key);
+    Ok(GeneratedRegistryKeyMaterial { key_id, public_key, private_key_pkcs8: pkcs8.as_ref().to_vec() })
+}
+
+fn generate_and_store_registry_capability_key() -> Result<GeneratedRegistryCapabilityKey> {
+    let generated = generate_registry_key_material()?;
+    store_registry_private_key(&generated.key_id, &generated.private_key_pkcs8)?;
+    Ok(GeneratedRegistryCapabilityKey { key_id: generated.key_id, capability_pubkey: generated.public_key })
 }
 
 fn registry_capability_key_id(capability_pubkey: &str) -> String {
@@ -4701,7 +5243,7 @@ fn p256_spki_der_from_uncompressed_public_key(public_key: &[u8]) -> Result<Vec<u
     ];
     if public_key.len() != 65 || public_key.first() != Some(&0x04) {
         return Err(crate::error::CompileError::without_span(format!(
-            "generated capability public key must be an uncompressed 65-byte P-256 point, got {} bytes",
+            "generated registry public key must be an uncompressed 65-byte P-256 point, got {} bytes",
             public_key.len()
         )));
     }
@@ -4711,16 +5253,49 @@ fn p256_spki_der_from_uncompressed_public_key(public_key: &[u8]) -> Result<Vec<u
     Ok(spki)
 }
 
-fn store_registry_capability_private_key(key_id: &str, pkcs8: &[u8]) -> Result<()> {
-    let secret = base64::engine::general_purpose::STANDARD.encode(pkcs8);
+fn store_registry_private_key(key_id: &str, pkcs8: &[u8]) -> Result<()> {
+    store_registry_keychain_secret(
+        key_id,
+        &RegistryKeychainSecret {
+            schema: REGISTRY_KEYCHAIN_SECRET_SCHEMA.to_string(),
+            status: "active".to_string(),
+            pkcs8_b64: base64::engine::general_purpose::STANDARD.encode(pkcs8),
+            session_id: None,
+            expires_at: None,
+            pending_expires_at_unix_seconds: None,
+        },
+    )
+}
+
+fn store_pending_registry_private_key(key_id: &str, pkcs8: &[u8], session_id: &str, expires_at: &str) -> Result<()> {
+    let pending_expires_at_unix_seconds =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs().saturating_add(15 * 60);
+    store_registry_keychain_secret(
+        key_id,
+        &RegistryKeychainSecret {
+            schema: REGISTRY_KEYCHAIN_SECRET_SCHEMA.to_string(),
+            status: "pending".to_string(),
+            pkcs8_b64: base64::engine::general_purpose::STANDARD.encode(pkcs8),
+            session_id: Some(session_id.to_string()),
+            expires_at: Some(expires_at.to_string()),
+            pending_expires_at_unix_seconds: Some(pending_expires_at_unix_seconds),
+        },
+    )
+}
+
+fn store_registry_keychain_secret(key_id: &str, secret: &RegistryKeychainSecret) -> Result<()> {
+    let encoded = serde_json::to_string(secret).map_err(|error| {
+        crate::error::CompileError::without_span(format!("failed to encode registry private-key state: {error}"))
+            .with_category(crate::error::CompileErrorCategory::Authentication)
+    })?;
     let entry = keyring::Entry::new("cellscript-registry", key_id).map_err(|error| {
         crate::error::CompileError::without_span(format!("failed to open OS keychain: {}", error))
             .with_category(crate::error::CompileErrorCategory::Authentication)
             .with_source(error)
     })?;
-    entry.set_password(&secret).map_err(|error| {
+    entry.set_password(&encoded).map_err(|error| {
         crate::error::CompileError::without_span(format!(
-            "failed to store capability private key '{}' in OS keychain: {}",
+            "failed to store registry P-256 private key '{}' in OS keychain: {}",
             key_id, error
         ))
         .with_category(crate::error::CompileErrorCategory::Authentication)
@@ -4728,11 +5303,93 @@ fn store_registry_capability_private_key(key_id: &str, pkcs8: &[u8]) -> Result<(
     })
 }
 
+fn remove_registry_private_key(key_id: &str) -> Result<()> {
+    let entry = keyring::Entry::new("cellscript-registry", key_id).map_err(|error| {
+        crate::error::CompileError::without_span(format!("failed to open OS keychain: {}", error))
+            .with_category(crate::error::CompileErrorCategory::Authentication)
+            .with_source(error)
+    })?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(crate::error::CompileError::without_span(format!(
+            "failed to remove pending registry private key '{}' from OS keychain: {}",
+            key_id, error
+        ))
+        .with_category(crate::error::CompileErrorCategory::Authentication)
+        .with_source(error)),
+    }
+}
+
+fn write_new_reproducer_private_key(path: &Path, pkcs8: &[u8]) -> Result<()> {
+    #[cfg(not(unix))]
+    {
+        let _ = (path, pkcs8);
+        return Err(crate::error::CompileError::without_span(
+            "--private-key-output requires Unix mode-0600 permission semantics; use the OS keychain on this platform",
+        )
+        .with_category(crate::error::CompileErrorCategory::Authentication));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        options.mode(0o600);
+        let mut file = options.open(path).map_err(|error| {
+            crate::error::CompileError::without_span(format!(
+                "failed to create reproducer private-key file '{}': {}",
+                path.display(),
+                error
+            ))
+            .with_category(crate::error::CompileErrorCategory::Authentication)
+            .with_source(error)
+        })?;
+        let secret = base64::engine::general_purpose::STANDARD.encode(pkcs8);
+        file.write_all(secret.as_bytes()).and_then(|_| file.write_all(b"\n")).map_err(|error| {
+            crate::error::CompileError::without_span(format!(
+                "failed to write reproducer private-key file '{}': {}",
+                path.display(),
+                error
+            ))
+            .with_category(crate::error::CompileErrorCategory::Authentication)
+            .with_source(error)
+        })?;
+        file.sync_all().map_err(|error| {
+            crate::error::CompileError::without_span(format!(
+                "failed to sync reproducer private-key file '{}': {}",
+                path.display(),
+                error
+            ))
+            .with_category(crate::error::CompileErrorCategory::Authentication)
+            .with_source(error)
+        })
+    }
+}
+
 fn sign_registry_publish_payload(key_id: &str, canonical_payload: &str) -> Result<String> {
+    sign_registry_capability_payload(key_id, canonical_payload)
+}
+
+pub(super) fn sign_registry_capability_payload(key_id: &str, canonical_payload: &str) -> Result<String> {
     let Some(pkcs8) = load_registry_capability_private_key(key_id)? else {
         return Err(
             crate::error::CompileError::without_span(format!(
                 "capability signature is required for public publish and no private key was found for '{}' in the OS keychain; pass --capability-signature, set CELLSCRIPT_CAPABILITY_SIGNATURE, or set CELLSCRIPT_CAPABILITY_PRIVATE_KEY_PKCS8_B64 for CI",
+                key_id
+            ))
+            .with_category(crate::error::CompileErrorCategory::Authentication),
+        );
+    };
+    sign_registry_publish_payload_with_pkcs8(&pkcs8, canonical_payload)
+}
+
+pub(super) fn sign_registry_reproducer_payload(key_id: &str, canonical_payload: &str) -> Result<String> {
+    let Some(pkcs8) = load_registry_reproducer_private_key(key_id)? else {
+        return Err(
+            crate::error::CompileError::without_span(format!(
+                "reproducer signature key '{}' was not found in the OS keychain; set CELLSCRIPT_REPRODUCER_PRIVATE_KEY_PKCS8_B64 for an isolated builder",
                 key_id
             ))
             .with_category(crate::error::CompileErrorCategory::Authentication),
@@ -4755,6 +5412,27 @@ fn load_registry_capability_private_key(key_id: &str) -> Result<Option<Vec<u8>>>
         }
     }
 
+    load_registry_keychain_private_key(key_id)
+}
+
+fn load_registry_reproducer_private_key(key_id: &str) -> Result<Option<Vec<u8>>> {
+    if let Ok(value) = std::env::var("CELLSCRIPT_REPRODUCER_PRIVATE_KEY_PKCS8_B64") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            let decoded = base64::engine::general_purpose::STANDARD.decode(trimmed).map_err(|error| {
+                crate::error::CompileError::without_span(format!(
+                    "failed to decode CELLSCRIPT_REPRODUCER_PRIVATE_KEY_PKCS8_B64: {}",
+                    error
+                ))
+            })?;
+            return Ok(Some(decoded));
+        }
+    }
+
+    load_registry_keychain_private_key(key_id)
+}
+
+fn load_registry_keychain_private_key(key_id: &str) -> Result<Option<Vec<u8>>> {
     let entry = keyring::Entry::new("cellscript-registry", key_id).map_err(|error| {
         crate::error::CompileError::without_span(format!("failed to open OS keychain: {}", error))
             .with_category(crate::error::CompileErrorCategory::Authentication)
@@ -4762,7 +5440,31 @@ fn load_registry_capability_private_key(key_id: &str) -> Result<Option<Vec<u8>>>
     })?;
     match entry.get_password() {
         Ok(secret) => {
-            let decoded = base64::engine::general_purpose::STANDARD.decode(secret.trim()).map_err(|error| {
+            let trimmed = secret.trim();
+            let encoded = if trimmed.starts_with('{') {
+                let stored: RegistryKeychainSecret = serde_json::from_str(trimmed).map_err(|error| {
+                    crate::error::CompileError::without_span(format!(
+                        "failed to decode registry private-key state '{}' from OS keychain: {}",
+                        key_id, error
+                    ))
+                    .with_category(crate::error::CompileErrorCategory::Authentication)
+                })?;
+                if stored.schema != REGISTRY_KEYCHAIN_SECRET_SCHEMA || !matches!(stored.status.as_str(), "pending" | "active") {
+                    return Err(crate::error::CompileError::without_span(format!(
+                        "registry private key '{}' has an unsupported OS keychain state",
+                        key_id
+                    ))
+                    .with_category(crate::error::CompileErrorCategory::Authentication));
+                }
+                // A process may exit after the wallet commits authority but before the CLI
+                // observes it. Only an observed terminal session state may remove a pending
+                // key; local time alone cannot distinguish that case from an abandoned session.
+                stored.pkcs8_b64
+            } else {
+                // Compatibility with keys written before the key lifecycle envelope was introduced.
+                trimmed.to_string()
+            };
+            let decoded = base64::engine::general_purpose::STANDARD.decode(encoded.trim()).map_err(|error| {
                 crate::error::CompileError::without_span(format!(
                     "failed to decode capability private key '{}' from OS keychain: {}",
                     key_id, error
@@ -4813,6 +5515,401 @@ fn registry_publish_nonce(
     format!("0x{}", hex::encode(crate::ckb_blake2b256(material.as_bytes())))
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeclaredArtifactManifest {
+    schema: String,
+    namespace: String,
+    name: String,
+    release: String,
+    kind: String,
+    language: String,
+    bundle: PathBuf,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    repository: String,
+    #[serde(default)]
+    homepage: String,
+    #[serde(default)]
+    documentation: String,
+    #[serde(default)]
+    keywords: Vec<String>,
+    #[serde(default)]
+    categories: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeclaredArtifactBundle {
+    schema: String,
+    namespace: String,
+    name: String,
+    release: String,
+    profile: String,
+    manifest_json: String,
+    objects: Vec<DeclaredArtifactBundleObject>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeclaredArtifactBundleObject {
+    role: String,
+    content_base64: String,
+}
+
+fn publish_declared_artifact(args: PublishArgs, manifest_path: &Path) -> Result<()> {
+    if args.payload.is_some() || args.source_snapshot.is_some() {
+        return Err(crate::error::CompileError::without_span(
+            "--artifact-manifest owns the publish payload and immutable bundle; do not combine it with --payload or --source-snapshot",
+        ));
+    }
+    let manifest_text = std::fs::read_to_string(manifest_path).map_err(|error| {
+        crate::error::CompileError::without_span(format!("failed to read artifact manifest '{}': {}", manifest_path.display(), error))
+    })?;
+    let manifest: DeclaredArtifactManifest = toml::from_str(&manifest_text).map_err(|error| {
+        crate::error::CompileError::without_span(format!("failed to parse artifact manifest '{}': {}", manifest_path.display(), error))
+    })?;
+    if manifest.schema != "cellscript-registry-artifact" {
+        return Err(crate::error::CompileError::without_span("Artifact.toml schema must be 'cellscript-registry-artifact'"));
+    }
+    validate_declared_artifact_ident(&manifest.namespace, "namespace")?;
+    validate_declared_artifact_ident(&manifest.name, "name")?;
+    validate_declared_artifact_release(&manifest.release)?;
+    let artifact = declared_artifact_descriptor(&manifest.kind, &manifest.language)?;
+    let manifest_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let bundle_path = if manifest.bundle.is_absolute() { manifest.bundle.clone() } else { manifest_dir.join(&manifest.bundle) };
+    let bundle_bytes = std::fs::read(&bundle_path).map_err(|error| {
+        crate::error::CompileError::without_span(format!("failed to read artifact bundle '{}': {}", bundle_path.display(), error))
+    })?;
+    if bundle_bytes.is_empty() || bundle_bytes.len() > 5 * 1024 * 1024 {
+        return Err(crate::error::CompileError::without_span("artifact bundle must be a non-empty JSON file no larger than 5 MiB"));
+    }
+    let bundle: DeclaredArtifactBundle = serde_json::from_slice(&bundle_bytes).map_err(|error| {
+        crate::error::CompileError::without_span(format!("failed to parse artifact bundle '{}': {}", bundle_path.display(), error))
+    })?;
+    if bundle.schema != "cellscript-registry-bundle"
+        || bundle.namespace != manifest.namespace
+        || bundle.name != manifest.name
+        || bundle.release != manifest.release
+        || bundle.profile != artifact.profile
+    {
+        return Err(crate::error::CompileError::without_span(
+            "artifact bundle schema, coordinate, release, or profile does not match Artifact.toml",
+        ));
+    }
+    let manifest_json: serde_json::Value = serde_json::from_str(&bundle.manifest_json).map_err(|error| {
+        crate::error::CompileError::without_span(format!("artifact bundle manifest_json must be valid JSON: {error}"))
+    })?;
+    if !manifest_json.is_object() {
+        return Err(crate::error::CompileError::without_span("artifact bundle manifest_json must encode a JSON object"));
+    }
+    validate_declared_bundle_roles(&bundle, &artifact.profile, &manifest_json)?;
+    let source = declared_bundle_object(&bundle, "source")?;
+    let source_hash = hex::encode(crate::ckb_blake2b256(&source));
+    let mut artifact_hash = None;
+    let mut abi_hash = None;
+    let mut abi_sha256 = None;
+    let mut executable_ls_idl_bound = None;
+    let mut build_recipe_hash = None;
+    let audit_report_hash = if manifest_json.pointer("/security/audit_report_hash").is_some() {
+        Some(hex::encode(crate::ckb_blake2b256(&declared_bundle_object(&bundle, "audit_report")?)))
+    } else {
+        None
+    };
+    if artifact.profile == "ckb_executable" {
+        let executable = declared_bundle_object(&bundle, "executable")?;
+        let abi = declared_bundle_object(&bundle, "abi")?;
+        artifact_hash = Some(hex::encode(crate::ckb_blake2b256(&executable)));
+        abi_hash = Some(hex::encode(crate::ckb_blake2b256(&abi)));
+        if manifest_json.get("interface").is_some() {
+            use sha2::Digest as _;
+            crate::package::registry::validate_ls_idl_document(&abi).map_err(crate::error::CompileError::without_span)?;
+            let digest = sha2::Sha256::digest(&abi);
+            abi_sha256 = Some(hex::encode(digest));
+            executable_ls_idl_bound = Some(executable.ends_with(digest.as_slice()));
+        }
+        if manifest_json.pointer("/build/reproducible").and_then(serde_json::Value::as_bool) == Some(true) {
+            build_recipe_hash = Some(hex::encode(crate::ckb_blake2b256(&declared_bundle_object(&bundle, "build_recipe")?)));
+        }
+    } else if artifact.profile == "reproducible_build" {
+        artifact_hash = Some(hex::encode(crate::ckb_blake2b256(&declared_bundle_object(&bundle, "executable")?)));
+        build_recipe_hash = Some(hex::encode(crate::ckb_blake2b256(&declared_bundle_object(&bundle, "build_recipe")?)));
+    }
+    crate::package::registry::validate_artifact_profile_contract(
+        &artifact.kind,
+        &artifact.profile,
+        &manifest_json,
+        crate::package::registry::ArtifactContractHashes {
+            artifact_hash: artifact_hash.as_deref(),
+            abi_hash: abi_hash.as_deref(),
+            abi_sha256: abi_sha256.as_deref(),
+            executable_ls_idl_bound,
+            build_recipe_hash: build_recipe_hash.as_deref(),
+            audit_report_hash: audit_report_hash.as_deref(),
+        },
+    )
+    .map_err(crate::error::CompileError::without_span)?;
+    let canonical_manifest_json = crate::package::registry::canonical_artifact_contract_json(&manifest_json)
+        .map_err(crate::error::CompileError::without_span)?;
+    let manifest_hash = hex::encode(crate::ckb_blake2b256(canonical_manifest_json.as_bytes()));
+    let mut release = serde_json::json!({
+        "version": manifest.release,
+        "tag": format!("v{}", manifest.release),
+        "source_hash": source_hash,
+        "verification_status": "pending",
+        "deployment_status": if artifact.profile == "ckb_executable" { "undeployed" } else { "not_applicable" },
+        "availability_status": "active",
+        "profile_contract": manifest_json,
+    });
+    if let Some(value) = artifact_hash {
+        release["artifact_hash"] = serde_json::Value::String(value);
+    }
+    if let Some(value) = abi_hash {
+        release["abi_hash"] = serde_json::Value::String(value);
+    }
+    if let Some(value) = build_recipe_hash {
+        release["build_recipe_hash"] = serde_json::Value::String(value);
+    }
+    let mut registry_entry = serde_json::json!({
+        "schema_version": crate::package::registry::RegistryIndex::CURRENT_SCHEMA_VERSION,
+        "namespace": manifest.namespace,
+        "name": manifest.name,
+        "artifact": artifact,
+        "versions": [release],
+    });
+    let entry = registry_entry.as_object_mut().expect("registry entry JSON object");
+    for (key, value) in [
+        ("description", &manifest.description),
+        ("repository", &manifest.repository),
+        ("homepage", &manifest.homepage),
+        ("documentation", &manifest.documentation),
+    ] {
+        if !value.is_empty() {
+            entry.insert(key.to_string(), serde_json::Value::String(value.clone()));
+        }
+    }
+    if !manifest.keywords.is_empty() {
+        entry.insert(
+            "keywords".to_string(),
+            serde_json::to_value(&manifest.keywords).map_err(|error| {
+                crate::error::CompileError::without_span(format!("failed to serialize artifact keywords: {error}"))
+            })?,
+        );
+    }
+    if !manifest.categories.is_empty() {
+        entry.insert(
+            "categories".to_string(),
+            serde_json::to_value(&manifest.categories).map_err(|error| {
+                crate::error::CompileError::without_span(format!("failed to serialize artifact categories: {error}"))
+            })?,
+        );
+    }
+
+    if args.dry_run {
+        let summary = serde_json::json!({
+            "status": "valid",
+            "coordinate": format!("{}/{}@{}", manifest.namespace, manifest.name, manifest.release),
+            "artifact": artifact,
+            "source_hash": source_hash,
+            "manifest_hash": manifest_hash,
+            "bundle": bundle_path,
+        });
+        if args.json {
+            return print_json(&summary);
+        }
+        println!("{}", "Artifact publish dry-run passed".green());
+        println!("  Coordinate: {}/{}@{}", manifest.namespace, manifest.name, manifest.release);
+        println!("  Kind: {}", artifact.kind);
+        println!("  Profile: {}", artifact.profile);
+        println!("  Source hash: {}", source_hash);
+        return Ok(());
+    }
+
+    let api_base = resolve_registry_api_base(args.api_url)?;
+    let registry_origin = registry_origin_from_api_base(&api_base)?;
+    let endpoint = registry_publish_endpoint(&api_base, &manifest.namespace, &manifest.name);
+    let capability_key_id = match args.capability_key_id.or_else(|| std::env::var("CELLSCRIPT_CAPABILITY_KEY_ID").ok()) {
+        Some(key_id) => key_id,
+        None if args.authorise => {
+            authorise_registry_publish_key(&api_base, &manifest.namespace, &manifest.name, &artifact.kind, args.no_open)?
+        }
+        None => {
+            return Err(crate::error::CompileError::without_span(format!(
+                "publishing {}/{} requires a wallet-authorised publishing key; run `cellc publish --authorise` for the continuous browser flow, or pass an existing --capability-key-id",
+                manifest.namespace, manifest.name
+            ))
+            .with_category(crate::error::CompileErrorCategory::Authentication));
+        }
+    };
+    let issued_at = current_utc_timestamp();
+    let expires_at = utc_timestamp_after_seconds(10 * 60);
+    let nonce = registry_publish_nonce(
+        &registry_origin,
+        &manifest.namespace,
+        &manifest.name,
+        &manifest.release,
+        &source_hash,
+        &capability_key_id,
+        &issued_at,
+    );
+    let payload = crate::package::registry::RegistryPublishPayload {
+        protocol: crate::package::registry::REGISTRY_PUBLISH_PROTOCOL.to_string(),
+        action: crate::package::registry::PUBLISH_ACTION.to_string(),
+        registry_origin,
+        namespace: manifest.namespace,
+        name: manifest.name,
+        version: manifest.release,
+        source_hash: source_hash.clone(),
+        manifest_hash,
+        capability_key_id,
+        nonce,
+        issued_at,
+        expires_at,
+        cli_version: crate::VERSION.to_string(),
+        artifact,
+        registry_entry,
+    };
+    let canonical_payload = registry_publish_canonical_payload(&payload)?;
+    if args.print_payload {
+        return print_json(&serde_json::json!({ "endpoint": endpoint, "payload": payload, "canonical_payload": canonical_payload }));
+    }
+    let capability_signature =
+        if let Some(signature) = args.capability_signature.or_else(|| std::env::var("CELLSCRIPT_CAPABILITY_SIGNATURE").ok()) {
+            signature
+        } else {
+            sign_registry_publish_payload(&payload.capability_key_id, &canonical_payload)?
+        };
+    let request = crate::package::registry::RegistryPublishRequest {
+        payload,
+        capability_signature: crate::package::registry::RegistryCapabilitySignature {
+            algorithm: "p256-sha256".to_string(),
+            signature: capability_signature,
+        },
+        source_snapshot: crate::package::registry::RegistrySourceSnapshot {
+            content_base64: base64::engine::general_purpose::STANDARD.encode(&bundle_bytes),
+            content_type: "application/vnd.cellscript.artifact-bundle+json".to_string(),
+            size_bytes: bundle_bytes.len() as u64,
+            source_hash,
+        },
+    };
+    let idempotency_key = resolve_registry_publish_idempotency_key(args.idempotency_key.as_deref(), &request)?;
+    submit_registry_publish_request(&endpoint, &request, &idempotency_key, args.json)
+}
+
+fn declared_artifact_descriptor(kind: &str, language: &str) -> Result<crate::package::registry::RegistryArtifactDescriptor> {
+    let allowed_language = match kind {
+        "runtime_verifier" | "deployable_contract" => matches!(language, "cellscript" | "rust" | "c" | "javascript" | "other"),
+        "reproducible_binary" => matches!(language, "rust" | "c" | "other"),
+        "template" => matches!(language, "cellscript" | "rust" | "c" | "javascript" | "other" | "unspecified"),
+        "source_library" | "profile_library" => {
+            return Err(crate::error::CompileError::without_span(
+                "source_library and profile_library use the native CellScript package publish path",
+            ));
+        }
+        _ => return Err(crate::error::CompileError::without_span(format!("unknown artifact kind '{kind}'"))),
+    };
+    if !allowed_language {
+        return Err(crate::error::CompileError::without_span(format!(
+            "language '{language}' is not valid for artifact kind '{kind}'"
+        )));
+    }
+    let (profile, consumption_mode) = match kind {
+        "runtime_verifier" => ("ckb_executable", "tcb"),
+        "deployable_contract" => ("ckb_executable", "deployment"),
+        "reproducible_binary" => ("reproducible_build", "tcb"),
+        "template" => ("copy_material", "copy"),
+        _ => unreachable!("artifact kind was checked above"),
+    };
+    Ok(crate::package::registry::RegistryArtifactDescriptor {
+        kind: kind.to_string(),
+        profile: profile.to_string(),
+        consumption_mode: consumption_mode.to_string(),
+        language: language.to_string(),
+    })
+}
+
+fn declared_bundle_object(bundle: &DeclaredArtifactBundle, role: &str) -> Result<Vec<u8>> {
+    let mut objects = bundle.objects.iter().filter(|object| object.role == role);
+    let object = objects
+        .next()
+        .ok_or_else(|| crate::error::CompileError::without_span(format!("artifact bundle is missing required '{role}' object")))?;
+    if objects.next().is_some() {
+        return Err(crate::error::CompileError::without_span(format!("artifact bundle contains more than one '{role}' object")));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(&object.content_base64).map_err(|error| {
+        crate::error::CompileError::without_span(format!("artifact bundle '{role}' object is not valid base64: {error}"))
+    })?;
+    if bytes.is_empty() {
+        return Err(crate::error::CompileError::without_span(format!("artifact bundle '{role}' object must not be empty")));
+    }
+    Ok(bytes)
+}
+
+fn validate_declared_bundle_roles(bundle: &DeclaredArtifactBundle, profile: &str, contract: &serde_json::Value) -> Result<()> {
+    let mut required = match profile {
+        "ckb_executable" => vec!["source", "executable", "abi"],
+        "reproducible_build" => vec!["source", "executable", "build_recipe"],
+        "copy_material" => vec!["source"],
+        other => {
+            return Err(crate::error::CompileError::without_span(format!("unsupported declared artifact profile '{other}'")));
+        }
+    };
+    if contract.pointer("/security/audit_report_hash").is_some() {
+        required.push("audit_report");
+    }
+    if profile == "ckb_executable" && contract.pointer("/build/reproducible").and_then(serde_json::Value::as_bool) == Some(true) {
+        required.push("build_recipe");
+    }
+    let mut seen = BTreeSet::new();
+    for object in &bundle.objects {
+        if !required.contains(&object.role.as_str()) {
+            return Err(crate::error::CompileError::without_span(format!(
+                "artifact bundle role '{}' is not allowed for profile '{profile}'",
+                object.role
+            )));
+        }
+        if !seen.insert(object.role.as_str()) {
+            return Err(crate::error::CompileError::without_span(format!(
+                "artifact bundle contains more than one '{}' object",
+                object.role
+            )));
+        }
+    }
+    for role in required {
+        if !seen.contains(role) {
+            return Err(crate::error::CompileError::without_span(format!("artifact bundle is missing required '{role}' object")));
+        }
+    }
+    Ok(())
+}
+
+fn validate_declared_artifact_ident(value: &str, field: &str) -> Result<()> {
+    let bytes = value.as_bytes();
+    let edge = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+    if bytes.is_empty()
+        || bytes.len() > 64
+        || !edge(bytes[0])
+        || !edge(*bytes.last().expect("non-empty identifier"))
+        || !bytes.iter().all(|byte| edge(*byte) || matches!(*byte, b'_' | b'-'))
+    {
+        return Err(crate::error::CompileError::without_span(format!(
+            "artifact {field} must be 1-64 lowercase letters or numbers, with '_' or '-' only between characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_declared_artifact_release(value: &str) -> Result<()> {
+    let mut core = value.split(['-', '+']).next().unwrap_or_default().split('.');
+    let valid = (0..3).all(|_| core.next().is_some_and(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())))
+        && core.next().is_none();
+    if !valid {
+        return Err(crate::error::CompileError::without_span("artifact release must be semver-like"));
+    }
+    Ok(())
+}
+
 fn build_publish_registry_version(
     manifest: &PackageManifest,
     result: &crate::CompileResult,
@@ -4835,6 +5932,8 @@ fn build_publish_registry_version(
         tag: format!("v{}", manifest.package.version),
         source_hash: source_hash.to_string(),
         cellscript_version: result.metadata.compiler_version.clone(),
+        edition: result.metadata.edition,
+        compatibility_profile_hash: hash_json_value("compatibility_profile", &result.metadata.compatibility_profile)?,
         dependencies: deps,
         abi_index: Some(metadata_abi_hash(&result.metadata)?),
         schema_hash: Some(result.metadata.molecule_schema_manifest.manifest_hash.clone()),
@@ -4853,6 +5952,7 @@ fn build_publish_registry_entry(
     manifest: &PackageManifest,
     namespace: &str,
     version_entry: crate::package::registry::RegistryVersion,
+    artifact: &crate::package::registry::RegistryArtifactDescriptor,
 ) -> Result<serde_json::Value> {
     let index = crate::package::registry::RegistryIndex {
         schema_version: crate::package::registry::RegistryIndex::CURRENT_SCHEMA_VERSION,
@@ -4866,6 +5966,23 @@ fn build_publish_registry_entry(
     let Some(object) = value.as_object_mut() else {
         return Err(crate::error::CompileError::without_span("registry entry did not serialize as a JSON object"));
     };
+    object.insert(
+        "artifact".to_string(),
+        serde_json::to_value(artifact).map_err(|error| {
+            crate::error::CompileError::without_span(format!("failed to serialize CellScript artifact descriptor: {}", error))
+        })?,
+    );
+    let published = object
+        .get_mut("versions")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|versions| versions.first_mut())
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| crate::error::CompileError::without_span("registry entry has no publish release"))?;
+    published.remove("status");
+    published.remove("yanked");
+    published.insert("verification_status".to_string(), serde_json::Value::String("pending".to_string()));
+    published.insert("deployment_status".to_string(), serde_json::Value::String("not_applicable".to_string()));
+    published.insert("availability_status".to_string(), serde_json::Value::String("active".to_string()));
     if !manifest.package.repository.is_empty() {
         object.insert("repository".to_string(), serde_json::Value::String(manifest.package.repository.clone()));
     }
@@ -4897,7 +6014,22 @@ fn build_publish_registry_entry(
     Ok(value)
 }
 
-fn resolve_registry_api_base(api_url: Option<String>) -> Result<String> {
+fn cellscript_artifact_descriptor(kind: Option<&str>) -> Result<crate::package::registry::RegistryArtifactDescriptor> {
+    let kind = kind.unwrap_or("source_library");
+    if !matches!(kind, "source_library" | "profile_library") {
+        return Err(crate::error::CompileError::without_span(
+            "CellScript package artifact kind must be source_library or profile_library",
+        ));
+    }
+    Ok(crate::package::registry::RegistryArtifactDescriptor {
+        kind: kind.to_string(),
+        profile: "cellscript_source".to_string(),
+        consumption_mode: "dependency".to_string(),
+        language: "cellscript".to_string(),
+    })
+}
+
+pub(super) fn resolve_registry_api_base(api_url: Option<String>) -> Result<String> {
     let value = api_url
         .or_else(|| std::env::var("CELLSCRIPT_REGISTRY_API_URL").ok())
         .or_else(|| std::env::var("CELLSCRIPT_REGISTRY_ORIGIN").ok())
@@ -4910,7 +6042,7 @@ fn resolve_registry_api_base(api_url: Option<String>) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-fn registry_origin_from_api_base(api_base: &str) -> Result<String> {
+pub(super) fn registry_origin_from_api_base(api_base: &str) -> Result<String> {
     Ok(parse_registry_api_url(api_base)?.origin().ascii_serialization())
 }
 
@@ -4948,7 +6080,7 @@ fn parse_registry_api_url(api_base: &str) -> Result<reqwest::Url> {
 }
 
 fn registry_publish_endpoint(api_base: &str, namespace: &str, name: &str) -> String {
-    format!("{}/v1/packages/{}/{}/versions", api_base.trim_end_matches('/'), namespace, name)
+    format!("{}/v1/artifacts/{}/{}/releases", api_base.trim_end_matches('/'), namespace, name)
 }
 
 fn resolve_registry_publish_idempotency_key(
@@ -5037,6 +6169,15 @@ fn validate_publish_payload_matches_local_package(
             "publish payload source_hash '{}' does not match local source_hash '{}'",
             payload.source_hash, source_hash
         )));
+    }
+    if !matches!(payload.artifact.kind.as_str(), "source_library" | "profile_library")
+        || payload.artifact.profile != "cellscript_source"
+        || payload.artifact.consumption_mode != "dependency"
+        || payload.artifact.language != "cellscript"
+    {
+        return Err(crate::error::CompileError::without_span(
+            "CellScript package publish payload must declare the source_library/cellscript_source dependency contract",
+        ));
     }
     Ok(())
 }
@@ -5232,7 +6373,7 @@ fn submit_registry_publish_request(
     Ok(())
 }
 
-fn registry_http_client() -> Result<reqwest::blocking::Client> {
+pub(super) fn registry_http_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder().timeout(Duration::from_secs(30)).redirect(reqwest::redirect::Policy::none()).build().map_err(
         |error| {
             crate::error::CompileError::without_span(format!("failed to build registry HTTP client: {}", error))
@@ -5240,6 +6381,298 @@ fn registry_http_client() -> Result<reqwest::blocking::Client> {
                 .with_source(error)
         },
     )
+}
+
+#[derive(serde::Serialize)]
+struct RegistryAuthorisationSessionCreateRequest {
+    capability_pubkey: String,
+    requested_scopes: Vec<String>,
+    artifact_kind: String,
+    capability_expires_at: String,
+    cli_version: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RegistryAuthorisationSessionCreateResponse {
+    session_id: String,
+    poll_token: String,
+    browser_url: String,
+    expires_at: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RegistryAuthorisationSessionPollResponse {
+    status: String,
+    capability_key_id: Option<String>,
+    namespace_status: Option<String>,
+}
+
+enum RegistryAuthorisationSessionPollOutcome {
+    Expired,
+    State(RegistryAuthorisationSessionPollResponse),
+}
+
+fn fetch_registry_authorisation_session(
+    client: &reqwest::blocking::Client,
+    endpoint: &str,
+    poll_token: &str,
+) -> Result<RegistryAuthorisationSessionPollOutcome> {
+    let response = client.get(endpoint).bearer_auth(poll_token).send().map_err(|error| {
+        crate::error::CompileError::without_span(format!("failed to poll browser authorisation session: {error}"))
+            .with_category(crate::error::CompileErrorCategory::Network)
+            .with_source(error)
+    })?;
+    let status = response.status();
+    let body = response.text().map_err(|error| {
+        crate::error::CompileError::without_span(format!("failed to read authorisation session status: {error}"))
+            .with_category(crate::error::CompileErrorCategory::Network)
+            .with_source(error)
+    })?;
+    if status == reqwest::StatusCode::GONE {
+        return Ok(RegistryAuthorisationSessionPollOutcome::Expired);
+    }
+    if !status.is_success() {
+        return Err(crate::error::CompileError::without_span(format!(
+            "browser authorisation session failed with HTTP {status}: {}",
+            body.trim()
+        ))
+        .with_category(registry_http_error_category(status)));
+    }
+    let poll = serde_json::from_str::<RegistryAuthorisationSessionPollResponse>(&body).map_err(|error| {
+        crate::error::CompileError::without_span(format!("registry returned an invalid authorisation status: {error}"))
+            .with_category(crate::error::CompileErrorCategory::Network)
+            .with_source(error)
+    })?;
+    Ok(RegistryAuthorisationSessionPollOutcome::State(poll))
+}
+
+fn registry_authorisation_status_removes_pending_key(status: &str) -> bool {
+    matches!(status, "cancelled" | "expired")
+}
+
+fn resolve_registry_authorisation_session_poll(
+    poll: RegistryAuthorisationSessionPollResponse,
+    generated: &GeneratedRegistryKeyMaterial,
+    namespace: &str,
+) -> Result<Option<String>> {
+    activate_registry_key_after_wallet_approval(&poll.status, poll.capability_key_id.as_deref(), &generated.key_id, || {
+        store_registry_private_key(&generated.key_id, &generated.private_key_pkcs8)
+    })?;
+    match poll.status.as_str() {
+        "pending" => Ok(None),
+        "authorised" => {
+            let key_id = poll
+                .capability_key_id
+                .ok_or_else(|| crate::error::CompileError::without_span("authorised session did not return a capability key"))?;
+            eprintln!("Publishing authorisation confirmed; continuing with cellc.");
+            Ok(Some(key_id))
+        }
+        "review_pending" => {
+            let key_id = poll.capability_key_id.as_deref().ok_or_else(|| {
+                crate::error::CompileError::without_span("review_pending session did not return a capability key")
+                    .with_category(crate::error::CompileErrorCategory::Authentication)
+            })?;
+            Err(crate::error::CompileError::without_span(format!(
+                "wallet authorisation succeeded, but namespace '{namespace}' is awaiting Registry review; rerun publish with --capability-key-id {key_id} after approval"
+            ))
+            .with_category(crate::error::CompileErrorCategory::Authentication))
+        }
+        status if registry_authorisation_status_removes_pending_key(status) => {
+            remove_registry_private_key(&generated.key_id)?;
+            Err(crate::error::CompileError::without_span(format!(
+                "browser authorisation session was {status}; run `cellc publish --authorise` again"
+            ))
+            .with_category(crate::error::CompileErrorCategory::Authentication))
+        }
+        other => Err(crate::error::CompileError::without_span(format!(
+            "registry returned unknown authorisation session status '{other}' (namespace status: {})",
+            poll.namespace_status.as_deref().unwrap_or("unknown")
+        ))
+        .with_category(crate::error::CompileErrorCategory::Network)),
+    }
+}
+
+fn activate_registry_key_after_wallet_approval<F>(
+    status: &str,
+    returned_key_id: Option<&str>,
+    generated_key_id: &str,
+    persist: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    if !matches!(status, "authorised" | "review_pending") {
+        return Ok(());
+    }
+    let Some(returned_key_id) = returned_key_id else {
+        return Err(crate::error::CompileError::without_span(format!("{status} session did not return a publishing key"))
+            .with_category(crate::error::CompileErrorCategory::Authentication));
+    };
+    if returned_key_id != generated_key_id {
+        return Err(crate::error::CompileError::without_span(
+            "registry approved a different publishing key than the one held locally",
+        )
+        .with_category(crate::error::CompileErrorCategory::Authentication));
+    }
+    persist()
+}
+
+fn authorise_registry_publish_key(api_base: &str, namespace: &str, name: &str, artifact_kind: &str, no_open: bool) -> Result<String> {
+    let generated = generate_registry_key_material()?;
+    let client = registry_http_client()?;
+    let endpoint = format!("{}/v1/authorisation-sessions", api_base.trim_end_matches('/'));
+    let response = client
+        .post(&endpoint)
+        .json(&RegistryAuthorisationSessionCreateRequest {
+            capability_pubkey: generated.public_key.clone(),
+            requested_scopes: vec![format!("publish:{namespace}/{name}")],
+            artifact_kind: artifact_kind.to_string(),
+            capability_expires_at: utc_timestamp_after_seconds(90 * 24 * 60 * 60),
+            cli_version: crate::VERSION.to_string(),
+        })
+        .send()
+        .map_err(|error| {
+            crate::error::CompileError::without_span(format!("failed to create browser authorisation session: {error}"))
+                .with_category(crate::error::CompileErrorCategory::Network)
+                .with_source(error)
+        })?;
+    let status = response.status();
+    let body = response.text().map_err(|error| {
+        crate::error::CompileError::without_span(format!("failed to read browser authorisation session response: {error}"))
+            .with_category(crate::error::CompileErrorCategory::Network)
+            .with_source(error)
+    })?;
+    if !status.is_success() {
+        return Err(crate::error::CompileError::without_span(format!(
+            "registry refused browser authorisation session with HTTP {status}: {}",
+            body.trim()
+        ))
+        .with_category(registry_http_error_category(status)));
+    }
+    let session: RegistryAuthorisationSessionCreateResponse = serde_json::from_str(&body).map_err(|error| {
+        crate::error::CompileError::without_span(format!("registry returned an invalid authorisation session: {error}"))
+            .with_category(crate::error::CompileErrorCategory::Network)
+            .with_source(error)
+    })?;
+    validate_registry_authorisation_session(&session, api_base)?;
+    if generated.key_id != registry_capability_key_id(&generated.public_key) {
+        return Err(crate::error::CompileError::without_span(
+            "generated capability key identity changed before browser authorisation",
+        )
+        .with_category(crate::error::CompileErrorCategory::Authentication));
+    }
+    store_pending_registry_private_key(&generated.key_id, &generated.private_key_pkcs8, &session.session_id, &session.expires_at)?;
+    eprintln!("Authorise publishing {namespace}/{name} in your CKB wallet:");
+    eprintln!("  {}", session.browser_url);
+    eprintln!("Pending publishing key: {}", generated.key_id);
+    if !no_open && let Err(error) = open_registry_authorisation_url(&session.browser_url) {
+        eprintln!("Browser did not open automatically: {error}");
+    }
+    eprintln!("Waiting for wallet approval…");
+
+    let poll_endpoint = format!("{}/v1/authorisation-sessions/{}", api_base.trim_end_matches('/'), session.session_id);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15 * 60);
+    while std::time::Instant::now() < deadline {
+        match fetch_registry_authorisation_session(&client, &poll_endpoint, &session.poll_token)? {
+            RegistryAuthorisationSessionPollOutcome::Expired => {
+                remove_registry_private_key(&generated.key_id)?;
+                return Err(crate::error::CompileError::without_span(
+                    "browser authorisation session expired before wallet approval; run `cellc publish --authorise` again",
+                )
+                .with_category(crate::error::CompileErrorCategory::Authentication));
+            }
+            RegistryAuthorisationSessionPollOutcome::State(poll) => {
+                if let Some(key_id) = resolve_registry_authorisation_session_poll(poll, &generated, namespace)? {
+                    return Ok(key_id);
+                }
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        }
+    }
+
+    // The server may have committed wallet approval immediately before the local
+    // deadline. One final authoritative read closes that race. A still-pending or
+    // unreachable session keeps its pending key so a later CLI invocation can recover it.
+    match fetch_registry_authorisation_session(&client, &poll_endpoint, &session.poll_token)? {
+        RegistryAuthorisationSessionPollOutcome::Expired => {
+            remove_registry_private_key(&generated.key_id)?;
+            Err(crate::error::CompileError::without_span(
+                "browser authorisation session expired before wallet approval; run `cellc publish --authorise` again",
+            )
+            .with_category(crate::error::CompileErrorCategory::Authentication))
+        }
+        RegistryAuthorisationSessionPollOutcome::State(poll) => {
+            if let Some(key_id) = resolve_registry_authorisation_session_poll(poll, &generated, namespace)? {
+                return Ok(key_id);
+            }
+            Err(crate::error::CompileError::without_span(format!(
+                "browser authorisation is still pending; publishing key {} remains in the OS keychain for recovery",
+                generated.key_id
+            ))
+            .with_category(crate::error::CompileErrorCategory::Authentication))
+        }
+    }
+}
+
+fn validate_registry_authorisation_session(session: &RegistryAuthorisationSessionCreateResponse, api_base: &str) -> Result<()> {
+    if !session.session_id.starts_with("auth_")
+        || session.session_id.len() != 37
+        || !session.session_id[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !session.poll_token.starts_with("poll_")
+        || session.poll_token.len() != 37
+        || !session.poll_token[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(crate::error::CompileError::without_span("registry returned malformed authorisation credentials")
+            .with_category(crate::error::CompileErrorCategory::Network));
+    }
+    let browser = reqwest::Url::parse(&session.browser_url).map_err(|error| {
+        crate::error::CompileError::without_span(format!("registry returned an invalid browser URL: {error}"))
+            .with_category(crate::error::CompileErrorCategory::Network)
+    })?;
+    let api = parse_registry_api_url(api_base)?;
+    let browser_host = browser.host_str().unwrap_or_default();
+    let fragment = browser.fragment().unwrap_or_default();
+    let fragment_value = |name: &str| {
+        fragment.split('&').find_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            (key == name).then_some(value)
+        })
+    };
+    let browser_session_id = fragment_value("authorisation_session");
+    let browser_token = fragment_value("browser_token").unwrap_or_default();
+    let loopback = browser_host.parse::<std::net::IpAddr>().is_ok_and(|address| address.is_loopback())
+        || browser_host.eq_ignore_ascii_case("localhost");
+    if (browser.scheme() != "https" && !(browser.scheme() == "http" && loopback))
+        || !browser.username().is_empty()
+        || browser.password().is_some()
+        || browser.query().is_some()
+        || browser_session_id != Some(session.session_id.as_str())
+        || !browser_token.starts_with("browser_")
+        || browser_token.len() != 40
+        || !browser_token[8..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !browser.path().ends_with("/registry/submit")
+        || (api.scheme() == "https" && browser.scheme() != "https")
+    {
+        return Err(crate::error::CompileError::without_span("registry returned an unsafe browser authorisation URL")
+            .with_category(crate::error::CompileErrorCategory::Network));
+    }
+    Ok(())
+}
+
+fn open_registry_authorisation_url(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let status = std::process::Command::new("open").arg(url).status()?;
+    #[cfg(target_os = "windows")]
+    let status = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).status()?;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let status = std::process::Command::new("xdg-open").arg(url).status()?;
+    #[cfg(not(any(unix, windows)))]
+    return Err(std::io::Error::other("automatic browser opening is unsupported on this platform"));
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("browser launcher returned a failure status"))
+    }
 }
 
 fn submit_registry_publish_request_with_retry(
@@ -5676,17 +7109,22 @@ fn read_lockfile_path(path: &Path) -> Result<Lockfile> {
     let content = std::fs::read_to_string(path).map_err(|error| {
         crate::error::CompileError::without_span(format!("failed to read lockfile '{}': {}", path.display(), error))
     })?;
-    toml::from_str(&content)
-        .map_err(|error| crate::error::CompileError::without_span(format!("failed to parse lockfile '{}': {}", path.display(), error)))
+    let lockfile: Lockfile = toml::from_str(&content).map_err(|error| {
+        crate::error::CompileError::without_span(format!("failed to parse lockfile '{}': {}", path.display(), error))
+    })?;
+    lockfile.validate_schema()?;
+    Ok(lockfile)
 }
 
 fn read_deployed_manifest_path(path: &Path) -> Result<crate::package::DeployedManifest> {
     let content = std::fs::read_to_string(path).map_err(|error| {
         crate::error::CompileError::without_span(format!("failed to read deployed manifest '{}': {}", path.display(), error))
     })?;
-    toml::from_str(&content).map_err(|error| {
+    let manifest: crate::package::DeployedManifest = toml::from_str(&content).map_err(|error| {
         crate::error::CompileError::without_span(format!("failed to parse deployed manifest '{}': {}", path.display(), error))
-    })
+    })?;
+    manifest.validate_schema()?;
+    Ok(manifest)
 }
 
 fn verify_builder_lockfile_identity(
@@ -5697,6 +7135,12 @@ fn verify_builder_lockfile_identity(
     let lockfile = read_lockfile_path(lockfile_path)?;
     let expected_build = locked_build_info_from_metadata(metadata)?;
     let mut violations = Vec::new();
+    if lockfile.package.edition != metadata.edition {
+        violations.push(format!(
+            "edition mismatch: Cell.lock package has '{}' but metadata has '{}'",
+            lockfile.package.edition, metadata.edition
+        ));
+    }
 
     let locked_compiler_source_hash = lockfile.package.compiler_source_hash.as_ref().or(lockfile.package.source_hash.as_ref());
     let locked_source_label = if lockfile.package.compiler_source_hash.is_some() { "compiler_source_hash" } else { "source_hash" };
@@ -5711,6 +7155,18 @@ fn verify_builder_lockfile_identity(
     match &lockfile.package_build {
         Some(build) => {
             push_missing_locked_build_identity("Cell.lock [package.build]", build, &mut violations);
+            if build.edition != metadata.edition {
+                violations.push(format!(
+                    "edition mismatch: Cell.lock build has '{}' but metadata has '{}'",
+                    build.edition, metadata.edition
+                ));
+            }
+            if build.compatibility_profile_hash != expected_build.compatibility_profile_hash {
+                violations.push(format!(
+                    "compatibility_profile_hash mismatch: Cell.lock has '{}', metadata has '{}'",
+                    build.compatibility_profile_hash, expected_build.compatibility_profile_hash
+                ));
+            }
             compare_builder_identity_field(
                 "compiler_version",
                 &build.compiler_version,
@@ -5751,6 +7207,8 @@ fn verify_builder_lockfile_identity(
         "build": lockfile.package_build,
         "verified_fields": [
             locked_source_label,
+            "edition",
+            "compatibility_profile_hash",
             "compiler_version",
             "target_profile",
             "artifact_hash",
@@ -5774,6 +7232,11 @@ fn verify_builder_deployment_identity(
     let deployed = read_deployed_manifest_path(deployed_path)?;
     let expected_build = locked_build_info_from_metadata(metadata)?;
     let mut violations = Vec::new();
+    for (label, edition) in [("Cell.lock package", lockfile.package.edition), ("Deployed.toml package", deployed.package.edition)] {
+        if edition != metadata.edition {
+            violations.push(format!("edition mismatch: {} has '{}' but metadata has '{}'", label, edition, metadata.edition));
+        }
+    }
 
     match (&lockfile.package.source_hash, &deployed.package.source_hash) {
         (Some(locked), Some(deployed_hash)) if locked == deployed_hash => {}
@@ -5797,6 +7260,18 @@ fn verify_builder_deployment_identity(
     match &deployed.build {
         Some(build) => {
             push_missing_deployed_build_identity("Deployed.toml [build]", build, &mut violations);
+            if build.edition != metadata.edition {
+                violations.push(format!(
+                    "edition mismatch: Deployed.toml build has '{}' but metadata has '{}'",
+                    build.edition, metadata.edition
+                ));
+            }
+            if build.compatibility_profile_hash != expected_build.compatibility_profile_hash {
+                violations.push(format!(
+                    "compatibility_profile_hash mismatch: Deployed.toml has '{}', metadata has '{}'",
+                    build.compatibility_profile_hash, expected_build.compatibility_profile_hash
+                ));
+            }
             compare_builder_deployed_field(
                 "compiler_version",
                 &build.compiler_version,
@@ -5829,6 +7304,18 @@ fn verify_builder_deployment_identity(
             continue;
         }
         push_deployment_status_violation(deployment, &mut violations);
+        if deployment.edition != metadata.edition {
+            violations.push(format!(
+                "edition mismatch for network '{}': deployment has '{}' but metadata has '{}'",
+                deployment.network, deployment.edition, metadata.edition
+            ));
+        }
+        if deployment.compatibility_profile_hash != expected_build.compatibility_profile_hash {
+            violations.push(format!(
+                "compatibility_profile_hash mismatch for network '{}': Deployed.toml has '{}', metadata has '{}'",
+                deployment.network, deployment.compatibility_profile_hash, expected_build.compatibility_profile_hash
+            ));
+        }
         compare_builder_deployment_record_field(
             "artifact_hash",
             &deployment.artifact_hash,
@@ -5947,6 +7434,8 @@ fn verify_builder_deployment_identity(
         "verified_fields": [
             "source_hash",
             "compiler_source_hash",
+            "edition",
+            "compatibility_profile_hash",
             "compiler_version",
             "artifact_hash",
             "metadata_hash",
@@ -6239,11 +7728,13 @@ fn typescript_builder_manifest(
     deployment_identity: Option<&serde_json::Value>,
 ) -> serde_json::Value {
     serde_json::json!({
-        "schema": "cellscript-generated-action-builder-v0.20",
+        "schema": "cellscript-generated-action-builder-v0.23-edition-2026",
         "target": "typescript",
         "package_name": package_name,
         "module": metadata.module,
         "compiler_version": metadata.compiler_version,
+        "edition": metadata.edition,
+        "compatibility_profile": metadata.compatibility_profile,
         "metadata_schema_version": metadata.metadata_schema_version,
         "metadata_schema_versions": metadata_schema_versions_json(metadata),
         "metadata_hash": metadata_hash,
@@ -6355,7 +7846,7 @@ fn typescript_builder_index(
     let metadata_json = json_string_pretty("metadata", metadata)?;
 
     let mut ts = String::new();
-    ts.push_str("export const CELLSCRIPT_BUILDER_SCHEMA = \"cellscript-generated-action-builder-v0.20\" as const;\n");
+    ts.push_str("export const CELLSCRIPT_BUILDER_SCHEMA = \"cellscript-generated-action-builder-v0.23-edition-2026\" as const;\n");
     ts.push_str("export const ACTION_SCAN_SELECTORS_SCHEMA = \"cellscript-action-scan-selectors-v0.21\" as const;\n");
     ts.push_str(&format!("export const builderManifest = {manifest_json} as const;\n"));
     ts.push_str(&format!("export const metadata = {metadata_json} as const;\n"));
@@ -6385,6 +7876,7 @@ fn typescript_builder_index(
            script_field?: string | null;\n\
          };\n\n\
          export interface CellScriptLockfilePackage {\n\
+           edition: \"2026\";\n\
            name?: string;\n\
            version?: string;\n\
            namespace?: string | null;\n\
@@ -6392,6 +7884,8 @@ fn typescript_builder_index(
            compiler_source_hash?: string | null;\n\
          }\n\n\
          export interface CellScriptLockfileBuild {\n\
+           edition: \"2026\";\n\
+           compatibility_profile_hash: string;\n\
            compiler_version?: string | null;\n\
            target_profile?: string | null;\n\
            artifact_hash?: string | null;\n\
@@ -6414,6 +7908,7 @@ fn typescript_builder_index(
            deployment?: Record<string, CellScriptLockfileDeployment | null | undefined>;\n\
          }\n\n\
          export interface CellScriptDeploymentRecord {\n\
+           edition: \"2026\";\n\
            network: string;\n\
            chain_id: string;\n\
            tx_hash: string;\n\
@@ -6430,6 +7925,7 @@ fn typescript_builder_index(
            abi_hash?: string | null;\n\
            constraints_hash?: string | null;\n\
            compiler_version?: string | null;\n\
+           compatibility_profile_hash: string;\n\
            type_id?: string | null;\n\
            status?: string | null;\n\
            audit_report_hash?: string | null;\n\
@@ -6560,6 +8056,8 @@ fn typescript_builder_index(
          const GENERATED_ARTIFACT_HASH: string | null = {};\n\
          const GENERATED_SOURCE_HASH: string | null = {};\n\
          const GENERATED_COMPILER_VERSION = {};\n\
+         const GENERATED_EDITION = {};\n\
+         const GENERATED_COMPATIBILITY_PROFILE_HASH = {};\n\
          const GENERATED_TARGET_PROFILE = {};\n\
          const GENERATED_SCHEMA_HASH = {};\n\
          const GENERATED_CELL_DATA_CODEC_MANIFEST_HASH = {};\n\
@@ -6572,6 +8070,8 @@ fn typescript_builder_index(
         metadata.artifact_hash.as_deref().map(typescript_string_literal).unwrap_or_else(|| "null".to_string()),
         metadata.source_hash.as_deref().map(typescript_string_literal).unwrap_or_else(|| "null".to_string()),
         typescript_string_literal(&metadata.compiler_version),
+        typescript_string_literal(metadata.edition.as_str()),
+        typescript_string_literal(&hash_json_value("compatibility_profile", &metadata.compatibility_profile,)?),
         typescript_string_literal(&metadata.target_profile.name),
         typescript_string_literal(&metadata.molecule_schema_manifest.manifest_hash),
         typescript_string_literal(&metadata.cell_data_codec_manifest.manifest_hash),
@@ -6704,12 +8204,15 @@ fn typescript_builder_index(
            if (!pkg) {\n\
              violations.push(\"Cell.lock has no [package]\");\n\
            } else {\n\
+             compareRequiredIdentity(\"edition\", pkg.edition, GENERATED_EDITION, violations);\n\
              compareRequiredIdentity(\"compiler_source_hash\", pkg.compiler_source_hash ?? pkg.source_hash, GENERATED_SOURCE_HASH, violations);\n\
            }\n\
            const build = lockfile.package_build;\n\
            if (!build) {\n\
              violations.push(\"Cell.lock has no [package.build]\");\n\
            } else {\n\
+             compareRequiredIdentity(\"edition\", build.edition, GENERATED_EDITION, violations);\n\
+             compareRequiredIdentity(\"compatibility_profile_hash\", build.compatibility_profile_hash, GENERATED_COMPATIBILITY_PROFILE_HASH, violations);\n\
              compareRequiredIdentity(\"compiler_version\", build.compiler_version, GENERATED_COMPILER_VERSION, violations);\n\
              compareRequiredIdentity(\"target_profile\", build.target_profile, GENERATED_TARGET_PROFILE, violations);\n\
              compareRequiredIdentity(\"artifact_hash\", build.artifact_hash, GENERATED_ARTIFACT_HASH, violations);\n\
@@ -6742,6 +8245,8 @@ fn typescript_builder_index(
              return violations;\n\
            }\n\
            violations.push(...validateCellScriptDeploymentTrust(deployment, trustPolicy));\n\
+           compareDeploymentIdentity(\"edition\", deployment.edition, GENERATED_EDITION, violations);\n\
+           compareDeploymentIdentity(\"compatibility_profile_hash\", deployment.compatibility_profile_hash, GENERATED_COMPATIBILITY_PROFILE_HASH, violations);\n\
            if (!deployment.status) {\n\
              violations.push(\"deployment record has no status; expected 'active'\");\n\
            } else if (deployment.status !== \"active\") {\n\
@@ -8053,19 +9558,17 @@ fn validate_ickb_claim_thresholds(
         let Some(row) = matrix_rows.get(scenario) else {
             continue;
         };
-        if let (Some(max), Some(actual)) = (max_cycles, row["execution"]["cellscript_cycles"].as_u64()) {
-            if actual > max {
-                issues.push(format!(
-                    "iCKB claim branch {family_id}/{branch_id} scenario {scenario} cellscript_cycles {actual} exceeds {max}"
-                ));
-            }
+        if let (Some(max), Some(actual)) = (max_cycles, row["execution"]["cellscript_cycles"].as_u64())
+            && actual > max
+        {
+            issues.push(format!(
+                "iCKB claim branch {family_id}/{branch_id} scenario {scenario} cellscript_cycles {actual} exceeds {max}"
+            ));
         }
-        if let (Some(max), Some(actual)) = (max_tx_size, row["execution"]["tx_size_bytes"].as_u64()) {
-            if actual > max {
-                issues.push(format!(
-                    "iCKB claim branch {family_id}/{branch_id} scenario {scenario} tx_size_bytes {actual} exceeds {max}"
-                ));
-            }
+        if let (Some(max), Some(actual)) = (max_tx_size, row["execution"]["tx_size_bytes"].as_u64())
+            && actual > max
+        {
+            issues.push(format!("iCKB claim branch {family_id}/{branch_id} scenario {scenario} tx_size_bytes {actual} exceeds {max}"));
         }
     }
 }
@@ -9610,6 +11113,61 @@ fn proof_plan_read_label(read: &str) -> String {
     }
 }
 
+fn resolution_options(
+    features: &[String],
+    all_features: bool,
+    no_default_features: bool,
+    environment: Option<&str>,
+    offline: bool,
+    frozen: bool,
+    scope: crate::package::DependencyScope,
+) -> crate::package::ResolutionOptions {
+    crate::package::ResolutionOptions {
+        scope,
+        features: features.iter().cloned().collect(),
+        all_features,
+        no_default_features,
+        environment: environment.map(str::to_string),
+        offline: offline || frozen,
+    }
+}
+
+fn build_resolution_options(args: &BuildArgs, scope: crate::package::DependencyScope) -> crate::package::ResolutionOptions {
+    resolution_options(
+        &args.features,
+        args.all_features,
+        args.no_default_features,
+        args.environment.as_deref(),
+        args.offline,
+        args.frozen,
+        scope,
+    )
+}
+
+fn check_resolution_options(args: &CheckArgs, scope: crate::package::DependencyScope) -> crate::package::ResolutionOptions {
+    resolution_options(
+        &args.features,
+        args.all_features,
+        args.no_default_features,
+        args.environment.as_deref(),
+        args.offline,
+        args.frozen,
+        scope,
+    )
+}
+
+fn test_resolution_options(args: &TestArgs) -> crate::package::ResolutionOptions {
+    resolution_options(
+        &args.features,
+        args.all_features,
+        args.no_default_features,
+        args.environment.as_deref(),
+        args.offline,
+        args.frozen,
+        crate::package::DependencyScope::Test,
+    )
+}
+
 fn effective_check_args(mut args: CheckArgs) -> Result<CheckArgs> {
     // In a workspace root (virtual manifest without [package]), fall back to default policy.
     let policy = PackageManager::new(".").read_manifest().map(|m| m.policy).unwrap_or_default();
@@ -9706,6 +11264,11 @@ fn validate_dependency_target_flags(dev: bool, build: bool) -> Result<()> {
     if dev && build {
         return Err(crate::error::CompileError::without_span("dependency target flags --dev and --build are mutually exclusive"));
     }
+    if build {
+        return Err(crate::error::CompileError::without_span(
+            "--build dependencies are reserved until isolated build-script execution is implemented",
+        ));
+    }
     Ok(())
 }
 
@@ -9722,18 +11285,18 @@ fn validate_not_self_dependency(crate_name: &str, dep: &Dependency, manifest: &c
             manifest.package.name
         )));
     }
-    if let Dependency::Detailed(detailed) = dep {
-        if let Some(dep_path) = &detailed.path {
-            let dep_canon = std::path::Path::new(dep_path);
-            let manifest_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let dep_abs = dep_canon.canonicalize().unwrap_or_else(|_| manifest_dir.join(dep_canon));
-            let manifest_abs = manifest_dir.canonicalize().unwrap_or_else(|_| manifest_dir.clone());
-            if dep_abs == manifest_abs {
-                return Err(crate::error::CompileError::without_span(format!(
-                    "refusing to add self-dependency: path '{}' resolves to the current package root",
-                    dep_path
-                )));
-            }
+    if let Dependency::Detailed(detailed) = dep
+        && let Some(dep_path) = &detailed.path
+    {
+        let dep_canon = std::path::Path::new(dep_path);
+        let manifest_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let dep_abs = dep_canon.canonicalize().unwrap_or_else(|_| manifest_dir.join(dep_canon));
+        let manifest_abs = manifest_dir.canonicalize().unwrap_or_else(|_| manifest_dir.clone());
+        if dep_abs == manifest_abs {
+            return Err(crate::error::CompileError::without_span(format!(
+                "refusing to add self-dependency: path '{}' resolves to the current package root",
+                dep_path
+            )));
         }
     }
     Ok(())
@@ -9764,6 +11327,8 @@ fn dependency_from_add_args(args: &AddArgs) -> Dependency {
         (Some(git), _) => Dependency::Detailed(DetailedDependency {
             version: "*".to_string(),
             namespace: None,
+            package: args.package.clone(),
+            resolver: None,
             git: Some(git.clone()),
             branch: None,
             tag: None,
@@ -9772,10 +11337,14 @@ fn dependency_from_add_args(args: &AddArgs) -> Dependency {
             optional: false,
             features: Vec::new(),
             default_features: true,
+            allow_unverified: false,
+            allow_quarantined: false,
         }),
         (_, Some(path)) => Dependency::Detailed(DetailedDependency {
             version: "*".to_string(),
             namespace: None,
+            package: args.package.clone(),
+            resolver: None,
             git: None,
             branch: None,
             tag: None,
@@ -9784,6 +11353,24 @@ fn dependency_from_add_args(args: &AddArgs) -> Dependency {
             optional: false,
             features: Vec::new(),
             default_features: true,
+            allow_unverified: false,
+            allow_quarantined: false,
+        }),
+        _ if args.package.is_some() => Dependency::Detailed(DetailedDependency {
+            version: "*".to_string(),
+            namespace: None,
+            package: args.package.clone(),
+            resolver: None,
+            git: None,
+            branch: None,
+            tag: None,
+            rev: None,
+            path: None,
+            optional: false,
+            features: Vec::new(),
+            default_features: true,
+            allow_unverified: false,
+            allow_quarantined: false,
         }),
         _ => Dependency::Simple("*".to_string()),
     }
@@ -9806,7 +11393,26 @@ fn auth_capability_submit_args_from_matches(m: &clap::ArgMatches) -> AuthCapabil
     AuthCapabilitySubmitArgs {
         api_url: m.get_one::<String>("api-url").cloned(),
         payload: m.get_one::<String>("payload").map(PathBuf::from).expect("required payload"),
-        joyid_signature: m.get_one::<String>("joyid-signature").map(PathBuf::from).expect("required joyid-signature"),
+        wallet_signature: m.get_one::<String>("wallet-signature").map(PathBuf::from).expect("required wallet-signature"),
+        json: json_output(m),
+    }
+}
+
+fn auth_reproducer_create_args_from_matches(m: &clap::ArgMatches) -> AuthReproducerCreateArgs {
+    AuthReproducerCreateArgs {
+        builder_id: m.get_one::<String>("builder-id").cloned().expect("required builder-id"),
+        trust_domain: m.get_one::<String>("trust-domain").cloned().expect("required trust-domain"),
+        private_key_output: m.get_one::<String>("private-key-output").map(PathBuf::from),
+        json: json_output(m),
+    }
+}
+
+fn auth_namespace_claim_args_from_matches(m: &clap::ArgMatches) -> AuthNamespaceClaimArgs {
+    AuthNamespaceClaimArgs {
+        api_url: m.get_one::<String>("api-url").cloned(),
+        namespace: m.get_one::<String>("namespace").cloned().expect("required namespace"),
+        payload: m.get_one::<String>("payload").map(PathBuf::from).expect("required payload"),
+        wallet_signature: m.get_one::<String>("wallet-signature").map(PathBuf::from).expect("required wallet-signature"),
         json: json_output(m),
     }
 }
@@ -9819,32 +11425,74 @@ fn auth_capability_revoke_args_from_matches(m: &clap::ArgMatches) -> AuthCapabil
         principal_id: m.get_one::<String>("principal-id").cloned(),
         capability_key_id: m.get_one::<String>("capability-key-id").cloned(),
         payload: m.get_one::<String>("payload").map(PathBuf::from),
-        joyid_signature: m.get_one::<String>("joyid-signature").map(PathBuf::from),
+        wallet_signature: m.get_one::<String>("wallet-signature").map(PathBuf::from),
         reason: m.get_one::<String>("reason").cloned(),
         json: json_output(m),
     }
 }
 
 fn refresh_lockfile_from_manifest(root: &Path) -> Result<()> {
-    let mut manager = PackageManager::new(root);
-    manager.resolve_dependencies()?;
+    let manager = PackageManager::new(root);
+    let manifest = manager.read_manifest()?;
+    let mut lockfile = read_lockfile_for_explicit_repin(root)?;
+    lockfile.dependencies.clear();
+    lockfile.root = crate::package::LockedRootGraph::default();
+    lockfile.environments.clear();
+    lockfile.package = lockfile_package_info(root, &manifest)?;
 
-    let mut lockfile = Lockfile::read_from_root(root)?.unwrap_or_default();
-    lockfile.replace_with_resolved(manager.get_resolved());
+    let mut environments: Vec<Option<String>> = Vec::new();
+    if manifest.dependency_overrides.is_empty() {
+        environments.push(None);
+    }
+    environments.extend(manifest.environments.keys().cloned().map(Some));
+    for environment in environments {
+        let mut manager = PackageManager::new(root);
+        let options = crate::package::ResolutionOptions {
+            scope: crate::package::DependencyScope::Test,
+            all_features: true,
+            environment,
+            ..crate::package::ResolutionOptions::default()
+        };
+        manager.resolve_dependencies_with_options(&options)?;
+        lockfile.merge_resolution(&manager, &manifest, &options)?;
+    }
     lockfile.write_to_root(root)?;
     Ok(())
 }
 
+fn read_lockfile_for_explicit_repin(root: &Path) -> Result<Lockfile> {
+    match Lockfile::read_from_root(root) {
+        Ok(Some(lockfile)) => Ok(lockfile),
+        Ok(None) => Ok(Lockfile::new()),
+        Err(error) => {
+            let path = root.join("Cell.lock");
+            let source = std::fs::read_to_string(&path).map_err(|_| error.clone())?;
+            let value: toml::Value = toml::from_str(&source).map_err(|_| error.clone())?;
+            if value.get("version").and_then(toml::Value::as_integer).is_some_and(|version| matches!(version, 1 | 2)) {
+                Ok(Lockfile::new())
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
 fn refresh_lockfile_from_build(root: &Path, metadata: &CompileMetadata) -> Result<()> {
-    let mut manager = PackageManager::new(root);
+    let manager = PackageManager::new(root);
     let manifest = manager.read_manifest()?;
-    manager.resolve_dependencies()?;
 
     let mut lockfile = Lockfile::read_from_root(root)?.unwrap_or_default();
+    if (!manifest.dependencies.is_empty() || !manifest.dev_dependencies.is_empty()) && lockfile.root.manifest_digest.is_empty() {
+        return Err(crate::error::CompileError::without_span(
+            "Cell.lock has no pinned dependency graph; run 'cellc lock' or 'cellc update' before building",
+        ));
+    }
+    if manifest.dependencies.is_empty() && manifest.dev_dependencies.is_empty() {
+        lockfile.root.manifest_digest = crate::package::compute_manifest_digest(root)?;
+    }
     let mut package = lockfile_package_info(root, &manifest)?;
     package.compiler_source_hash = metadata.source_hash.clone();
     lockfile.package = package;
-    lockfile.replace_with_resolved(manager.get_resolved());
     lockfile.package_build = Some(locked_build_info_from_metadata(metadata)?);
     refresh_lockfile_deployment_refs(root, &mut lockfile);
     lockfile.write_to_root(root)?;
@@ -9897,6 +11545,7 @@ fn refresh_lockfile_deployment_refs(root: &Path, lockfile: &mut crate::package::
 
 fn lockfile_package_info(root: &Path, manifest: &crate::package::PackageManifest) -> Result<crate::package::LockfilePackageInfo> {
     Ok(crate::package::LockfilePackageInfo {
+        edition: manifest.package.edition,
         name: manifest.package.name.clone(),
         version: manifest.package.version.clone(),
         namespace: manifest.package.namespace.clone(),
@@ -9907,6 +11556,8 @@ fn lockfile_package_info(root: &Path, manifest: &crate::package::PackageManifest
 
 fn locked_build_info_from_metadata(metadata: &CompileMetadata) -> Result<crate::package::LockedBuildInfo> {
     Ok(crate::package::LockedBuildInfo {
+        edition: metadata.edition,
+        compatibility_profile_hash: hash_json_value("compatibility_profile", &metadata.compatibility_profile)?,
         compiler_version: Some(metadata.compiler_version.clone()),
         target_profile: Some(metadata.target_profile.name.clone()),
         artifact_hash: metadata.artifact_hash.clone(),
@@ -9931,6 +11582,8 @@ fn metadata_abi_hash(metadata: &CompileMetadata) -> Result<String> {
     let abi = serde_json::json!({
         "metadata_schema_version": metadata.metadata_schema_version,
         "metadata_schema_versions": metadata_schema_versions_json(metadata),
+        "edition": metadata.edition,
+        "compatibility_profile": &metadata.compatibility_profile,
         "target_profile": metadata.target_profile.name.as_str(),
         "types": &metadata.types,
         "actions": &metadata.actions,
@@ -9964,8 +11617,11 @@ fn compile_receipt_json(metadata: &CompileMetadata) -> Result<serde_json::Value>
         serde_json::Value::String(hash_json_value("template_layouts", &metadata.template_layouts)?)
     };
     Ok(serde_json::json!({
-        "schema": "cellscript-compile-receipt-v1",
+        "schema": "cellscript-compile-receipt-v2",
         "compiler_version": metadata.compiler_version,
+        "edition": metadata.edition,
+        "compatibility_profile": metadata.compatibility_profile,
+        "compatibility_profile_hash": hash_json_value("compatibility_profile", &metadata.compatibility_profile)?,
         "rust_toolchain": cellscript_rust_toolchain(),
         "target": metadata.artifact_format,
         "target_profile": metadata.target_profile.name,
@@ -9993,6 +11649,9 @@ fn verify_compile_receipt_against_metadata(
     let expected = compile_receipt_json(metadata)?;
     for pointer in [
         "/compiler_version",
+        "/edition",
+        "/compatibility_profile",
+        "/compatibility_profile_hash",
         "/rust_toolchain",
         "/target",
         "/target_profile",
@@ -10021,9 +11680,9 @@ fn verify_compile_receipt_against_metadata(
 
 fn validate_compile_receipt_schema(receipt: &serde_json::Value) -> Result<()> {
     match receipt.get("schema").and_then(serde_json::Value::as_str) {
-        Some("cellscript-compile-receipt-v1") => Ok(()),
+        Some("cellscript-compile-receipt-v2") => Ok(()),
         Some(schema) => Err(crate::error::CompileError::without_span(format!(
-            "unsupported compile receipt schema '{}'; expected cellscript-compile-receipt-v1",
+            "unsupported compile receipt schema '{}'; expected cellscript-compile-receipt-v2",
             schema
         ))),
         None => Err(crate::error::CompileError::without_span("compile receipt is missing schema")),
@@ -10447,6 +12106,9 @@ fn cellfabric_app_conflict_key_templates(app_namespace: &str, action: &crate::Ac
 }
 
 fn push_missing_locked_build_identity(label: &str, build: &crate::package::LockedBuildInfo, violations: &mut Vec<String>) {
+    if build.compatibility_profile_hash.is_empty() {
+        violations.push(format!("{} has no compatibility_profile_hash", label));
+    }
     if build.compiler_version.is_none() {
         violations.push(format!("{} has no compiler_version", label));
     }
@@ -10474,6 +12136,9 @@ fn push_missing_locked_build_identity(label: &str, build: &crate::package::Locke
 }
 
 fn push_missing_deployed_build_identity(label: &str, build: &crate::package::DeployedBuildInfo, violations: &mut Vec<String>) {
+    if build.compatibility_profile_hash.is_empty() {
+        violations.push(format!("{} has no compatibility_profile_hash", label));
+    }
     if build.compiler_version.is_none() {
         violations.push(format!("{} has no compiler_version", label));
     }
@@ -10569,13 +12234,13 @@ fn verify_live_deployments(
 
         let rpc_code_hash =
             live_cell_code_hash_for_deployment(&live, deployment, rpc_data_hash.as_deref(), &mut deployment_violations);
-        if let Some(hash) = rpc_code_hash.as_deref() {
-            if !hex_eq(hash, &deployment.code_hash) {
-                deployment_violations.push(format!(
-                    "live code_hash mismatch for network '{}': RPC has '{}', Deployed.toml has '{}'",
-                    deployment.network, hash, deployment.code_hash
-                ));
-            }
+        if let Some(hash) = rpc_code_hash.as_deref()
+            && !hex_eq(hash, &deployment.code_hash)
+        {
+            deployment_violations.push(format!(
+                "live code_hash mismatch for network '{}': RPC has '{}', Deployed.toml has '{}'",
+                deployment.network, hash, deployment.code_hash
+            ));
         }
 
         if let Some(type_id) = &deployment.type_id {
@@ -10676,7 +12341,7 @@ fn live_cell_code_hash_for_deployment(
     }
 }
 
-fn ckb_script_hash_from_json(script: &serde_json::Value) -> Result<String> {
+pub(super) fn ckb_script_hash_from_json(script: &serde_json::Value) -> Result<String> {
     let code_hash = script
         .get("code_hash")
         .and_then(|value| value.as_str())
@@ -10834,6 +12499,12 @@ fn effective_build_check_args(args: &BuildArgs) -> Result<CheckArgs> {
         all_targets: false,
         target_profile: args.target_profile.clone(),
         features: args.features.clone(),
+        all_features: args.all_features,
+        no_default_features: args.no_default_features,
+        locked: args.locked,
+        frozen: args.frozen,
+        offline: args.offline,
+        environment: args.environment.clone(),
         json: false,
         production: args.production,
         deny_fail_closed: args.deny_fail_closed,
@@ -11301,6 +12972,12 @@ impl CompileTestExpectation {
             all_targets: false,
             target_profile: None,
             features: Vec::new(),
+            all_features: false,
+            no_default_features: false,
+            locked: true,
+            frozen: false,
+            offline: false,
+            environment: None,
             json: false,
             production: self.production,
             deny_fail_closed: self.deny_fail_closed,
@@ -11499,30 +13176,30 @@ fn validate_compile_test_metadata(
     expectation: &CompileTestExpectation,
     metadata: &crate::CompileMetadata,
 ) -> Result<()> {
-    if let Some(expected) = &expectation.expected_artifact_format {
-        if &metadata.artifact_format != expected {
-            return Err(crate::error::CompileError::without_span(format!(
-                "{}: expected artifact_format='{}', got '{}'",
-                path, expected, metadata.artifact_format
-            )));
-        }
+    if let Some(expected) = &expectation.expected_artifact_format
+        && &metadata.artifact_format != expected
+    {
+        return Err(crate::error::CompileError::without_span(format!(
+            "{}: expected artifact_format='{}', got '{}'",
+            path, expected, metadata.artifact_format
+        )));
     }
 
-    if let Some(expected) = expectation.expect_standalone {
-        if metadata.runtime.standalone_runner_compatible != expected {
-            return Err(crate::error::CompileError::without_span(format!(
-                "{}: expected standalone_runner_compatible={}, got {}",
-                path, expected, metadata.runtime.standalone_runner_compatible
-            )));
-        }
+    if let Some(expected) = expectation.expect_standalone
+        && metadata.runtime.standalone_runner_compatible != expected
+    {
+        return Err(crate::error::CompileError::without_span(format!(
+            "{}: expected standalone_runner_compatible={}, got {}",
+            path, expected, metadata.runtime.standalone_runner_compatible
+        )));
     }
-    if let Some(expected) = expectation.expect_ckb_runtime {
-        if metadata.runtime.ckb_runtime_required != expected {
-            return Err(crate::error::CompileError::without_span(format!(
-                "{}: expected ckb_runtime_required={}, got {}",
-                path, expected, metadata.runtime.ckb_runtime_required
-            )));
-        }
+    if let Some(expected) = expectation.expect_ckb_runtime
+        && metadata.runtime.ckb_runtime_required != expected
+    {
+        return Err(crate::error::CompileError::without_span(format!(
+            "{}: expected ckb_runtime_required={}, got {}",
+            path, expected, metadata.runtime.ckb_runtime_required
+        )));
     }
     if let Some(expected) = expectation.expect_fail_closed {
         let actual = !metadata.runtime.fail_closed_runtime_features.is_empty()
@@ -11909,15 +13586,15 @@ fn decode_hex_arg(name: &str, value: &str, expected_len: Option<usize>) -> Resul
             Ok((high << 4) | low)
         })
         .collect::<Result<Vec<_>>>()?;
-    if let Some(expected_len) = expected_len {
-        if bytes.len() != expected_len {
-            return Err(crate::error::CompileError::without_span(format!(
-                "parameter '{}' expects {} byte(s), got {}",
-                name,
-                expected_len,
-                bytes.len()
-            )));
-        }
+    if let Some(expected_len) = expected_len
+        && bytes.len() != expected_len
+    {
+        return Err(crate::error::CompileError::without_span(format!(
+            "parameter '{}' expects {} byte(s), got {}",
+            name,
+            expected_len,
+            bytes.len()
+        )));
     }
     Ok(bytes)
 }
@@ -12025,6 +13702,13 @@ impl CliParser {
                             .help("Compile only this lock as the artifact entrypoint"),
                     )
                     .arg(Arg::new("jobs").long("jobs").short('j').value_name("N").help("Number of parallel jobs"))
+                    .arg(Arg::new("features").long("features").value_delimiter(',').num_args(1..).value_name("FEATURES").help("Activate package features"))
+                    .arg(Arg::new("all-features").long("all-features").action(ArgAction::SetTrue).help("Activate all package features"))
+                    .arg(Arg::new("no-default-features").long("no-default-features").action(ArgAction::SetTrue).help("Do not activate the default feature"))
+                    .arg(Arg::new("locked").long("locked").action(ArgAction::SetTrue).help("Require the existing Cell.lock dependency graph"))
+                    .arg(Arg::new("frozen").long("frozen").action(ArgAction::SetTrue).help("Require Cell.lock and cached sources without network or lockfile writes"))
+                    .arg(Arg::new("offline").long("offline").action(ArgAction::SetTrue).help("Do not access the network while materializing locked sources"))
+                    .arg(Arg::new("environment").long("environment").value_name("NAME").help("Select an explicitly declared CKB dependency environment"))
 
                     .arg(
                         Arg::new("production")
@@ -12082,6 +13766,13 @@ impl CliParser {
                     .about("Run the tests")
                     .arg(Arg::new("filter").value_name("FILTER").help("Filter tests by name"))
                     .arg(
+                        Arg::new("backend")
+                            .long("backend")
+                            .value_name("BACKEND")
+                            .value_parser(["simulator", "ckb-vm", "all"])
+                            .help("Execution backend; required unless --no-run: simulator, ckb-vm, or all"),
+                    )
+                    .arg(
                         Arg::new("no-run")
                             .long("no-run")
                             .action(ArgAction::SetTrue)
@@ -12090,6 +13781,13 @@ impl CliParser {
                     .arg(Arg::new("nocapture").long("nocapture").action(ArgAction::SetTrue).help("Don't capture stdout"))
                     .arg(Arg::new("fail-fast").long("fail-fast").action(ArgAction::SetTrue).help("Stop on first failure"))
                     .arg(Arg::new("doc").long("doc").action(ArgAction::SetTrue).help("Generate docs before compiling tests"))
+                    .arg(Arg::new("features").long("features").value_delimiter(',').num_args(1..).value_name("FEATURES").help("Activate package features"))
+                    .arg(Arg::new("all-features").long("all-features").action(ArgAction::SetTrue).help("Activate all package features"))
+                    .arg(Arg::new("no-default-features").long("no-default-features").action(ArgAction::SetTrue).help("Do not activate the default feature"))
+                    .arg(Arg::new("locked").long("locked").action(ArgAction::SetTrue).help("Require the existing Cell.lock dependency graph"))
+                    .arg(Arg::new("frozen").long("frozen").action(ArgAction::SetTrue).help("Require cached locked sources without network or lockfile writes"))
+                    .arg(Arg::new("offline").long("offline").action(ArgAction::SetTrue).help("Do not access the network while materializing locked sources"))
+                    .arg(Arg::new("environment").long("environment").value_name("NAME").help("Select an explicitly declared CKB dependency environment"))
                     ,
             )
             .subcommand(
@@ -12143,6 +13841,7 @@ impl CliParser {
                 ClapCommand::new("add")
                     .about("Add dependencies")
                     .arg(Arg::new("crates").value_name("CRATES").required(true).num_args(1..).help("Crates to add"))
+                    .arg(Arg::new("package-name").long("package").value_name("NAME").help("Declared package name when it differs from the local alias"))
                     .arg(Arg::new("dev").long("dev").action(ArgAction::SetTrue).help("Add as dev dependency"))
                     .arg(Arg::new("build").long("build").action(ArgAction::SetTrue).help("Add as build dependency"))
                     .arg(Arg::new("git").long("git").value_name("URL").help("Add a git dependency source"))
@@ -12175,6 +13874,13 @@ impl CliParser {
                             .help("Also check the current ELF-compatible target path"),
                     )
                     .arg(Arg::new("target-profile").long("target-profile").value_name("PROFILE").help("Target profile: ckb"))
+                    .arg(Arg::new("features").long("features").value_delimiter(',').num_args(1..).value_name("FEATURES").help("Activate package features"))
+                    .arg(Arg::new("all-features").long("all-features").action(ArgAction::SetTrue).help("Activate all package features"))
+                    .arg(Arg::new("no-default-features").long("no-default-features").action(ArgAction::SetTrue).help("Do not activate the default feature"))
+                    .arg(Arg::new("locked").long("locked").action(ArgAction::SetTrue).help("Require the existing Cell.lock dependency graph"))
+                    .arg(Arg::new("frozen").long("frozen").action(ArgAction::SetTrue).help("Require cached locked sources without network or lockfile writes"))
+                    .arg(Arg::new("offline").long("offline").action(ArgAction::SetTrue).help("Do not access the network while materializing locked sources"))
+                    .arg(Arg::new("environment").long("environment").value_name("NAME").help("Select an explicitly declared CKB dependency environment"))
 
                     .arg(
                         Arg::new("production")
@@ -12731,6 +14437,18 @@ impl CliParser {
                             .help("Also verify a compile receipt against the artifact and metadata"),
                     )
                     .arg(
+                        Arg::new("lowering-record")
+                            .long("lowering-record")
+                            .value_name("FILE")
+                            .help("Canonical lowering record; defaults to ARTIFACT.lowering.json for ELF"),
+                    )
+                    .arg(
+                        Arg::new("source-map")
+                            .long("source-map")
+                            .value_name("FILE")
+                            .help("Canonical source map; defaults to ARTIFACT.sourcemap.json for ELF"),
+                    )
+                    .arg(
                         Arg::new("verify-sources")
                             .long("verify-sources")
                             .action(ArgAction::SetTrue)
@@ -12820,6 +14538,259 @@ impl CliParser {
                     .arg(Arg::new("args").value_name("ARGS").num_args(0..).trailing_var_arg(true)),
             )
             .subcommand(
+                ClapCommand::new("artifact")
+                    .display_order(105)
+                    .about("Fetch, verify, pin, copy, and consume non-CellScript Registry artifacts")
+                    .subcommand_required(true)
+                    .arg_required_else_help(true)
+                    .subcommand(
+                        ClapCommand::new("ls-idl")
+                            .about("Validate, bind, or fetch an exact-byte LS-IDL lock-script interface")
+                            .subcommand_required(true)
+                            .arg_required_else_help(true)
+                            .subcommand(
+                                ClapCommand::new("validate")
+                                    .about("Validate an LS-IDL 0.1 document and optionally verify its executable suffix")
+                                    .arg(Arg::new("idl").long("idl").value_name("FILE").required(true))
+                                    .arg(Arg::new("executable").long("executable").value_name("CKB_ELF")),
+                            )
+                            .subcommand(
+                                ClapCommand::new("bind")
+                                    .about("Append SHA-256(raw idl.json bytes) to a CKB executable")
+                                    .arg(Arg::new("idl").long("idl").value_name("FILE").required(true))
+                                    .arg(Arg::new("executable").long("executable").value_name("CKB_ELF").required(true))
+                                    .arg(Arg::new("output").long("output").short('o').value_name("CKB_ELF").required(true))
+                                    .arg(Arg::new("force").long("force").action(ArgAction::SetTrue)),
+                            )
+                            .subcommand(
+                                ClapCommand::new("fetch")
+                                    .about("Fetch exact LS-IDL bytes by a chain-verified CKB script identity")
+                                    .arg(Arg::new("code-hash").long("code-hash").value_name("HASH").required(true))
+                                    .arg(
+                                        Arg::new("hash-type")
+                                            .long("hash-type")
+                                            .value_name("TYPE")
+                                            .value_parser(["data", "data1", "data2", "type"]),
+                                    )
+                                    .arg(Arg::new("data-hash").long("data-hash").value_name("HASH"))
+                                    .arg(
+                                        Arg::new("network")
+                                            .long("network")
+                                            .value_name("NETWORK")
+                                            .value_parser(["mainnet", "testnet"])
+                                            .default_value("mainnet"),
+                                    )
+                                    .arg(Arg::new("output").long("output").short('o').value_name("FILE").required(true))
+                                    .arg(Arg::new("api-url").long("api-url").value_name("URL"))
+                                    .arg(Arg::new("force").long("force").action(ArgAction::SetTrue)),
+                            )
+                            .subcommand(
+                                ClapCommand::new("bundle")
+                                    .about("Create a publish-ready LS-IDL Registry bundle and Artifact.toml")
+                                    .arg(Arg::new("idl").long("idl").value_name("FILE").required(true))
+                                    .arg(Arg::new("executable").long("executable").value_name("CKB_ELF").required(true))
+                                    .arg(Arg::new("source").long("source").value_name("FILE").required(true))
+                                    .arg(Arg::new("namespace").long("namespace").value_name("NAME").required(true))
+                                    .arg(Arg::new("name").long("name").value_name("NAME").required(true))
+                                    .arg(Arg::new("release").long("release").value_name("VERSION").required(true))
+                                    .arg(
+                                        Arg::new("language")
+                                            .long("language")
+                                            .value_name("LANGUAGE")
+                                            .value_parser(["cellscript", "rust", "c", "javascript", "other"])
+                                            .required(true),
+                                    )
+                                    .arg(
+                                        Arg::new("hash-type")
+                                            .long("hash-type")
+                                            .value_name("TYPE")
+                                            .value_parser(["data", "data1", "data2", "type"])
+                                            .default_value("data1"),
+                                    )
+                                    .arg(
+                                        Arg::new("dep-type")
+                                            .long("dep-type")
+                                            .value_name("TYPE")
+                                            .value_parser(["code", "dep_group"])
+                                            .default_value("code"),
+                                    )
+                                    .arg(Arg::new("toolchain").long("toolchain").value_name("IDENTITY").required(true))
+                                    .arg(
+                                        Arg::new("source-revision")
+                                            .long("source-revision")
+                                            .value_name("REVISION")
+                                            .required(true),
+                                    )
+                                    .arg(
+                                        Arg::new("output")
+                                            .long("output")
+                                            .short('o')
+                                            .value_name("BUNDLE_JSON")
+                                            .default_value("bundle.json"),
+                                    )
+                                    .arg(
+                                        Arg::new("artifact-manifest-output")
+                                            .long("artifact-manifest-output")
+                                            .value_name("ARTIFACT_TOML")
+                                            .default_value("Artifact.toml"),
+                                    )
+                                    .arg(Arg::new("force").long("force").action(ArgAction::SetTrue)),
+                            ),
+                    )
+                    .subcommand(
+                        ClapCommand::new("fetch")
+                            .about("Download an immutable artifact bundle and write an authenticated receipt")
+                            .arg(Arg::new("coordinate").value_name("NAMESPACE/NAME@RELEASE").required(true))
+                            .arg(Arg::new("output").long("output").short('o').value_name("FILE").required(true))
+                            .arg(Arg::new("receipt").long("receipt").value_name("FILE"))
+                            .arg(Arg::new("api-url").long("api-url").value_name("URL"))
+                            .arg(Arg::new("force").long("force").action(ArgAction::SetTrue)),
+                    )
+                    .subcommand(
+                        ClapCommand::new("verify")
+                            .about("Verify a downloaded bundle against its signed Registry receipt")
+                            .arg(Arg::new("bundle").long("bundle").value_name("FILE").required(true))
+                            .arg(Arg::new("receipt").long("receipt").value_name("FILE").required(true)),
+                    )
+                    .subcommand(
+                        ClapCommand::new("pin")
+                            .about("Write a deterministic TCB/deployment artifact lock")
+                            .arg(Arg::new("coordinate").value_name("NAMESPACE/NAME@RELEASE").required(true))
+                            .arg(Arg::new("output").long("output").short('o').value_name("FILE").default_value("Artifacts.lock"))
+                            .arg(Arg::new("api-url").long("api-url").value_name("URL"))
+                            .arg(
+                                Arg::new("accept-hash-bound")
+                                    .long("accept-hash-bound")
+                                    .action(ArgAction::SetTrue)
+                                    .help("Explicitly pin immutable bytes that have integrity evidence but no semantic/security certification"),
+                            )
+                            .arg(Arg::new("force").long("force").action(ArgAction::SetTrue)),
+                    )
+                    .subcommand(
+                        ClapCommand::new("copy")
+                            .about("Materialize an authenticated template file map without overwriting files")
+                            .arg(Arg::new("coordinate").value_name("NAMESPACE/NAME@RELEASE").required(true))
+                            .arg(Arg::new("destination").long("destination").short('d').value_name("DIR").default_value("."))
+                            .arg(Arg::new("api-url").long("api-url").value_name("URL"))
+                            .arg(Arg::new("accept-hash-bound").long("accept-hash-bound").action(ArgAction::SetTrue)),
+                    )
+                    .subcommand(
+                        ClapCommand::new("cell-dep")
+                            .visible_alias("celldep")
+                            .about("Generate a transaction-builder CellDep descriptor from chain-verified deployment evidence")
+                            .arg(Arg::new("coordinate").value_name("NAMESPACE/NAME@RELEASE").required(true))
+                            .arg(Arg::new("output").long("output").short('o').value_name("FILE").required(true))
+                            .arg(Arg::new("api-url").long("api-url").value_name("URL"))
+                            .arg(
+                                Arg::new("rpc-url")
+                                    .long("rpc-url")
+                                    .value_name("URL")
+                                    .help("Mainnet CKB RPC used to re-check Cell liveness (defaults to CELLSCRIPT_CKB_RPC_URL or mainnet.ckb.dev)"),
+                            )
+                            .arg(
+                                Arg::new("accept-hash-bound")
+                                    .long("accept-hash-bound")
+                                    .action(ArgAction::SetTrue)
+                                    .help("Explicitly consume chain-verified deployment bytes that have integrity evidence but no semantic/security certification"),
+                            )
+                            .arg(Arg::new("force").long("force").action(ArgAction::SetTrue)),
+                    )
+                    .subcommand(
+                        ClapCommand::new("record-deployment")
+                            .about("Sign, submit, and RPC-verify a CKB deployment record")
+                            .arg(Arg::new("coordinate").value_name("NAMESPACE/NAME@RELEASE").required(true))
+                            .arg(
+                                Arg::new("network")
+                                    .long("network")
+                                    .value_name("NETWORK")
+                                    .value_parser(["mainnet", "testnet"])
+                                    .default_value("mainnet")
+                                    .help("CKB network whose live Cell will be verified; testnet defaults to the isolated Pudge Registry API"),
+                            )
+                            .arg(Arg::new("code-hash").long("code-hash").value_name("HASH").required(true))
+                            .arg(
+                                Arg::new("hash-type")
+                                    .long("hash-type")
+                                    .value_name("TYPE")
+                                    .value_parser(["data", "data1", "data2", "type"])
+                                    .required(true),
+                            )
+                            .arg(
+                                Arg::new("dep-type")
+                                    .long("dep-type")
+                                    .value_name("TYPE")
+                                    .value_parser(["code", "dep_group"])
+                                    .required(true),
+                            )
+                            .arg(Arg::new("tx-hash").long("tx-hash").value_name("HASH").required(true))
+                            .arg(Arg::new("index").long("index").value_name("U32").value_parser(clap::value_parser!(u32)).required(true))
+                            .arg(Arg::new("capability-key-id").long("capability-key-id").value_name("KEY_ID").required(true))
+                            .arg(Arg::new("capability-signature").long("capability-signature").value_name("SIGNATURE"))
+                            .arg(Arg::new("api-url").long("api-url").value_name("URL"))
+                            .arg(Arg::new("print-payload").long("print-payload").action(ArgAction::SetTrue)),
+                    )
+                    .subcommand(
+                        ClapCommand::new("set-availability")
+                            .about("Set a release active, deprecated, or yanked with a publisher capability")
+                            .arg(Arg::new("coordinate").value_name("NAMESPACE/NAME@RELEASE").required(true))
+                            .arg(
+                                Arg::new("status")
+                                    .long("status")
+                                    .value_name("STATUS")
+                                    .value_parser(["active", "deprecated", "yanked"])
+                                    .required(true),
+                            )
+                            .arg(Arg::new("reason").long("reason").value_name("TEXT"))
+                            .arg(Arg::new("capability-key-id").long("capability-key-id").value_name("KEY_ID").required(true))
+                            .arg(Arg::new("capability-signature").long("capability-signature").value_name("SIGNATURE"))
+                            .arg(Arg::new("api-url").long("api-url").value_name("URL"))
+                            .arg(Arg::new("print-payload").long("print-payload").action(ArgAction::SetTrue)),
+                    )
+                    .subcommand(
+                        ClapCommand::new("reproduction-report")
+                            .about("Hash a clean reproduction and sign a builder-authenticated report")
+                            .arg(Arg::new("coordinate").value_name("NAMESPACE/NAME@RELEASE").required(true))
+                            .arg(Arg::new("artifact").long("artifact").value_name("FILE").required(true))
+                            .arg(Arg::new("build-log").long("build-log").value_name("FILE").required(true))
+                            .arg(Arg::new("builder-id").long("builder-id").value_name("ID").required(true))
+                            .arg(Arg::new("trust-domain").long("trust-domain").value_name("DOMAIN").required(true))
+                            .arg(Arg::new("builder-key-id").long("builder-key-id").value_name("KEY_ID").required(true))
+                            .arg(
+                                Arg::new("builder-public-key")
+                                    .long("builder-public-key")
+                                    .value_name("P256_SPKI")
+                                    .required(true),
+                            )
+                            .arg(Arg::new("output").long("output").short('o').value_name("FILE").required(true))
+                            .arg(Arg::new("api-url").long("api-url").value_name("URL"))
+                            .arg(Arg::new("force").long("force").action(ArgAction::SetTrue)),
+                    )
+                    .subcommand(
+                        ClapCommand::new("reproduction-evidence")
+                            .about("Validate signed independent reproduction reports and generate an admin promotion request")
+                            .arg(Arg::new("coordinate").value_name("NAMESPACE/NAME@RELEASE").required(true))
+                            .arg(
+                                Arg::new("report")
+                                    .long("report")
+                                    .value_name("FILE")
+                                    .action(ArgAction::Append)
+                                    .required(true)
+                                    .help("Signed independent cellscript-reproduction-report-v2 JSON; pass once per trusted builder"),
+                            )
+                            .arg(Arg::new("output").long("output").short('o').value_name("FILE").required(true))
+                            .arg(Arg::new("api-url").long("api-url").value_name("URL"))
+                            .arg(Arg::new("force").long("force").action(ArgAction::SetTrue)),
+                    )
+                    .subcommand(
+                        ClapCommand::new("commitment")
+                            .about("Generate the canonical mainnet Registry commitment payload and Cell data")
+                            .arg(Arg::new("coordinate").value_name("NAMESPACE/NAME@RELEASE").required(true))
+                            .arg(Arg::new("output").long("output").short('o').value_name("FILE").required(true))
+                            .arg(Arg::new("api-url").long("api-url").value_name("URL"))
+                            .arg(Arg::new("force").long("force").action(ArgAction::SetTrue)),
+                    ),
+            )
+            .subcommand(
                 ClapCommand::new("publish")
                     .display_order(110)
                     .about("Publish a package to the public registry, or write an offline fixture with --offline")
@@ -12851,7 +14822,21 @@ impl CliParser {
                         Arg::new("capability-key-id")
                             .long("capability-key-id")
                             .value_name("KEY_ID")
-                            .help("Registry capability key id authorised by JoyID"),
+                            .help("Registry capability key id authorised by a root wallet"),
+                    )
+                    .arg(
+                        Arg::new("authorise")
+                            .long("authorise")
+                            .action(ArgAction::SetTrue)
+                            .conflicts_with_all(["capability-key-id", "capability-signature", "payload", "offline", "dry-run", "print-payload"])
+                            .help("Create a short-lived browser wallet session, wait for approval, then continue publishing"),
+                    )
+                    .arg(
+                        Arg::new("no-open")
+                            .long("no-open")
+                            .action(ArgAction::SetTrue)
+                            .requires("authorise")
+                            .help("Print the browser authorisation URL without opening it automatically"),
                     )
                     .arg(
                         Arg::new("capability-signature")
@@ -12876,6 +14861,21 @@ impl CliParser {
                             .long("source-snapshot")
                             .value_name("FILE")
                             .help("Immutable source snapshot bytes to upload; defaults to a generated CellScript source snapshot"),
+                    )
+                    .arg(
+                        Arg::new("artifact-manifest")
+                            .long("artifact-manifest")
+                            .value_name("FILE")
+                            .conflicts_with("offline")
+                            .help("Publish a non-package artifact described by Artifact.toml and its immutable bundle"),
+                    )
+                    .arg(
+                        Arg::new("artifact-kind")
+                            .long("artifact-kind")
+                            .value_name("KIND")
+                            .value_parser(["source_library", "profile_library"])
+                            .conflicts_with("artifact-manifest")
+                            .help("CellScript dependency kind; defaults to source_library"),
                     )
                     .arg(
                         Arg::new("print-payload")
@@ -12907,7 +14907,8 @@ impl CliParser {
                             .help("Allow explicit incident-review install of quarantined registry entries"),
                     ),
             )
-            .subcommand(ClapCommand::new("update").about("Experimental: update dependencies"))
+            .subcommand(ClapCommand::new("lock").about("Resolve and write the complete Cell.lock dependency graph"))
+            .subcommand(ClapCommand::new("update").about("Explicitly repin dependencies and rewrite Cell.lock"))
             .subcommand(
                 ClapCommand::new("info")
                     .about("Show package information")
@@ -12921,18 +14922,18 @@ impl CliParser {
             )
             .subcommand(
                 ClapCommand::new("auth")
-                    .about("Manage JoyID-rooted registry capability authorisation")
+                    .about("Manage wallet-rooted registry capability authorisation")
                     .subcommand_required(true)
                     .arg_required_else_help(true)
                     .subcommand(
                         ClapCommand::new("login")
                             .hide(true)
-                            .about("Create a JoyID capability authorisation payload")
+                            .about("Create a wallet capability authorisation payload")
                             .arg(
                                 Arg::new("registry-origin")
                                     .long("registry-origin")
                                     .value_name("URL")
-                                    .help("Registry origin bound into the JoyID capability challenge"),
+                                    .help("Registry origin bound into the wallet capability challenge"),
                             )
                             .arg(
                                 Arg::new("principal-type")
@@ -12944,7 +14945,7 @@ impl CliParser {
                                 Arg::new("principal-id")
                                     .long("principal-id")
                                     .value_name("ID")
-                                    .help("Normalized JoyID/CKB principal binding derived from the CCC JoyID signer"),
+                                    .help("Normalized principal binding derived from a supported CCC CKB signer"),
                             )
                             .arg(
                                 Arg::new("capability-pubkey")
@@ -12957,7 +14958,7 @@ impl CliParser {
                                     .long("scope")
                                     .value_name("SCOPE")
                                     .action(ArgAction::Append)
-                                    .help("Capability scope, e.g. publish:namespace/package"),
+                                    .help("Repeatable least-privilege scope: publish, deployment, or availability for namespace/package (or namespace/*)"),
                             )
                             .arg(
                                 Arg::new("expires")
@@ -12986,12 +14987,12 @@ impl CliParser {
                             .arg_required_else_help(true)
                             .subcommand(
                                 ClapCommand::new("create")
-                                    .about("Create a JoyID capability authorisation payload for CI or local publishing")
+                                    .about("Create a wallet capability authorisation payload for CI or local publishing")
                                     .arg(
                                         Arg::new("registry-origin")
                                             .long("registry-origin")
                                             .value_name("URL")
-                                            .help("Registry origin bound into the JoyID capability challenge"),
+                                            .help("Registry origin bound into the wallet capability challenge"),
                                     )
                                     .arg(
                                         Arg::new("principal-type")
@@ -13003,7 +15004,7 @@ impl CliParser {
                                         Arg::new("principal-id")
                                             .long("principal-id")
                                             .value_name("ID")
-                                            .help("Normalized JoyID/CKB principal binding derived from the CCC JoyID signer"),
+                                            .help("Normalized principal binding derived from a supported CCC CKB signer"),
                                     )
                                     .arg(
                                         Arg::new("capability-pubkey")
@@ -13016,7 +15017,7 @@ impl CliParser {
                                             .long("scope")
                                             .value_name("SCOPE")
                                             .action(ArgAction::Append)
-                                            .help("Capability scope, e.g. publish:namespace/package"),
+                                            .help("Repeatable least-privilege scope: publish, deployment, or availability for namespace/package (or namespace/*)"),
                                     )
                                     .arg(
                                         Arg::new("expires")
@@ -13040,7 +15041,7 @@ impl CliParser {
                             )
                             .subcommand(
                                 ClapCommand::new("submit")
-                                    .about("Submit a JoyID-signed capability authorisation payload to the registry")
+                                    .about("Submit a wallet-signed capability authorisation payload to the registry")
                                     .arg(
                                         Arg::new("api-url")
                                             .long("api-url")
@@ -13055,11 +15056,12 @@ impl CliParser {
                                             .help("Capability authorisation payload JSON created by auth capability create"),
                                     )
                                     .arg(
-                                        Arg::new("joyid-signature")
-                                            .long("joyid-signature")
+                                        Arg::new("wallet-signature")
+                                            .long("wallet-signature")
+                                            .visible_alias("joyid-signature")
                                             .value_name("FILE")
                                             .required(true)
-                                            .help("JoyID signature JSON whose challenge is the canonical payload"),
+                                            .help("JoyID or CKB wallet signature JSON whose challenge is the canonical payload"),
                                     )
                                     .arg(
                                         Arg::new("json")
@@ -13070,7 +15072,7 @@ impl CliParser {
                             )
                             .subcommand(
                                 ClapCommand::new("revoke")
-                                    .about("Create or submit a JoyID-signed capability revocation payload")
+                                    .about("Create or submit a wallet-signed capability revocation payload")
                                     .arg(
                                         Arg::new("api-url")
                                             .long("api-url")
@@ -13081,7 +15083,7 @@ impl CliParser {
                                         Arg::new("registry-origin")
                                             .long("registry-origin")
                                             .value_name("URL")
-                                            .help("Registry origin bound into the JoyID revocation challenge"),
+                                            .help("Registry origin bound into the wallet revocation challenge"),
                                     )
                                     .arg(
                                         Arg::new("principal-type")
@@ -13093,7 +15095,7 @@ impl CliParser {
                                         Arg::new("principal-id")
                                             .long("principal-id")
                                             .value_name("ID")
-                                            .help("Normalized JoyID/CKB principal binding derived from the CCC JoyID signer"),
+                                            .help("Normalized principal binding derived from a supported CCC CKB signer"),
                                     )
                                     .arg(
                                         Arg::new("capability-key-id")
@@ -13108,10 +15110,11 @@ impl CliParser {
                                             .help("Previously generated capability revocation payload JSON"),
                                     )
                                     .arg(
-                                        Arg::new("joyid-signature")
-                                            .long("joyid-signature")
+                                        Arg::new("wallet-signature")
+                                            .long("wallet-signature")
+                                            .visible_alias("joyid-signature")
                                             .value_name("FILE")
-                                            .help("JoyID signature JSON whose challenge is the canonical revoke payload"),
+                                            .help("JoyID or CKB wallet signature JSON whose challenge is the canonical revoke payload"),
                                     )
                                     .arg(
                                         Arg::new("reason")
@@ -13124,6 +15127,88 @@ impl CliParser {
                                             .long("json")
                                             .action(ArgAction::SetTrue)
                                             .help("Emit machine-readable capability revocation output"),
+                                    ),
+                            ),
+                    )
+                    .subcommand(
+                        ClapCommand::new("reproducer")
+                            .about("Manage independent reproducibility builder identities")
+                            .subcommand_required(true)
+                            .arg_required_else_help(true)
+                            .subcommand(
+                                ClapCommand::new("create")
+                                    .about("Create a P-256 reproducer key and public policy enrollment record")
+                                    .arg(
+                                        Arg::new("builder-id")
+                                            .long("builder-id")
+                                            .value_name("ID")
+                                            .required(true)
+                                            .help("Stable builder identifier assigned by the independent operator"),
+                                    )
+                                    .arg(
+                                        Arg::new("trust-domain")
+                                            .long("trust-domain")
+                                            .value_name("DOMAIN")
+                                            .required(true)
+                                            .help("Administrative and private-key custody domain for this builder"),
+                                    )
+                                    .arg(
+                                        Arg::new("private-key-output")
+                                            .long("private-key-output")
+                                            .value_name("FILE")
+                                            .help(
+                                                "On Unix, write PKCS#8 base64 to a new mode-0600 file for CI secret enrollment instead of the OS keychain",
+                                            ),
+                                    )
+                                    .arg(
+                                        Arg::new("json")
+                                            .long("json")
+                                            .action(ArgAction::SetTrue)
+                                            .help("Emit the public builder enrollment record as JSON without private-key material"),
+                                    ),
+                            ),
+                    )
+                    .subcommand(
+                        ClapCommand::new("namespace")
+                            .about("Manage Registry namespace ownership")
+                            .subcommand_required(true)
+                            .arg_required_else_help(true)
+                            .subcommand(
+                                ClapCommand::new("claim")
+                                    .about("Claim a namespace with a wallet-signed capability authorisation payload")
+                                    .arg(
+                                        Arg::new("api-url")
+                                            .long("api-url")
+                                            .value_name("URL")
+                                            .help("Registry write API base URL; defaults to CELLSCRIPT_REGISTRY_API_URL"),
+                                    )
+                                    .arg(
+                                        Arg::new("namespace")
+                                            .long("namespace")
+                                            .value_name("NAMESPACE")
+                                            .required(true)
+                                            .help("Namespace to claim; the signed payload must contain a matching publish scope"),
+                                    )
+                                    .arg(
+                                        Arg::new("payload")
+                                            .long("payload")
+                                            .value_name("FILE")
+                                            .required(true)
+                                            .help("Capability authorisation payload JSON created by auth capability create"),
+                                    )
+                                    .arg(
+                                        Arg::new("wallet-signature")
+                                            .long("wallet-signature")
+                                            .visible_alias("joyid-signature")
+                                            .value_name("FILE")
+                                            .required(true)
+                                            .help("JoyID or CKB wallet signature JSON whose challenge is the canonical capability payload"),
+                                    )
+                                    .arg(
+                                        Arg::new("json")
+                                            .long("json")
+                                            .action(ArgAction::SetTrue)
+                                            .help("Emit machine-readable namespace claim output"),
                                     ),
                             ),
                     ),
@@ -13167,11 +15252,11 @@ impl CliParser {
                     ,
             )
             .subcommand(
-                ClapCommand::new("package").about("Package integrity commands").subcommand_required(true).subcommand(
-                    ClapCommand::new("verify")
-                        .about("Verify package integrity against Cell.lock and source tree")
-                        ,
-                ),
+                ClapCommand::new("package")
+                    .about("Package integrity commands")
+                    .subcommand_required(true)
+                    .subcommand(ClapCommand::new("lock").about("Resolve and write the complete Cell.lock dependency graph"))
+                    .subcommand(ClapCommand::new("verify").about("Verify package integrity against Cell.lock and source tree")),
             )
             .subcommand(
                 ClapCommand::new("registry")
@@ -13260,6 +15345,13 @@ impl CliParser {
                 entry_action: m.get_one::<String>("entry-action").cloned(),
                 entry_lock: m.get_one::<String>("entry-lock").cloned(),
                 jobs: m.get_one::<String>("jobs").and_then(|s| s.parse().ok()),
+                features: m.get_many::<String>("features").map(|values| values.cloned().collect()).unwrap_or_default(),
+                all_features: m.get_flag("all-features"),
+                no_default_features: m.get_flag("no-default-features"),
+                locked: m.get_flag("locked"),
+                frozen: m.get_flag("frozen"),
+                offline: m.get_flag("offline"),
+                environment: m.get_one::<String>("environment").cloned(),
                 json: json_output(m),
                 production: m.get_flag("production"),
                 deny_fail_closed: m.get_flag("deny-fail-closed"),
@@ -13275,10 +15367,18 @@ impl CliParser {
             }),
             Some(("test", m)) => Command::Test(TestArgs {
                 filter: m.get_one::<String>("filter").cloned(),
+                backend: m.get_one::<String>("backend").cloned(),
                 no_run: m.get_flag("no-run"),
                 nocapture: m.get_flag("nocapture"),
                 fail_fast: m.get_flag("fail-fast"),
                 doc: m.get_flag("doc"),
+                features: m.get_many::<String>("features").map(|values| values.cloned().collect()).unwrap_or_default(),
+                all_features: m.get_flag("all-features"),
+                no_default_features: m.get_flag("no-default-features"),
+                locked: m.get_flag("locked"),
+                frozen: m.get_flag("frozen"),
+                offline: m.get_flag("offline"),
+                environment: m.get_one::<String>("environment").cloned(),
                 json: json_output(m),
                 ..Default::default()
             }),
@@ -13313,6 +15413,7 @@ impl CliParser {
             }),
             Some(("add", m)) => Command::Add(AddArgs {
                 crates: m.get_many::<String>("crates").map(|v| v.cloned().collect()).unwrap_or_default(),
+                package: m.get_one::<String>("package-name").cloned(),
                 dev: m.get_flag("dev"),
                 build: m.get_flag("build"),
                 git: m.get_one::<String>("git").cloned(),
@@ -13339,7 +15440,13 @@ impl CliParser {
                     m.get_one::<String>("primitive-compat").cloned(),
                     m.get_one::<String>("primitive-strict").cloned(),
                 ),
-                features: Vec::new(),
+                features: m.get_many::<String>("features").map(|values| values.cloned().collect()).unwrap_or_default(),
+                all_features: m.get_flag("all-features"),
+                no_default_features: m.get_flag("no-default-features"),
+                locked: m.get_flag("locked"),
+                frozen: m.get_flag("frozen"),
+                offline: m.get_flag("offline"),
+                environment: m.get_one::<String>("environment").cloned(),
                 package: m.get_one::<String>("package").cloned(),
                 workspace: m.get_flag("workspace"),
             }),
@@ -13651,6 +15758,8 @@ impl CliParser {
             Some(("verify-artifact", m)) => Command::VerifyArtifact(VerifyArtifactArgs {
                 artifact: m.get_one::<String>("artifact").map(PathBuf::from).expect("required artifact"),
                 metadata: m.get_one::<String>("metadata").map(PathBuf::from),
+                lowering_record: m.get_one::<String>("lowering-record").map(PathBuf::from),
+                source_map: m.get_one::<String>("source-map").map(PathBuf::from),
                 receipt: m.get_one::<String>("receipt").map(PathBuf::from),
                 verify_sources: m.get_flag("verify-sources"),
                 json: json_output(m),
@@ -13673,16 +15782,166 @@ impl CliParser {
                 simulate: m.get_flag("simulate"),
                 json: json_output(m),
             }),
+            Some(("artifact", m)) => Command::Artifact(ArtifactArgs {
+                operation: match m.subcommand() {
+                    Some(("ls-idl", action)) => match action.subcommand() {
+                        Some(("validate", command)) => ArtifactOperation::LsIdlValidate {
+                            idl: command.get_one::<String>("idl").map(PathBuf::from).expect("required IDL"),
+                            executable: command.get_one::<String>("executable").map(PathBuf::from),
+                            json: json_output(command),
+                        },
+                        Some(("bind", command)) => ArtifactOperation::LsIdlBind {
+                            idl: command.get_one::<String>("idl").map(PathBuf::from).expect("required IDL"),
+                            executable: command.get_one::<String>("executable").map(PathBuf::from).expect("required executable"),
+                            output: command.get_one::<String>("output").map(PathBuf::from).expect("required output"),
+                            force: command.get_flag("force"),
+                            json: json_output(command),
+                        },
+                        Some(("fetch", command)) => ArtifactOperation::LsIdlFetch {
+                            code_hash: command.get_one::<String>("code-hash").cloned().expect("required code hash"),
+                            hash_type: command.get_one::<String>("hash-type").cloned(),
+                            data_hash: command.get_one::<String>("data-hash").cloned(),
+                            network: command.get_one::<String>("network").cloned().expect("defaulted network"),
+                            output: command.get_one::<String>("output").map(PathBuf::from).expect("required output"),
+                            api_url: command.get_one::<String>("api-url").cloned(),
+                            force: command.get_flag("force"),
+                            json: json_output(command),
+                        },
+                        Some(("bundle", command)) => ArtifactOperation::LsIdlBundle {
+                            idl: command.get_one::<String>("idl").map(PathBuf::from).expect("required IDL"),
+                            executable: command.get_one::<String>("executable").map(PathBuf::from).expect("required executable"),
+                            source: command.get_one::<String>("source").map(PathBuf::from).expect("required source"),
+                            namespace: command.get_one::<String>("namespace").cloned().expect("required namespace"),
+                            name: command.get_one::<String>("name").cloned().expect("required name"),
+                            release: command.get_one::<String>("release").cloned().expect("required release"),
+                            language: command.get_one::<String>("language").cloned().expect("required language"),
+                            hash_type: command.get_one::<String>("hash-type").cloned().expect("defaulted hash type"),
+                            dep_type: command.get_one::<String>("dep-type").cloned().expect("defaulted dep type"),
+                            toolchain: command.get_one::<String>("toolchain").cloned().expect("required toolchain"),
+                            source_revision: command.get_one::<String>("source-revision").cloned().expect("required source revision"),
+                            output: command.get_one::<String>("output").map(PathBuf::from).expect("defaulted output"),
+                            artifact_manifest_output: command
+                                .get_one::<String>("artifact-manifest-output")
+                                .map(PathBuf::from)
+                                .expect("defaulted artifact manifest output"),
+                            force: command.get_flag("force"),
+                            json: json_output(command),
+                        },
+                        _ => unreachable!(),
+                    },
+                    Some(("fetch", action)) => ArtifactOperation::Fetch {
+                        coordinate: action.get_one::<String>("coordinate").cloned().expect("required coordinate"),
+                        output: action.get_one::<String>("output").map(PathBuf::from).expect("required output"),
+                        receipt: action.get_one::<String>("receipt").map(PathBuf::from),
+                        api_url: action.get_one::<String>("api-url").cloned(),
+                        force: action.get_flag("force"),
+                        json: json_output(action),
+                    },
+                    Some(("verify", action)) => ArtifactOperation::Verify {
+                        bundle: action.get_one::<String>("bundle").map(PathBuf::from).expect("required bundle"),
+                        receipt: action.get_one::<String>("receipt").map(PathBuf::from).expect("required receipt"),
+                        json: json_output(action),
+                    },
+                    Some(("pin", action)) => ArtifactOperation::Pin {
+                        coordinate: action.get_one::<String>("coordinate").cloned().expect("required coordinate"),
+                        output: action.get_one::<String>("output").map(PathBuf::from).expect("defaulted output"),
+                        api_url: action.get_one::<String>("api-url").cloned(),
+                        accept_hash_bound: action.get_flag("accept-hash-bound"),
+                        force: action.get_flag("force"),
+                        json: json_output(action),
+                    },
+                    Some(("copy", action)) => ArtifactOperation::Copy {
+                        coordinate: action.get_one::<String>("coordinate").cloned().expect("required coordinate"),
+                        destination: action.get_one::<String>("destination").map(PathBuf::from).expect("defaulted destination"),
+                        api_url: action.get_one::<String>("api-url").cloned(),
+                        accept_hash_bound: action.get_flag("accept-hash-bound"),
+                        json: json_output(action),
+                    },
+                    Some(("cell-dep", action)) => ArtifactOperation::CellDep {
+                        coordinate: action.get_one::<String>("coordinate").cloned().expect("required coordinate"),
+                        output: action.get_one::<String>("output").map(PathBuf::from).expect("required output"),
+                        api_url: action.get_one::<String>("api-url").cloned(),
+                        rpc_url: action.get_one::<String>("rpc-url").cloned(),
+                        accept_hash_bound: action.get_flag("accept-hash-bound"),
+                        force: action.get_flag("force"),
+                        json: json_output(action),
+                    },
+                    Some(("record-deployment", action)) => ArtifactOperation::RecordDeployment {
+                        coordinate: action.get_one::<String>("coordinate").cloned().expect("required coordinate"),
+                        network: action.get_one::<String>("network").cloned().expect("defaulted network"),
+                        code_hash: action.get_one::<String>("code-hash").cloned().expect("required code hash"),
+                        hash_type: action.get_one::<String>("hash-type").cloned().expect("required hash type"),
+                        dep_type: action.get_one::<String>("dep-type").cloned().expect("required dep type"),
+                        tx_hash: action.get_one::<String>("tx-hash").cloned().expect("required tx hash"),
+                        index: *action.get_one::<u32>("index").expect("required index"),
+                        capability_key_id: action.get_one::<String>("capability-key-id").cloned().expect("required capability key id"),
+                        capability_signature: action.get_one::<String>("capability-signature").cloned(),
+                        api_url: action.get_one::<String>("api-url").cloned(),
+                        print_payload: action.get_flag("print-payload"),
+                        json: json_output(action),
+                    },
+                    Some(("set-availability", action)) => ArtifactOperation::SetAvailability {
+                        coordinate: action.get_one::<String>("coordinate").cloned().expect("required coordinate"),
+                        status: action.get_one::<String>("status").cloned().expect("required status"),
+                        reason: action.get_one::<String>("reason").cloned(),
+                        capability_key_id: action.get_one::<String>("capability-key-id").cloned().expect("required capability key id"),
+                        capability_signature: action.get_one::<String>("capability-signature").cloned(),
+                        api_url: action.get_one::<String>("api-url").cloned(),
+                        print_payload: action.get_flag("print-payload"),
+                        json: json_output(action),
+                    },
+                    Some(("reproduction-report", action)) => ArtifactOperation::ReproductionReport {
+                        coordinate: action.get_one::<String>("coordinate").cloned().expect("required coordinate"),
+                        artifact: action.get_one::<String>("artifact").map(PathBuf::from).expect("required artifact"),
+                        build_log: action.get_one::<String>("build-log").map(PathBuf::from).expect("required build log"),
+                        builder_id: action.get_one::<String>("builder-id").cloned().expect("required builder id"),
+                        trust_domain: action.get_one::<String>("trust-domain").cloned().expect("required trust domain"),
+                        builder_key_id: action.get_one::<String>("builder-key-id").cloned().expect("required builder key id"),
+                        builder_public_key: action
+                            .get_one::<String>("builder-public-key")
+                            .cloned()
+                            .expect("required builder public key"),
+                        output: action.get_one::<String>("output").map(PathBuf::from).expect("required output"),
+                        api_url: action.get_one::<String>("api-url").cloned(),
+                        force: action.get_flag("force"),
+                        json: json_output(action),
+                    },
+                    Some(("reproduction-evidence", action)) => ArtifactOperation::ReproductionEvidence {
+                        coordinate: action.get_one::<String>("coordinate").cloned().expect("required coordinate"),
+                        reports: action
+                            .get_many::<String>("report")
+                            .expect("required reproduction reports")
+                            .map(PathBuf::from)
+                            .collect(),
+                        output: action.get_one::<String>("output").map(PathBuf::from).expect("required output"),
+                        api_url: action.get_one::<String>("api-url").cloned(),
+                        force: action.get_flag("force"),
+                        json: json_output(action),
+                    },
+                    Some(("commitment", action)) => ArtifactOperation::Commitment {
+                        coordinate: action.get_one::<String>("coordinate").cloned().expect("required coordinate"),
+                        output: action.get_one::<String>("output").map(PathBuf::from).expect("required output"),
+                        api_url: action.get_one::<String>("api-url").cloned(),
+                        force: action.get_flag("force"),
+                        json: json_output(action),
+                    },
+                    _ => unreachable!(),
+                },
+            }),
             Some(("publish", m)) => Command::Publish(PublishArgs {
                 dry_run: m.get_flag("dry-run"),
                 offline: m.get_flag("offline"),
                 allow_dirty: m.get_flag("allow-dirty"),
                 api_url: m.get_one::<String>("api-url").cloned(),
                 capability_key_id: m.get_one::<String>("capability-key-id").cloned(),
+                authorise: m.get_flag("authorise"),
+                no_open: m.get_flag("no-open"),
                 capability_signature: m.get_one::<String>("capability-signature").cloned(),
                 idempotency_key: m.get_one::<String>("idempotency-key").cloned(),
                 payload: m.get_one::<String>("payload").map(PathBuf::from),
                 source_snapshot: m.get_one::<String>("source-snapshot").map(PathBuf::from),
+                artifact_manifest: m.get_one::<String>("artifact-manifest").map(PathBuf::from),
+                artifact_kind: m.get_one::<String>("artifact-kind").cloned(),
                 print_payload: m.get_flag("print-payload"),
                 json: json_output(m),
             }),
@@ -13695,6 +15954,7 @@ impl CliParser {
                 allow_unverified: m.get_flag("allow-unverified"),
                 allow_quarantined: m.get_flag("allow-quarantined"),
             }),
+            Some(("lock", m)) => Command::Lock(PackageLockArgs { json: json_output(m) }),
             Some(("update", _)) => Command::Update,
             Some(("info", m)) => Command::Info(InfoArgs { json: json_output(m) }),
             Some(("login", m)) => {
@@ -13709,6 +15969,14 @@ impl CliParser {
                     Some(("revoke", revoke)) => Command::AuthCapabilityRevoke(auth_capability_revoke_args_from_matches(revoke)),
                     _ => unreachable!(),
                 },
+                Some(("reproducer", reproducer)) => match reproducer.subcommand() {
+                    Some(("create", create)) => Command::AuthReproducerCreate(auth_reproducer_create_args_from_matches(create)),
+                    _ => unreachable!(),
+                },
+                Some(("namespace", namespace)) => match namespace.subcommand() {
+                    Some(("claim", claim)) => Command::AuthNamespaceClaim(auth_namespace_claim_args_from_matches(claim)),
+                    _ => unreachable!(),
+                },
                 _ => unreachable!(),
             },
             Some(("certify", m)) => Command::Certify(CertifyArgs {
@@ -13720,6 +15988,7 @@ impl CliParser {
                 require_production: m.get_flag("require-production"),
             }),
             Some(("package", m)) => match m.subcommand() {
+                Some(("lock", lock)) => Command::Lock(PackageLockArgs { json: json_output(lock) }),
                 Some(("verify", verify)) => Command::PackageVerify(PackageVerifyArgs { json: json_output(verify) }),
                 _ => unreachable!(),
             },
@@ -13791,6 +16060,141 @@ mod tests {
     #[test]
     fn test_command_execution() {
         let _cmd = Command::Clean(CleanArgs::default());
+    }
+
+    #[test]
+    fn publish_parses_continuous_browser_authorisation() {
+        let matches = CliParser::command().try_get_matches_from(["cellc", "publish", "--authorise", "--no-open"]).unwrap();
+        let Command::Publish(args) = CliParser::parse_matches(matches) else {
+            panic!("expected publish command");
+        };
+        assert!(args.authorise);
+        assert!(args.no_open);
+        assert!(args.capability_key_id.is_none());
+    }
+
+    #[test]
+    fn publish_authorisation_rejects_an_existing_key_override() {
+        let result = CliParser::command().try_get_matches_from([
+            "cellc",
+            "publish",
+            "--authorise",
+            "--capability-key-id",
+            "cap_0123456789abcdef0123456789abcdef",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn browser_authorisation_activates_only_the_server_confirmed_key() {
+        for status in ["pending", "cancelled", "expired"] {
+            let persisted = std::cell::Cell::new(false);
+            activate_registry_key_after_wallet_approval(status, None, "cap_local", || {
+                persisted.set(true);
+                Ok(())
+            })
+            .unwrap();
+            assert!(!persisted.get(), "{status} must not activate a publishing key");
+        }
+
+        for status in ["authorised", "review_pending"] {
+            let persisted = std::cell::Cell::new(false);
+            activate_registry_key_after_wallet_approval(status, Some("cap_local"), "cap_local", || {
+                persisted.set(true);
+                Ok(())
+            })
+            .unwrap();
+            assert!(persisted.get(), "{status} must preserve the approved publishing key");
+        }
+
+        let persisted = std::cell::Cell::new(false);
+        let mismatch = activate_registry_key_after_wallet_approval("authorised", Some("cap_remote"), "cap_local", || {
+            persisted.set(true);
+            Ok(())
+        });
+        assert!(mismatch.is_err());
+        assert!(!persisted.get(), "a mismatched server key must not be persisted");
+
+        for status in ["authorised", "review_pending"] {
+            let activated = std::cell::Cell::new(false);
+            let missing = activate_registry_key_after_wallet_approval(status, None, "cap_local", || {
+                activated.set(true);
+                Ok(())
+            });
+            assert!(missing.is_err(), "{status} must require a returned key id");
+            assert!(!activated.get(), "{status} must not activate a key without its id");
+        }
+    }
+
+    #[test]
+    fn browser_authorisation_removes_pending_keys_only_for_explicit_terminal_failure() {
+        for status in ["pending", "authorised", "review_pending", "unreachable", "deadline_elapsed"] {
+            assert!(!registry_authorisation_status_removes_pending_key(status), "{status} must preserve the pending key");
+        }
+        for status in ["cancelled", "expired"] {
+            assert!(registry_authorisation_status_removes_pending_key(status), "{status} must remove the pending key");
+        }
+    }
+
+    #[test]
+    fn registry_keychain_state_distinguishes_pending_and_active_keys() {
+        let pending = RegistryKeychainSecret {
+            schema: REGISTRY_KEYCHAIN_SECRET_SCHEMA.to_string(),
+            status: "pending".to_string(),
+            pkcs8_b64: "cGVuZGluZw==".to_string(),
+            session_id: Some("auth_0123456789abcdef0123456789abcdef".to_string()),
+            expires_at: Some("2026-08-05T12:00:00.000Z".to_string()),
+            pending_expires_at_unix_seconds: Some(1_786_000_000),
+        };
+        let encoded = serde_json::to_string(&pending).unwrap();
+        let decoded: RegistryKeychainSecret = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.schema, REGISTRY_KEYCHAIN_SECRET_SCHEMA);
+        assert_eq!(decoded.status, "pending");
+        assert_eq!(decoded.session_id.as_deref(), Some("auth_0123456789abcdef0123456789abcdef"));
+
+        let active = RegistryKeychainSecret {
+            schema: REGISTRY_KEYCHAIN_SECRET_SCHEMA.to_string(),
+            status: "active".to_string(),
+            pkcs8_b64: pending.pkcs8_b64,
+            session_id: None,
+            expires_at: None,
+            pending_expires_at_unix_seconds: None,
+        };
+        assert_eq!(serde_json::from_str::<RegistryKeychainSecret>(&serde_json::to_string(&active).unwrap()).unwrap().status, "active");
+    }
+
+    #[test]
+    fn record_deployment_parses_explicit_testnet_network() {
+        let code_hash = format!("0x{}", "11".repeat(32));
+        let tx_hash = format!("0x{}", "22".repeat(32));
+        let matches = CliParser::command()
+            .try_get_matches_from([
+                "cellc",
+                "artifact",
+                "record-deployment",
+                "acme/demo@1.0.0",
+                "--network",
+                "testnet",
+                "--code-hash",
+                &code_hash,
+                "--hash-type",
+                "data1",
+                "--dep-type",
+                "code",
+                "--tx-hash",
+                &tx_hash,
+                "--index",
+                "0",
+                "--capability-key-id",
+                "cap_test",
+            ])
+            .unwrap();
+        let Command::Artifact(ArtifactArgs { operation: ArtifactOperation::RecordDeployment { network, .. } }) =
+            CliParser::parse_matches(matches)
+        else {
+            panic!("expected artifact record-deployment command");
+        };
+        assert_eq!(network, "testnet");
     }
 
     #[test]

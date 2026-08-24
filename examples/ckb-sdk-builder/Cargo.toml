@@ -7,3 +7,6 @@ publish = false
 
 [dependencies]
 cellscript-ckb-adapter = { path = "../../crates/cellscript-ckb-adapter" }
+
+[dev-dependencies]
+ckb-types = "1.0.0"

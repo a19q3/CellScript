@@ -1,0 +1,13 @@
+version = 3
+schema = "cellscript-lock-v0.24-graph-v1"
+
+[package]
+edition = "2026"
+name = "multisig"
+version = "0.1.0"
+source_hash = "fac1d99dd5873c9f27a6dd4279533d5e41913a3ce1e02e2076ae3a6c68b30c43"
+
+[root]
+manifest_digest = "sha256:d109f09c75f68286d1e15c79ab1bf9ad64b261fc7fc43c2c2835578b4362c3e9"
+
+[dependencies]

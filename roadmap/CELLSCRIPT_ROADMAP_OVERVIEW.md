@@ -1,7 +1,7 @@
-# CellScript Roadmap: v0.12 -> v0.23
+# CellScript Roadmap: v0.12 -> v0.24
 > From Production Foundation to Protocol Builders
 
-**Updated**: 2026-07-27
+**Updated**: 2026-08-09
 **Status**: Living Document
 **Audience**: CKB Smart Contract Developers
 **Canonical folder**: `roadmap/`
@@ -68,12 +68,16 @@ Each release answers a specific question:
   cell-collection design, type validity blocks, explicit borrow regions,
   capability algebra diagnostics, concrete payload ADTs, and ProtocolGraph
   role UX while keeping the action core intact.
-- **v0.23** — *Can the compiler ship as running infrastructure and absorb
-  off-chain runtimes?* Deploy the public package registry on `cellscript.dev`,
-  port the Python test/fixture scaffolding to Rust, close the next slice of
-  RGB++ / Fiber integration, and add an Off-Chain Session Runtime profile
-  with initial concurrency support so the Myelin vendored fork re-converges
-  on upstream.
+- **v0.23** — *Can the compiler ship as running infrastructure with one honest
+  identity boundary?* Deploy the public package registry on `cellscript.dev`,
+  enforce Edition 2026 and canonical witness placement across consumers, close
+  the native test/fixture tooling migration, and retain only bounded ecosystem
+  evidence actually obtained on the line.
+- **v0.24** — *Can consumers admit compiler artifacts without trusting the
+  whole compiler, and can package tests produce executable evidence?* Add a
+  stable verified lowering record, bounded independent artifact checker,
+  source-to-artifact maps, simulator/CKB-VM package scenarios, the Myelin
+  adapter handoff, and conditional Fiber/RGB++ evidence promotion.
 
 ---
 
@@ -93,7 +97,8 @@ Each release answers a specific question:
 | v0.21 planned scope | Semantic closure, authenticated compiler evidence, CLI UX reorganisation, dedicated MCP server and CellScript programming skills, derived cyclic ProtocolGraph views, type-level TemplateLayout metadata, and deferred optional template Merkleisation. | [v0.21 roadmap](../docs/CELLSCRIPT_0_21_ROADMAP.md), [v0.21 CLI UX plan](CELLSCRIPT_0_21_CLI_UX_PLAN.md) |
 | v0.22 draft scope | Draft type-theory and set-theory guided language hardening proposal. This scope requires pre-talk soundness fixes and Nervos Talk Discussion before adoption: callable effects for ordinary functions, terminal flow metadata, typed transaction-view handles, finite source-view quantifiers, bounded cell-collection design, type validity blocks, explicit borrow regions, capability algebra explanations, concrete payload ADTs, and ProtocolGraph role UX. | [v0.22 type and set theory roadmap draft](CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md) |
 | v0.22 Fiber native-support proposal | Proposed no-profile integration for structurally compatible fungible CellScript Type Scripts. Compatibility must be derived from compiler evidence, requires no Fiber fork, and is not complete until the pinned CKB/Fiber lifecycle matrix passes. | [v0.22 no-profile Fiber native-support plan](CELLSCRIPT_0_22_FIBER_NATIVE_SUPPORT_PLAN.md) |
-| v0.23 planned scope | Public registry production deployment on `cellscript.dev`, Python test/fixture scaffolding ported to Rust, deeper RGB++ / Fiber integration, and an Off-Chain Session Runtime profile with initial concurrency support so the Myelin vendored fork can re-converge on upstream. | [v0.23 roadmap](CELLSCRIPT_0_23_ROADMAP.md) |
+| v0.23 implementation scope | Frozen around Edition 2026/profile/entry identities, the deployed Registry and publisher-session path, native tooling, the website workbench, and bounded Fiber evidence. External mainnet/adoption and complete Fiber/RGB++ evidence remain checkpoints. The proposed Off-Chain Session Runtime target is retired because current Myelin uses an attested external compiler adapter and owns its extended semantics. | [v0.23 roadmap](CELLSCRIPT_0_23_ROADMAP.md), [v0.23 release notes](../docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md) |
+| v0.24 implementation | Core implemented: independently checked lowering/artifact contracts, executable package scenarios, source maps, Registry checker admission, lock-authoritative `Cell.lock` v3 package graphs, and a fail-closed Registry profile catalog. The versioned Myelin handoff awaits its final external lock pin; Fiber/RGB++ promotion remains evidence-pending. | [v0.24 roadmap](CELLSCRIPT_0_24_ROADMAP.md), [v0.24 release notes](../docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md) |
 | Spore/RGB++ adapters | Proposed package/adapter slices for a deployable signature verifier, executable bounded CellDep scans, bounded hash/Merkle primitives, and pinned Spore/RGB++ cookbook integrations. None are current production-support claims. | [Spore/RGB++ interoperability plan](CELLSCRIPT_SPORE_RGBPP_INTEROP_PLAN.md) |
 | CKB language fit | CKB-first design is confirmed; remaining hardening areas are signer binding, continuity policy, capacity policy, and declarative time policy. | [CKB target profiles](../docs/wiki/Tutorial-05-CKB-Target-Profiles.md), [production gates](../docs/wiki/Tutorial-06-Metadata-Verification-and-Production-Gates.md) |
 | Surface syntax | Low-risk syntax pass is implemented; authority-sensitive syntax remains staged. | [Surface elegance RFC](../docs/CELLSCRIPT_SURFACE_ELEGANCE_RFC.md) |
@@ -118,7 +123,8 @@ Each release answers a specific question:
 | v0.20 | Generated Builder and Live Registry Proof | "Turn verified artifacts into valid transactions through registry-bound builders." | In progress: generated TypeScript builders, live registry verification, VS Code commands, and generated-builder tooling-gate checks are active. |
 | v0.21 | Semantic Closure and Authenticated Evidence | "Make declared protocol law executable and tamper-evident without changing the action core." | Implementation checkpoint: RC cut 2026-07-01 as 0.21.0-rc.1; aggregate lowering, flow-edge validation, compile receipts, nested CLI, MCP server + 6 skills, ProtocolGraph view, and TemplateLayout metadata are active; v0.21.0 tag pending. |
 | v0.22 | Theory-Guided Protocol Law | "Make protocol law readable, finite, effect-aware, and evidence-tiered." | Draft: requires pre-talk soundness fixes and Nervos Talk Discussion before adoption; proposed scope covers callable effects, terminal flow metadata, typed transaction-view handles, bounded quantifiers, bounded cell collections, validity blocks, borrow regions, capability algebra, payload ADTs, and ProtocolGraph role UX. |
-| v0.23 | Production Registry, Rust Tooling, Fiber/RGB++, Off-Chain Sessions | "Ship the compiler as running infrastructure and absorb off-chain runtimes." | Draft: deploy the public package registry on `cellscript.dev`, port the Python test/fixture scaffolding to Rust, close the next RGB++ / Fiber integration slice, and add an Off-Chain Session Runtime profile so the Myelin vendored fork re-converges on upstream. |
+| v0.23 | Production Registry, Edition/ABI Closure, And Native Tooling | "Ship the compiler as running infrastructure with one honest identity boundary." | Implementation scope frozen; stable release and production CKB claims still require their documented gates and external evidence. |
+| v0.24 | Independently Verified Artifacts And Executable Evidence | "Make generated claims independently checkable and package tests executable." | Core implemented on `nightly-0.24`; external Myelin lock adoption and complete Fiber/RGB++ evidence remain pending, and production claims still require the release gate. |
 
 The roadmap is intentionally cumulative. Later releases should not re-open an
 earlier feature boundary unless the prior boundary was proven unsafe or

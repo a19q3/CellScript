@@ -1,0 +1,5 @@
+[package]
+edition = "2026"
+name = "scenario_test_support"
+version = "0.1.0"
+entry = "src/lib.cell"

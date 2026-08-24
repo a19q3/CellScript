@@ -28,6 +28,31 @@ project contract.
   short reason; crate-wide or module-wide clippy allowances are only for
   documented legacy or transition boundaries.
 
+## On-Chain Registry Script Rules
+
+`contracts/registry-type-script` is an independent `no_std` CKB Script crate.
+Its release binary is part of the Registry trust boundary, not a host utility.
+
+- Build only with the pinned repository toolchain and
+  `build_reproducible_release.sh`; the script path-remaps sources, strips the
+  RISC-V ELF, and verifies both SHA-256 and CKB data hash against the tracked
+  release manifest.
+- Keep host checksum tooling portable: reproducible scripts may use GNU
+  `sha256sum` or Perl `shasum`, must select one explicitly, and must fail closed
+  when neither exists.
+- Keep Script args equal to the 32-byte custody Lock Script hash and the
+  accepted Cell data exactly `CSREGv1 || 32-byte commitment hash`. Every group
+  Cell must use that Lock and every transition must consume a Cell using it;
+  otherwise an unauthorised creator could impersonate an official commitment.
+  Format changes require a new protocol prefix and migration plan, not a
+  permissive parser.
+- Run the `ckb-testtool` suite for every Script change. Positive creation,
+  replacement, and destruction plus unauthorised creation, incorrect custody
+  Locks, malformed input/output, and non-canonical args are mandatory evidence.
+- Production deployment requires a live mainnet code Cell, the standard
+  custody Lock CellDep, sufficient confirmations, and a committed deployment
+  manifest. Local CKB-VM tests are not mainnet deployment evidence.
+
 ## Backend And Codegen Rules
 
 `src/codegen/mod.rs` is the orchestration layer of a multi-file backend.
@@ -96,6 +121,42 @@ implicit backend contracts more implicit.
   codegen. Business rules must be explicit in DSL source, structured IR, or
   metadata before the backend lowers them.
 
+## Verified Artifact Boundary Rules
+
+- Treat the ELF, compile metadata, canonical lowering record, and canonical
+  source map as one build bundle. A change to any identity, schema, mapping, or
+  structural claim must update all producers, consumers, tests, docs, and gate
+  checks in the same change.
+- Keep `cellscript-artifact-checker` independent of the parser, resolver, type
+  checker, IR, optimizer, assembler, and code generator. Production
+  dependencies may provide only bounded parsing, versioned schema, canonical
+  hashing, stable diagnostics, and minimal ELF utilities.
+- Checker traversal must be preceded by byte/count budgets. Unknown schemas or
+  fields, malformed ranges, path escape, mismatched identities, and budget
+  exhaustion fail closed with one stable `V24xx` rejection code and bounded
+  diagnostics.
+- Do not label structural validation semantic equivalence. Keep binding,
+  structural, lowering-record, CKB-VM, and chain evidence as separate fields.
+- Any new checker invariant requires a deterministic negative mutation and a
+  valid compiler-produced fixture. ELF/codegen changes also require the
+  `backend` gate because mapped ranges, block digests, control flow, stack
+  discipline, or instruction policy may change.
+
+## Executable Package Scenario Rules
+
+- `cellc test` success must name and run `simulator`, `ckb-vm`, or `all` unless
+  `--no-run` is explicitly selected. Compile-only discovery is never described
+  as executed test evidence.
+- Scenario and report schemas reject unknown fields. Source/oracle paths are
+  relative and confined; Cell names, replacement edges, scripts, witnesses,
+  runtime errors, and declared limits are validated before execution.
+- Simulator results remain `development-non-consensus`. CKB-VM results remain
+  runtime evidence. Neither may be promoted to RPC admission, deployment,
+  commitment, confirmation, or complete source equivalence.
+- The v1 local live-Cell model proves bookkeeping only; it does not inject
+  scenario Cells into CKB syscalls. Transaction-shaped cases continue to cite
+  the stateful CKB oracle until a syscall harness is explicitly promoted.
+
 ## CKB Semantics
 
 - Use CKB terms precisely: input Cell, output Cell, lock script, type script,
@@ -152,9 +213,10 @@ sub-module (e.g. `assembler.rs`, `runtime.rs`, `abi.rs`):
 4. **Delete from back to front.** When removing code by line number with `sed`,
    delete later ranges first to keep earlier line numbers stable.
 
-5. **Brace-count after every deletion.** Use `python3 -c` to verify brace
-   balance before attempting compilation. Off-by-one `sed` ranges can leave
-   orphaned lines or eat closing braces.
+5. **Check delimiters after every deletion.** Run `cargo fmt --check`, then the
+   focused `cargo check --locked -p cellscript --all-targets` before the next
+   extraction. Off-by-one deletion ranges can leave orphaned lines or consume
+   closing braces.
 
 ### Module Boundary: Schema vs Cell Operations vs Orchestration
 

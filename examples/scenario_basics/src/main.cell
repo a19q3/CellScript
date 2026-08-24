@@ -1,0 +1,10 @@
+module scenario_basics
+
+action main() {
+    verification
+}
+
+action reject() {
+    verification
+        require false, "expected failure"
+}

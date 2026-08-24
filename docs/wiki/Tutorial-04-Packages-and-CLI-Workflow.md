@@ -45,9 +45,9 @@ A minimal manifest looks like this:
 
 ```toml
 [package]
+edition = "2026"
 name = "my_contract"
 version = "0.1.0"
-edition = "2021"
 entry = "src/main.cell"
 source_roots = ["src"]
 
@@ -62,6 +62,9 @@ my_lib = { path = "../my_lib" }
 
 Read the manifest as a build promise:
 
+- `edition = "2026"` selects the source-language semantic epoch. It is
+  mandatory; CellScript does not infer, migrate, or accept any other edition,
+  and the year does not imply an annual release cadence;
 - `entry` tells the compiler where the package starts;
 - `source_roots` tells the compiler which package directories contain `.cell`
   modules;
@@ -71,11 +74,25 @@ Read the manifest as a build promise:
 - path, git, and registry source-package dependencies keep package inputs
   explicit and lockable.
 
-Registry source-package resolution is implemented for packages that provide
-`Cell.toml`, `registry.json`, tag-pinned Git provenance, and a verified
-`source_hash`. Local path dependencies remain the fastest repeatable
-development workflow, and non-CellScript registry artifact profiles still fail
-closed until they have their own resolver contracts.
+Production Registry source-package resolution selects an accepted version from
+the public API, downloads its immutable source snapshot, and verifies object
+SHA-256, safe paths, per-file BLAKE2b, `Cell.toml`, Edition/profile identity,
+and the whole-tree `source_hash`. `registry.json` plus tag-pinned Git remain the
+explicit offline/mirror authority. Local path dependencies remain the fastest
+repeatable development workflow, and non-CellScript registry artifact profiles
+still fail closed until they have their own resolver contracts.
+
+The edition is one input to the emitted compatibility profile. Target,
+primitive assurance, metadata schemas, and wire ABIs keep independent version
+identities, so they can advance without creating a new source edition. The
+profile hash commits to the complete combination in every downstream
+build/deployment identity. See
+[CellScript Edition Policy](../CELLSCRIPT_EDITION_POLICY.md).
+
+As a rule of thumb, compiler SemVer answers “which implementation produced
+this output?”, Edition answers “how is this source understood?”, and the
+resolved compatibility profile answers “which complete source/target/ABI/schema
+contract was used?”.
 
 ## Multi-file Packages
 
@@ -116,12 +133,37 @@ Useful flags:
 cellc build --target riscv64-asm
 cellc build --target riscv64-elf
 cellc build --target-profile ckb
+cellc build --locked
+cellc build --frozen
+cellc build --offline
+cellc build --features audit,metrics
+cellc build --all-features
+cellc build --no-default-features
+cellc build --environment mainnet
 cellc build --production
 cellc build --json
 ```
 
+Dependency builds are lock-authoritative. Run `cellc lock` or `cellc update`
+when dependency selection is intended; `build`, `check`, and `test` otherwise
+consume only the existing graph. `--locked` makes that assertion explicit,
+`--frozen` also disables network access and every lockfile write, and
+`--offline` permits only already materialized exact source pins.
+
 `build` reads `Cell.toml`, compiles the current package entry, and writes the
-artifact plus metadata sidecar under the configured output directory.
+artifact plus metadata sidecar under the configured output directory. A CKB
+ELF build also writes canonical verified-artifact sidecars:
+
+```text
+build/main.elf
+build/main.elf.meta.json
+build/main.elf.lowering.json
+build/main.elf.sourcemap.json
+```
+
+The lowering record and source map are checked against final ELF bytes during
+compilation. They are structural/binding evidence, not a complete
+source-equivalence or chain-execution claim.
 
 For a one-off source file, use the top-level compiler form instead:
 
@@ -131,6 +173,30 @@ cellc path/to/file.cell
 
 That form is great for quick experiments. Packages are better when you need
 repeatability.
+
+## Execute Package Scenarios
+
+Executable tests are versioned `*.scenario.json` files under `tests/`. Name a
+backend explicitly:
+
+```bash
+cellc test --backend simulator
+cellc test --backend ckb-vm
+cellc test --backend all --json
+```
+
+`simulator` is fast development evidence. `ckb-vm` executes the emitted ELF and
+is local authoritative runtime evidence. Use `cellc test --no-run` only when
+compile-only checking is intentional. Without `--no-run`, an omitted backend
+or an empty scenario set is an error rather than a false pass.
+
+The v1 scenario format rejects unknown fields and validates named live Cells,
+replacement steps, Scripts, deps, headers, `since`, witnesses, capacity and
+size limits, and exact runtime error code/name pairs. Its multi-step Cell set
+is a local bookkeeping oracle; the CKB-VM backend currently supports
+no-argument entries and does not inject those declared Cells into syscalls.
+Transaction-syscall scenarios remain with the repository's stateful CKB
+oracle. See [Verified Artifacts and Executable Tests](Tutorial-14-Verified-Artifacts-and-Executable-Tests.md).
 
 ## Check Without Writing Artifacts
 
@@ -238,9 +304,17 @@ cellc deploy plan . --target-profile ckb --json
 cellc deploy verify --plan Deployed.toml --json
 cellc registry verify --json
 cellc package verify --json
-cellc auth capability create --principal-id joyid:example --scope publish:cellscript/my_contract --expires 90d --json
+cellc auth capability create --principal-id <principal_id> \
+  --scope publish:cellscript/my_contract \
+  --expires 90d --json
 cellc gen-builder . --target typescript --target-profile ckb --json
 ```
+
+`package verify` checks build identity as well as the dependency graph. A
+freshly cloned example intentionally carries a graph-only `Cell.lock`; run
+`cellc build --locked` first to populate `[package.build]`. A frozen build
+cannot add that local evidence because `--frozen` suppresses every lockfile
+write.
 
 Legacy flat aliases such as `solve-tx`, `deploy-plan`, and
 `explain-assumptions` remain executable for compatibility, but they are hidden
@@ -275,7 +349,7 @@ cellc add my_lib --path ../my_lib
 graph and write `Cell.lock`, run:
 
 ```bash
-cellc install
+cellc lock
 ```
 
 You can also add and lock a local dependency in one command:
@@ -291,11 +365,10 @@ cellc add math --git https://example.com/math.git
 cellc install math --git https://example.com/math.git
 ```
 
-For reviewable package identity, prefer a manifest-level detailed dependency
-with `rev = "<full-commit-hash>"`, then run `cellc install` so `Cell.lock`
-records the resolved package source. Branch, tag, and default-branch Git
-dependencies are easier to move without changing `Cell.toml`, so treat them as
-development convenience rather than production evidence.
+For reviewable package identity, a manifest may name a branch or tag during
+development, but `cellc lock`/`update` immediately normalizes it to a full
+40-hex commit and immutable cache. A later branch movement does not affect
+builds until the next explicit repin.
 
 Remove it:
 
@@ -303,8 +376,83 @@ Remove it:
 cellc remove my_lib
 ```
 
-`install`, `update`, and normal dependency removal refresh the lockfile so
+`add`, `install`, `update`, and normal dependency removal refresh the lockfile so
 direct and transitive local path dependencies stay consistent.
+
+`Cell.lock` v3 is a graph rather than a flat list. It binds the exact root
+manifest digest, each dependency manifest and whole source tree, outgoing
+alias-to-node edges, feature/test modes, and named CKB environments. Local
+projects should commit it to version control: the lockfile is reviewed build
+input, not a local cache, and normal build/check/test commands do not silently
+repin it. Dependency aliases can differ from declared package names:
+
+```toml
+[dependencies.math]
+package = "canonical_math"
+version = "^1.2.0"
+```
+
+Optional dependencies are activated through versioned feature roots:
+
+```toml
+[dependencies.audit]
+version = "^1.0.0"
+optional = true
+
+[features]
+default = []
+auditing = ["dep:audit"]
+```
+
+`[dev_dependencies]` are present only in the `cellc test` graph. Feature
+cycles, unknown features, alias collisions, and unknown `dep:` targets fail
+closed. `[build.dependencies]` is reserved until CellScript has an isolated
+build-script execution contract.
+
+For chain-dependent selection, declare the chain, not an implicit label:
+
+```toml
+[environments.mainnet]
+chain_id = "ckb"
+genesis_hash = "0x...32-byte-genesis-hash..."
+
+[dependency_overrides.mainnet.registry_types]
+version = "=2.0.0"
+namespace = "cellscript"
+```
+
+When overrides exist, `--environment mainnet` is mandatory. The environment
+root in `Cell.lock` binds both `chain_id` and genesis hash.
+
+The portable checked-in example exercises these inputs together:
+
+```bash
+cd examples/package_graph
+cellc check --frozen --offline --environment mainnet
+cellc check --frozen --offline --environment testnet --features full
+cellc test --no-run --frozen --offline --environment testnet --all-features
+```
+
+Its local dependency alias is distinct from the declared package name, and its
+testnet override resolves a different exact version of the same declared
+package. Omitting `--environment` is an intentional fail-closed example.
+
+Advanced ecosystems may declare a hash-pinned bounded resolver. It runs only
+during explicit lock/update, without a shell or inherited environment, and
+must normalize its versioned JSON response to an exact Registry version or Git
+commit. Locked builds never invoke it:
+
+```toml
+[resolvers.vendor]
+command = "/absolute/path/to/vendor-resolver"
+sha256 = "sha256:<resolver-executable-digest>"
+args = ["resolve"]
+
+[dependencies.math]
+package = "canonical_math"
+version = "^1.2.0"
+resolver = "vendor"
+```
 
 ## Registry Resolver Boundaries
 
@@ -316,26 +464,26 @@ model:
 - deployment identity answers which CKB Cell, CellDep, or runtime artifact is
   being used.
 
-Registry discovery can be broad. It may index CellScript source packages,
+Registry discovery is broad. It indexes CellScript source packages,
 runtime verifiers, deployed CKB artifacts, reproducible artifacts, and even
 external CKB tooling artifacts such as bootstrapper outputs. Resolver profiles
 must stay narrower: an object can be discovered without being installable by
 `cellc add`.
 
-That means registry resolution is stricter than discovery. Current `cellc`
-registry dependencies are CellScript source-package dependencies. Future
-profile-aware resolver paths should accept only objects that can be checked
-fail-closed:
+That means registry resolution is stricter than discovery. The versioned
+`cellscript-registry-profile-catalog-v1` marks only the
+`cellscript_source` + `dependency` contract as dependency-resolving. `cellc add`
+and `cellc install` reject every other profile.
+Other profiles use explicit `cellc artifact` commands and fail closed on
+unknown fields, identities, roles, or lifecycle state:
 
-| Kind | Current `cellc add` | Future profile boundary |
+| Kind | `cellc add` | Current explicit boundary |
 | --- | --- | --- |
-| `source_package` / library | yes | Source and API identity must be pinned and reproducible. |
-| `runtime_verifier` / `spawn-verifier` | no, unless wrapped as a CellScript package today | TCB object; requires verifier ID, ABI, artifact identity, build profile, security status, and production deployment pins when used in production. |
-| `deployable_contract` | no, unless it is a CellScript source package today | Must expose build/audit/deployment identity, not just source text. |
-| `deployed_artifact_record` | no | Must bind network, OutPoint, dep type, code/data hash, and status. |
-| `reproducible_artifact` | no | Must bind source hash, build profile hash, artifact hash, and compatibility profile. |
-| `protocol_profile_library` | only if it is a real CellScript package today | Must be a real package with checkable source/schema/API semantics. |
-| `template`, `cookbook`, `protocol_skeleton`, scaffold | no | Copy-only starting material; after copying, it becomes local project code. |
+| `source_library` / `profile_library` | yes | Compiler-backed source and API identity are pinned in `Cell.lock`. |
+| `runtime_verifier` | no | `artifact fetch`, `verify`, and `pin`; verifier ID, IPC ABI, artifact, build, security, and production CellDep remain explicit TCB facts. |
+| `deployable_contract` | no | `artifact fetch`, `verify`, `pin`, `record-deployment`, and `cell-dep` bind build and live mainnet deployment identity; `artifact ls-idl` validates, binds, bundles, or resolves a Lock Script interface without making it a source dependency. |
+| `reproducible_binary` | no | `artifact reproduction-evidence` binds independent builders to source, recipe, environment, executable, and logs before verified use. |
+| `template` | no | `artifact copy` authenticates a bounded file map, rejects traversal and overwrite, and then leaves local project source. |
 
 The rule is intentionally blunt:
 
@@ -356,9 +504,8 @@ hashes, build profile, TCB/security status, and any production CellDep pins.
 A NovaSeal starter project, by contrast, is not dependency-safe merely because
 it contains useful `.cell` code. If users are expected to copy it and edit terms,
 authorities, manifests, or deployment pins, it belongs in a cookbook or template
-flow, not in dependency resolution. The current `cellc` CLI does not ship a
-template or cookbook-copy command; copy starter material with repository tooling
-or a future scaffold command, then treat the result as local project source.
+flow, not in dependency resolution. Use `cellc artifact copy`, then treat the
+authenticated result as local project source.
 
 It should not be installed with:
 
@@ -386,20 +533,39 @@ cellc info --json
 Use `info` when you want a quick view of the package boundary before building or
 debugging dependency resolution.
 
-## Experimental Commands
+## Registry Commands
 
 Registry source-package installation and registry-backed `update` are supported
-for the CellScript source-package profile. The public registry policy is:
-`cellc auth capability create --principal-id <principal_id> --scope
-publish:namespace/package --expires 90d` authorises a JoyID-rooted publisher
-capability, then `cellc publish` writes a real registry entry. The
-`principal_id` is derived from the connected JoyID signer, not from a display
-address. The same metadata can still be
+for the CellScript source-package profile. The preferred interactive first-use
+path is `cellc publish --authorise`: it creates a 15-minute browser session,
+authorises a wallet-rooted delegated key, and resumes the publish after the
+Registry returns the matching key ID. `--no-open` supports remote terminals.
+Later `cellc publish` calls use the active scoped key.
+
+For CI, recovery, or an external-wallet handoff, `cellc auth capability create
+--principal-type <joyid_ckb|ckb_secp256k1> --principal-id <principal_id>` creates
+the wallet payload; submit the wallet signature and claim the namespace before
+publishing. Inside a package directory, omitting `--scope` infers only the exact
+`publish` scope. Add `deployment` or `availability` scopes explicitly when that
+delegated key genuinely needs those actions; none implies another.
+The `principal_id` is cryptographically derived from the signer, not from a
+display label. The same metadata can still be
 mirrored with `cellc publish --offline` to `registry.json` and Git tags for
 audit, local fixtures, and offline fallback. `cellc registry add` manages discovery/claim metadata rather than
-ordinary version publication. `run`, `repl`, cryptographic audit-signature
-verification, and non-CellScript artifact profiles remain future-facing or
-fail-closed.
+ordinary version publication.
+
+Non-CellScript profiles publish with `Artifact.toml` and
+`cellc publish --artifact-manifest Artifact.toml`. Consumers use the explicit
+`cellc artifact fetch`, `verify`, `pin`, `copy`, `reproduction-evidence`,
+`record-deployment`, `cell-dep`, `commitment`, and `set-availability` commands;
+none silently turns an executable, TCB object, or template into a source
+dependency. `run`, `repl`, and cryptographic audit-signature verification
+retain their separate documented assurance boundaries.
+
+For LS-IDL Lock Scripts, `cellc artifact ls-idl validate|bind|bundle` prepares
+the byte-exact interface contract and `fetch` resolves it by chain-verified
+Script identity. The raw IDL SHA-256/executable-suffix relationship is an
+identity check, not proof of implementation correctness.
 
 ## Next
 

@@ -9,7 +9,8 @@ use cellscript::{compile_file_with_entry_action, ArtifactFormat, CompileOptions}
 
 const RUST_CKB_TARGET: &str = "riscv64imac-unknown-none-elf";
 const RUST_REFERENCE_PACKAGE: &str = "rust-ckb-token-transfer";
-const TOKEN_TRANSFER_MAX_CELLSCRIPT_BYTES: usize = 7 * 1024;
+const TOKEN_TRANSFER_MAX_CELLSCRIPT_LOAD_BYTES: usize = 7 * 1024;
+const TOKEN_TRANSFER_MAX_VERIFIED_ELF_OVERHEAD_BYTES: usize = 320;
 const TOKEN_TRANSFER_MAX_RUST_STRIPPED_BYTES: usize = 3 * 1024;
 
 #[test]
@@ -58,10 +59,17 @@ fn token_transfer_cellscript_artifact_is_compared_against_equivalent_rust_ckb_co
     );
 
     assert!(
-        cellscript_bytes <= TOKEN_TRANSFER_MAX_CELLSCRIPT_BYTES,
-        "CellScript transfer_token ELF grew past budget: {} > {} bytes",
-        cellscript_bytes,
-        TOKEN_TRANSFER_MAX_CELLSCRIPT_BYTES
+        cellscript_load_bytes <= TOKEN_TRANSFER_MAX_CELLSCRIPT_LOAD_BYTES,
+        "CellScript transfer_token executable LOAD bytes grew past budget: {} > {} bytes",
+        cellscript_load_bytes,
+        TOKEN_TRANSFER_MAX_CELLSCRIPT_LOAD_BYTES
+    );
+    let verified_elf_overhead = cellscript_bytes.saturating_sub(cellscript_load_bytes);
+    assert!(
+        verified_elf_overhead <= TOKEN_TRANSFER_MAX_VERIFIED_ELF_OVERHEAD_BYTES,
+        "CellScript transfer_token verified ELF headers grew past budget: {} > {} bytes",
+        verified_elf_overhead,
+        TOKEN_TRANSFER_MAX_VERIFIED_ELF_OVERHEAD_BYTES
     );
     assert!(
         rust_stripped_bytes <= TOKEN_TRANSFER_MAX_RUST_STRIPPED_BYTES,

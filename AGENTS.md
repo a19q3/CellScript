@@ -11,10 +11,12 @@ crate at the repo root is `cellscript` (workspace member `.`); a sibling crate
 `crates/cellscript-wasm` exposes the metadata-only compile path to browsers via
 `wasm-bindgen`; `crates/cellscript-ckb-adapter` is a CKB-side adapter; and
 `crates/cellscript-fiber-adapter` implements the bounded no-profile Fiber
-interoperability path. The website submodule under `website/` ships an Astro +
-WASM playground that loads the prebuilt bundle.
+interoperability path. `crates/cellscript-artifact-checker` independently
+validates the versioned lowering/source-map/ELF boundary without loading the
+compiler front end or code generator. The website submodule under `website/`
+ships an Astro + WASM playground that loads the prebuilt bundle.
 
-Version line: the workspace `Cargo.toml` pins `version = "0.22.0"`, Rust
+Version line: the workspace `Cargo.toml` pins `version = "0.24.0"`, Rust
 Edition 2024, and `rust-version = "1.97.1"`. `rust-toolchain.toml` and CI pin
 that exact toolchain; do not bump either version without coordinating with the
 release gate.
@@ -88,9 +90,9 @@ require extra tooling.
 
 | Mode | What it does |
 | --- | --- |
-| `dev` | Explicit workspace-package formatting and checks for the compiler, Fiber adapter, CKB adapter, WASM crate, and CKB SDK builder example; strict backend audit (quick); syntax combo audit (quick); forbidden tracked-file check; `git diff --check`. Run before committing. |
-| `ci` | `dev` coverage plus tests and clippy for every workspace package, full package contents check, website build check (requires `npm`), shell + Python syntax check, and trailing-whitespace check. Run before claiming merge-readiness. |
-| `backend` | For IR / codegen / assembler / ABI / ELF / RISC-V changes: explicit workspace-package format checking, `cargo check --locked -p cellscript --all-targets`, `cargo test --locked -p cellscript`, `cargo clippy ... -D warnings`, strict backend audit (full, which itself fires the CKB stateful-scenarios harness via `cellscript_ckb_stateful_scenarios.sh`), `git diff --check`. |
+| `dev` | Explicit workspace-package formatting and checks for the compiler, standalone artifact checker, Fiber adapter, CKB adapter, WASM crate, CKB SDK builder example, `cellscript-tools`, and both independent Registry verifiers; checker mutation/Myelin handoff tests; simulator package scenarios; reproducible Registry Type Script build and CKB-VM tests; native source-policy enforcement; strict backend audit (quick); syntax combo audit (quick); parity-gated skill-pack freshness; `git diff --check`. Run before committing. |
+| `ci` | `dev` coverage plus tests and clippy for every workspace package, `cellscript-tools`, both Registry verifiers, and the Registry Type Script; simulator and CKB-VM package scenarios; Registry API tests plus Node API/verifier bundles; full package contents check, website build check (requires `npm`), shell syntax and native source-policy checks, parity-gated skill-pack freshness, and trailing-whitespace check. Run before claiming merge-readiness. |
+| `backend` | For IR / codegen / assembler / ABI / ELF / RISC-V changes: explicit workspace-package format checking, compiler/checker tests and clippy, both package-scenario backends, standalone-checker dependency enforcement, strict backend audit (full, which itself fires the CKB stateful-scenarios harness via `cellscript_ckb_stateful_scenarios.sh`), and `git diff --check`. |
 | `release` / `release-quick` | Everything `ci` does plus release-auxiliary checks (CKB acceptance, NovaSeal pinning, NovaSeal Rust tooling for RISC-V, fresh WASM + VS Code packaging, CKB tx measure tool, etc.) and the CKB acceptance harness (`scripts/ckb_cellscript_acceptance.sh`). These modes need the pinned sibling CKB checkout from `scripts/ckb_acceptance_pin.json`, the NovaSeal submodule, a sibling `ckb-sdk-rust` checkout at tag `v5.1.0`, Docker for the canonical Linux/amd64 WASM build, and `riscv64imac-unknown-none-elf` for NovaSeal verifier builds. Do not run them casually. |
 
 Focused commands are still useful while debugging — `cargo check --locked -p
@@ -102,6 +104,8 @@ Notes on Rust toolchain / target:
 
 - `rust-version = "1.97.1"` in every in-tree Cargo manifest;
   `rust-toolchain.toml` and CI select that exact toolchain.
+- Registry reproducibility accepts either GNU `sha256sum` or Perl `shasum` and
+  fails closed if neither SHA-256 tool is available.
 - The NovaSeal verifier (`proposals/novaseal/v0-mvp-skeleton/verifier/novaseal_btc_verifier_riscv`)
   builds with `--target riscv64imac-unknown-none-elf` in release mode.
   `scripts/cellscript_gate.sh` will not pass without it.
@@ -116,18 +120,39 @@ The root `Cargo.toml` declares a virtual workspace with these members:
 - `.` (the `cellscript` library + `cellc` bin at `src/main.rs`)
 - `crates/cellscript-ckb-adapter`
 - `crates/cellscript-fiber-adapter`
+- `crates/cellscript-artifact-checker`
+- `crates/cellscript-tools`
 - `crates/cellscript-wasm`
 - `examples/ckb-sdk-builder`
 
 Excluded from the workspace (still buildable through their own manifests):
+`contracts/registry-type-script`, `services/registry-verifier`,
+`services/registry-artifact-verifier`,
 `proposals/novaseal/v0-mvp-skeleton/{harness,verifier}` and
 `proposals/novaseal/agreement-profile-v0/harness/ckb_vm`. `tools/ckb-tx-measure`
 defines its own `[workspace]` (no parent) because it pulls `ckb-jsonrpc-types`
 and `ckb-types` from a sibling CKB checkout (`../ckb`).
 
+The 0.23 tooling migration is complete. `cellscript-tools` is authoritative
+for gate, evidence, fixture, and release validation; website data generation
+uses the tracked Node modules under `website/scripts/`. Every gate runs the
+native source-policy check, which rejects retired interpreter sources,
+generated bytecode/cache artifacts, and interpreter references in active
+tooling source across the repository and initialized submodules.
+
+The 0.24 package closure is lock-authoritative. `Cell.lock` version 3 uses
+`cellscript-lock-v0.24-graph-v1` and binds the root manifest digest, canonical
+dependency nodes/edges, dependency manifests and sources, feature/test roots,
+and CKB environment chain identity. Use `cellc lock` or `cellc update` for an
+intentional repin. Build/check/test must not perform mutable version selection;
+`--frozen` also forbids network access and lockfile writes. Bounded external
+resolvers run only during explicit repinning and normalize to exact Registry or
+Git sources before the lock is written.
+
 Features (root crate):
 
-- `default = ["cli", "lsp"]`
+- `default = ["cli", "lsp", "vm-runner"]` — native `cellc test` can execute
+  the authoritative CKB-VM scenario backend without an extra feature flag.
 - `cli` — pulls `clap`, `colored`, `env_logger`, `keyring`, `reqwest` (rustls),
   `ring`, `base64`. Native I/O, gated out of the wasm build.
 - `lsp` — pulls `tower-lsp` and `tokio` (full). Gated out of wasm.
@@ -215,8 +240,9 @@ When extracting emitter methods from `codegen/mod.rs` into a sub-module:
    Fields of types shared across module boundaries also need `pub(crate)`.
 4. When removing code by line number with `sed`, delete later ranges first
    so earlier line numbers stay stable.
-5. After every deletion, brace-count with `python3 -c` to verify brace
-   balance before compiling.
+5. After every deletion, run formatting and a focused Rust check. The parser
+   and compiler are authoritative for brace balance; do not rely on textual
+   brace-count heuristics.
 
 ## CLI surface (where to add a new command)
 
@@ -239,6 +265,11 @@ Existing command families to be aware of:
 
 ## Testing approach
 
+- Package runtime fixtures use `cellscript-test-scenario-v1` JSON under
+  `tests/scenarios/`. `cellc test` requires `--backend simulator|ckb-vm|all`
+  unless `--no-run` is explicitly selected. Simulator evidence is
+  non-consensus; CKB-VM evidence is runtime-only, and the v1 runner does not
+  inject its local Cell bookkeeping into transaction syscalls.
 - Integration tests live in `tests/*.rs`. Per-version suites exist
   (`tests/v0_14.rs`, `v0_16.rs`, `v0_17.rs`, `v0_18.rs`) — when adding a
   versioned boundary, add it to the latest suite and keep prior ones intact
@@ -266,8 +297,8 @@ Existing command families to be aware of:
 ## CKB / NovaSeal gotchas
 
 - The CKB acceptance harness is `scripts/ckb_cellscript_acceptance.sh`. It
-  expects a sibling `../ckb-sdk-rust` checkout at tag `v5.1.0` and runs
-  `scripts/validate_ckb_cellscript_production_evidence.py` against the build
+  expects a sibling `../ckb-sdk-rust` checkout at tag `v5.1.0` and runs the
+  `cellscript-tools validate-production-evidence` command against the build
   reports. Its build reports, source provenance hashes, and production
   hardening gate (`final_production_hardening_gate`) are referenced by
   string from the gate script; if you rename them, update

@@ -1,0 +1,16 @@
+{
+  "witness": [
+    {
+      "name": "signature",
+      "type": "schnorr_sig",
+      "required": true,
+      "description": "64-byte Schnorr signature (R || s)"
+    },
+    {
+      "name": "pubkey",
+      "type": "secp256k1_pubkey",
+      "required": false,
+      "description": "Compressed secp256k1 public key (33 bytes); required only when not stored in args"
+    }
+  ]
+}

@@ -14,9 +14,12 @@ Use the error name first when debugging. Numeric codes are retained for VM,
 wallet, explorer, and acceptance-script compatibility.
 
 The table was introduced in compile metadata schema 30 and is emitted by the
-current schema 55 under
+current metadata schema 58 under
 `constraints.runtime_errors`, so `cellc constraints`, `cellc check --json`, and
 sidecar metadata all expose the same machine-readable registry.
+The verified lowering record also identifies mapped runtime-error exits, and
+`cellc test` negative scenarios must match both the numeric code and stable
+name under the selected execution backend.
 When a CLI failure can be tied to this registry, stderr uses the same
 `error[E####]` code and points to `cellc explain E####`.
 

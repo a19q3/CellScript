@@ -11,4 +11,6 @@ members = [
     "token",
     "vesting",
     "language",
+    "package_graph",
+    "scenario_basics",
 ]

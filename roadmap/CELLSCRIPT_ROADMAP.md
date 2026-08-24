@@ -1,6 +1,6 @@
 # CellScript Roadmap
 
-**Updated**: 2026-07-27
+**Updated**: 2026-08-09
 
 This roadmap is the high-level planning map for CellScript. It links the
 release-specific trackers and the deeper design notes so the project does not
@@ -15,7 +15,12 @@ The current project direction is simple:
    capacity, witness, or lock-group boundaries;
 4. keep syntax sugar audit-visible by requiring parser, formatter, type,
    lowering, metadata, codegen, docs, and automated syntax-combination gates to
-   agree before release.
+   agree before release;
+5. finish the trusted package-distribution loop before expanding the language
+   surface: authenticated publish, accepted-status resolution, reproducible
+   source verification, evidence promotion, and a usable public website.
+6. separate compiler generation from artifact admission through a bounded,
+   independent checker and executable evidence.
 
 ## Current State
 
@@ -32,7 +37,8 @@ The current project direction is simple:
 | 0.21 planned scope | Semantic closure, authenticated compiler evidence, CLI UX reorganisation, dedicated MCP server and CellScript programming skills, derived cyclic graph views, type-level TemplateLayout metadata, and deferred optional template Merkleisation. | [0.21 roadmap](../docs/CELLSCRIPT_0_21_ROADMAP.md), [0.21 CLI UX plan](CELLSCRIPT_0_21_CLI_UX_PLAN.md) |
 | 0.22 release scope | Released typed transaction views, finite invariant quantifiers, bounded collections, capability entailment, concrete payload enums, validity blocks, borrow regions, stable `E2xxx` diagnostics, and metadata schema 55. | [0.22 release notes](../docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md), [0.22 type/set roadmap](CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md) |
 | 0.22 bounded Fiber interoperability | The dedicated `fungible-type-group-v1` compiler/adapter path and local-devnet scenarios are implemented. The pinned complete external lifecycle/negative matrix remains pending, so this is not a production-readiness claim. | [0.22 Fiber plan](CELLSCRIPT_0_22_FIBER_NATIVE_SUPPORT_PLAN.md), [operator guide](../examples/fiber/README.md) |
-| 0.23 planned scope | Public registry production deployment on `cellscript.dev`, Python test/fixture scaffolding ported to Rust, deeper RGB++ / Fiber integration, and an Off-Chain Session Runtime profile with initial concurrency support so the Myelin vendored fork can re-converge on upstream. | [0.23 roadmap](CELLSCRIPT_0_23_ROADMAP.md) |
+| 0.23 implementation scope | Frozen around Edition 2026/profile/entry identities, the deployed Registry and publisher-session path, native tooling, the website workbench, and bounded Fiber evidence. Mainnet Registry activation, publisher-owned adoption, and complete Fiber/RGB++ matrices remain external checkpoints. The proposed Off-Chain Session Runtime target was retired because current Myelin uses an attested external compiler adapter and keeps extended semantics outside CellScript. | [0.23 roadmap](CELLSCRIPT_0_23_ROADMAP.md), [0.23 release notes](../docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md) |
+| 0.24 implementation | Core implemented: stable verified lowering records, bounded standalone checker, executable package scenarios, source maps, Registry structural admission, lock-authoritative `Cell.lock` v3 package graphs, a versioned fail-closed Registry profile catalog, and a versioned Myelin handoff contract. Exact external Myelin lock adoption and complete Fiber/RGB++ matrices remain pending. | [0.24 roadmap](CELLSCRIPT_0_24_ROADMAP.md), [0.24 release notes](../docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md) |
 | CKB language fit | CKB-first design is confirmed; remaining gaps are signer binding, continuity policy, capacity policy, and declarative time policy. | [CKB target profiles](../docs/wiki/Tutorial-05-CKB-Target-Profiles.md), [production gates](../docs/wiki/Tutorial-06-Metadata-Verification-and-Production-Gates.md) |
 | Surface syntax | Low-risk syntax pass and 0.13.2 syntax-governance hardening are implemented; authority-sensitive syntax remains staged. | [Surface elegance RFC](../docs/CELLSCRIPT_SURFACE_ELEGANCE_RFC.md), [Syntax-combination audit](../docs/CELLSCRIPT_SYNTAX_COMBO_AUDIT_METHODOLOGY.md) |
 | Collections | Stack-backed fixed-width `Vec<T>` helper surface is implemented; cell-backed and generic map ownership remain fail-closed. | [Collections support matrix](../docs/CELLSCRIPT_COLLECTIONS_SUPPORT_MATRIX.md), [0.13 release scope](../docs/releases/CELLSCRIPT_0_13_RELEASE_SCOPE.md) |
@@ -300,35 +306,33 @@ Detailed status:
 - [0.22 bounded Fiber plan](CELLSCRIPT_0_22_FIBER_NATIVE_SUPPORT_PLAN.md)
 - [Fiber operator guide](../examples/fiber/README.md)
 
-### 0.23: Production Registry, Rust Tooling, Fiber/RGB++, Off-Chain Sessions
+### 0.23: Production Registry, Edition/ABI Closure, And Native Tooling
 
-0.23 is the first CellScript release whose headline is operational rather
+0.23 is the first CellScript release line whose headline is operational rather
 than language-theoretic. It turns the 0.22 compiler facts into running
-infrastructure and absorbs Myelin's off-chain needs into upstream:
+infrastructure and freezes one coherent source/profile/entry identity:
 
-- **Public registry production deployment**: stand up the implemented
-  `services/registry-api` Cloudflare Worker on `cellscript.dev` with Neon
-  Postgres via Hyperdrive and R2 source snapshots; wire the Astro frontend
-  and `cellc publish` / `cellc auth capability *` to the live JoyID-rooted
-  write API; keep hash-first verification and the static
-  `/packages/*` read path as the read authority.
-- **Python tooling ported to Rust**: move the gate-driving Python
-  (`cellscript_strict_backend_audit.py`, `cellscript_syntax_combo_audit.py`,
-  the production-evidence and tooling-release validators, the NovaSeal /
-  Evolving-DOB proposal scripts, and the website data scripts) into the
-  `cellscript-tools` crate or TS scripts, with byte-identical evidence
-  output and the same exit-code contract.
-- **Deeper RGB++ and Fiber integration**: close the pinned Fiber full
-  lifecycle/negative matrix, promote the Fiber harness to a release-mode
-  gate once it is reproducible, and advance the RGB++ ecosystem adapter
-  from identity-adapter to pinned-deployment evidence without entering
-  `std::*`.
-- **Off-Chain Session Runtime profile**: a new opt-in target profile with
-  initial bounded concurrency support for off-chain session runtimes
-  (Myelin), plus a fail-closed court-projection rule so `MyelinExtended`
-  artifacts cannot claim CKB court compatibility without an explicit proof.
-  Myelin drops its `0.21.1` vendored fork and consumes the published
-  release.
+- **Public registry production deployment**: the self-hosted Node/Postgres
+  write service, read-only static object service, live Astro frontend, and
+  compiler-backed verification worker are deployed on the public domains.
+  Hash-first resolution stays limited to accepted evidence states. The first
+  publisher-owned JoyID capability/publication/install is the remaining
+  interactive adoption checkpoint; Cloudflare/Hyperdrive/R2 stays an optional
+  alternative topology.
+- **Native tooling migration complete**: the gate-driving backend, syntax,
+  production-evidence, tooling-release, NovaSeal, and Evolving-DOB tools now
+  live in Rust crates; website data generation uses Node modules. Evidence
+  schemas and exit-code contracts remain stable, and every gate enforces the
+  repository-wide native source policy.
+- **Bounded ecosystem evidence**: retain the no-profile Fiber adapter and the
+  content-addressed evidence/path-validation work actually completed. The full
+  external Fiber lifecycle/negative matrix and RGB++ protocol promotion remain
+  pending rather than being inferred from representative devnet runs.
+- **Explicit Myelin boundary**: retire the proposed Off-Chain Session Runtime
+  target. Current Myelin already calls an independently versioned compiler
+  process, uses the CellScript `ckb` profile for production requests, forces
+  `CkbStrict` for court/session paths, and owns its extended semantics. 0.23
+  does not recreate a compiler fork as a target profile.
 
 Detailed status:
 
@@ -337,7 +341,39 @@ Detailed status:
 - [Registry API service](../services/registry-api/README.md)
 - [0.22 Fiber plan (carried forward)](CELLSCRIPT_0_22_FIBER_NATIVE_SUPPORT_PLAN.md)
 - [Spore/RGB++ interop plan](CELLSCRIPT_SPORE_RGBPP_INTEROP_PLAN.md)
-- [Myelin Session L2 plan](../../Myelin/MYELIN_SESSION_L2_PLAN.md)
+- [Myelin Session L2 plan](https://github.com/Myelin-Labs/Myelin/blob/main/MYELIN_SESSION_L2_PLAN.md)
+
+### 0.24: Independently Verified Artifacts And Executable Evidence
+
+0.24 moves the trust boundary below compiler-authored metadata without claiming
+that arbitrary RISC-V can recover typed source semantics:
+
+- define a canonical verified lowering record and source-to-artifact map;
+- add a small, metered checker independent of the compiler front end and
+  codegen;
+- validate lowering, CFG, frame, ABI, syscall, ProofPlan-link, source-map, and
+  structural ELF contracts with stable diagnostics and mutation evidence;
+- make `cellc test` execute simulator and authoritative CKB-VM backends,
+  including multi-step Cell scenarios, exact runtime failures, and semantic
+  coverage;
+- integrate the checker into `verify-artifact`, Registry artifact admission,
+  and the unified gates;
+- publish and test the exact CellScript-side Myelin handoff contract without
+  adding `MyelinExtended` to CellScript; external lock adoption follows the
+  final clean release identity; and
+- promote Fiber/RGB++ only when their separate external matrices close.
+
+`Cell.lock` v3, semantic upgrade policies, package visibility changes, and
+typed multi-action composition remain design handoff work until the trust and
+test boundaries are stable.
+
+Detailed status:
+
+- [0.24 roadmap](CELLSCRIPT_0_24_ROADMAP.md)
+- [Verified artifact boundary](../docs/CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md)
+- [Executable test scenarios](../docs/CELLSCRIPT_EXECUTABLE_TEST_SCENARIOS.md)
+- [0.23 release notes](../docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md)
+- [Metadata and production gates](../docs/wiki/Tutorial-06-Metadata-Verification-and-Production-Gates.md)
 
 ### Next Authorization Hardening Track
 

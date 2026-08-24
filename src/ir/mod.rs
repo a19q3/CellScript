@@ -376,6 +376,7 @@ pub struct IrBlock {
     pub id: BlockId,
     pub instructions: Vec<IrInstruction>,
     pub terminator: IrTerminator,
+    pub runtime_error: Option<CellScriptRuntimeError>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -695,6 +696,19 @@ fn protocol_role_name(name: &str) -> Option<String> {
     normalized.split('_').find(|part| ROLE_NAMES.binary_search(part).is_ok()).map(str::to_string)
 }
 
+struct IrImportContext {
+    type_fields: HashMap<String, HashMap<String, IrType>>,
+    type_kinds: HashMap<String, IrTypeKind>,
+    receipt_claim_outputs: HashMap<String, Option<IrType>>,
+    flow_states: HashMap<String, Vec<String>>,
+    type_validity: HashMap<String, Vec<IrValidityPredicate>>,
+    enum_definitions: HashMap<String, EnumDef>,
+    external_function_effects: HashMap<String, EffectClass>,
+    external_function_param_types: HashMap<String, Vec<IrType>>,
+    external_function_return_types: HashMap<String, Option<IrType>>,
+    call_target_labels: HashMap<String, String>,
+}
+
 impl IrGenerator {
     pub fn new(module_name: String) -> Self {
         Self {
@@ -748,19 +762,19 @@ impl IrGenerator {
         generator
     }
 
-    pub fn with_import_context(
-        module_name: String,
-        type_fields: HashMap<String, HashMap<String, IrType>>,
-        type_kinds: HashMap<String, IrTypeKind>,
-        receipt_claim_outputs: HashMap<String, Option<IrType>>,
-        flow_states: HashMap<String, Vec<String>>,
-        type_validity: HashMap<String, Vec<IrValidityPredicate>>,
-        enum_definitions: HashMap<String, EnumDef>,
-        external_function_effects: HashMap<String, EffectClass>,
-        external_function_param_types: HashMap<String, Vec<IrType>>,
-        external_function_return_types: HashMap<String, Option<IrType>>,
-        call_target_labels: HashMap<String, String>,
-    ) -> Self {
+    fn with_import_context(module_name: String, context: IrImportContext) -> Self {
+        let IrImportContext {
+            type_fields,
+            type_kinds,
+            receipt_claim_outputs,
+            flow_states,
+            type_validity,
+            enum_definitions,
+            external_function_effects,
+            external_function_param_types,
+            external_function_return_types,
+            call_target_labels,
+        } = context;
         let mut generator = Self::with_type_fields(module_name, type_fields);
         generator.type_kinds.extend(type_kinds);
         generator.receipt_claim_outputs.extend(receipt_claim_outputs);
@@ -1006,14 +1020,13 @@ impl IrGenerator {
     }
 
     fn flow_states_for_decl(&self, machine: &FlowDef) -> Vec<String> {
-        if let Some(fields) = self.type_fields.get(&machine.target.base) {
-            if let Some(IrType::Named(enum_name)) = fields.get(&machine.target.field) {
-                if let Some(variants) = self.enum_variants.get(enum_name) {
-                    let mut ordered = variants.iter().map(|(name, ordinal)| (*ordinal, name.clone())).collect::<Vec<_>>();
-                    ordered.sort_by_key(|(ordinal, _)| *ordinal);
-                    return ordered.into_iter().map(|(_, name)| name).collect();
-                }
-            }
+        if let Some(fields) = self.type_fields.get(&machine.target.base)
+            && let Some(IrType::Named(enum_name)) = fields.get(&machine.target.field)
+            && let Some(variants) = self.enum_variants.get(enum_name)
+        {
+            let mut ordered = variants.iter().map(|(name, ordinal)| (*ordinal, name.clone())).collect::<Vec<_>>();
+            ordered.sort_by_key(|(ordinal, _)| *ordinal);
+            return ordered.into_iter().map(|(_, name)| name).collect();
         }
 
         let mut states = Vec::new();
@@ -2012,10 +2025,10 @@ impl IrGenerator {
                     if let Some(pattern) = self.cell_pattern_from_operand(receipt, "claim") {
                         patterns.push(pattern);
                     }
-                } else if let IrInstruction::Settle { operand, .. } = instruction {
-                    if let Some(pattern) = self.cell_pattern_from_operand(operand, "settle") {
-                        patterns.push(pattern);
-                    }
+                } else if let IrInstruction::Settle { operand, .. } = instruction
+                    && let Some(pattern) = self.cell_pattern_from_operand(operand, "settle")
+                {
+                    patterns.push(pattern);
                 }
             }
         }
@@ -2086,10 +2099,10 @@ impl IrGenerator {
                     if let Some(pattern) = self.create_pattern_from_var(dest, "claim") {
                         patterns.push(pattern);
                     }
-                } else if let IrInstruction::Settle { dest, .. } = instruction {
-                    if let Some(pattern) = self.create_pattern_from_var(dest, "settle") {
-                        patterns.push(pattern);
-                    }
+                } else if let IrInstruction::Settle { dest, .. } = instruction
+                    && let Some(pattern) = self.create_pattern_from_var(dest, "settle")
+                {
+                    patterns.push(pattern);
                 }
             }
         }
@@ -2227,7 +2240,7 @@ impl IrGenerator {
         source: &IrOperand,
         output_ty: &IrType,
         active: BlockId,
-        blocks: &mut Vec<IrBlock>,
+        blocks: &mut [IrBlock],
     ) -> HashMap<String, IrVar> {
         let (IrOperand::Var(source_var), Some(output_type_name)) = (source, Self::named_type_name_from_ir_type(output_ty)) else {
             return HashMap::new();
@@ -2277,10 +2290,10 @@ impl IrGenerator {
             }
         }
         for pattern in body.read_refs.iter().chain(body.consume_set.iter()) {
-            if let Some(type_hash) = pattern.type_hash {
-                if shared_hashes.contains(&type_hash) {
-                    hashes.push(type_hash);
-                }
+            if let Some(type_hash) = pattern.type_hash
+                && shared_hashes.contains(&type_hash)
+            {
+                hashes.push(type_hash);
             }
         }
         for pattern in &body.create_set {
@@ -2650,10 +2663,10 @@ impl IrGenerator {
                 LoweredExpr { operand: IrOperand::Var(dest), current: Some(active) }
             }
             Expr::Call(call) => {
-                if let Expr::Identifier(path) = call.func.as_ref() {
-                    if let Some(lowered) = self.try_lower_enum_constructor_path(path, &call.args, current, blocks, vars, call.span) {
-                        return lowered;
-                    }
+                if let Expr::Identifier(path) = call.func.as_ref()
+                    && let Some(lowered) = self.try_lower_enum_constructor_path(path, &call.args, current, blocks, vars, call.span)
+                {
+                    return lowered;
                 }
                 if let Some(lowered) = self.try_lower_builtin_call(call, current, blocks, vars) {
                     return lowered;
@@ -2897,7 +2910,7 @@ impl IrGenerator {
 
     fn push_block(&mut self, blocks: &mut Vec<IrBlock>) -> BlockId {
         let id = self.new_block();
-        blocks.push(IrBlock { id, instructions: Vec::new(), terminator: IrTerminator::Return(None) });
+        blocks.push(IrBlock { id, instructions: Vec::new(), terminator: IrTerminator::Return(None), runtime_error: None });
         id
     }
 
@@ -3308,6 +3321,7 @@ impl IrGenerator {
         let fail_block = self.push_block(blocks);
         self.block_mut(blocks, active).terminator = IrTerminator::Branch { cond, then_block: ok_block, else_block: fail_block };
         self.block_mut(blocks, fail_block).terminator = IrTerminator::Return(Some(self.fail_closed_return_operand()));
+        self.block_mut(blocks, fail_block).runtime_error = Some(CellScriptRuntimeError::AssertionFailed);
 
         LoweredExpr { operand: IrOperand::Const(IrConst::Unit), current: Some(ok_block) }
     }
@@ -3329,6 +3343,7 @@ impl IrGenerator {
         let fail_block = self.push_block(blocks);
         self.block_mut(blocks, active).terminator = IrTerminator::Branch { cond, then_block: ok_block, else_block: fail_block };
         self.block_mut(blocks, fail_block).terminator = IrTerminator::Return(Some(self.fail_closed_return_operand()));
+        self.block_mut(blocks, fail_block).runtime_error = Some(CellScriptRuntimeError::AssertionFailed);
 
         LoweredExpr { operand: IrOperand::Const(IrConst::Bool(true)), current: Some(ok_block) }
     }
@@ -4181,7 +4196,7 @@ impl IrGenerator {
         LoweredExpr { operand: IrOperand::Var(dest), current: Some(active) }
     }
 
-    fn lower_read_ref_expr(&mut self, read_ref: &ReadRefExpr, current: BlockId, blocks: &mut Vec<IrBlock>) -> LoweredExpr {
+    fn lower_read_ref_expr(&mut self, read_ref: &ReadRefExpr, current: BlockId, blocks: &mut [IrBlock]) -> LoweredExpr {
         let dest = self.new_var(format!("read_ref_{}", read_ref.ty), IrType::Ref(Box::new(IrType::Named(read_ref.ty.clone()))));
         self.block_mut(blocks, current).instructions.push(IrInstruction::ReadRef { dest: dest.clone(), ty: read_ref.ty.clone() });
         LoweredExpr { operand: IrOperand::Var(dest), current: Some(current) }
@@ -4263,21 +4278,21 @@ impl IrGenerator {
             return lowered_idx;
         };
 
-        if let IrOperand::Var(arr_var) = &lowered_arr.operand {
-            if let Some(elements) = self.aggregate_elements.get(&arr_var.id) {
-                let Some(index_value) = const_usize_operand(&lowered_idx.operand) else {
-                    self.record_error("local fixed-array indexing requires a compile-time constant index", index.span);
-                    return LoweredExpr { operand: IrOperand::Const(IrConst::U64(0)), current: Some(active) };
-                };
-                let Some(element_var) = elements.get(index_value).cloned() else {
-                    self.record_error(
-                        format!("array index {} is out of bounds for local fixed array of length {}", index_value, elements.len()),
-                        index.span,
-                    );
-                    return LoweredExpr { operand: IrOperand::Const(IrConst::U64(0)), current: Some(active) };
-                };
-                return LoweredExpr { operand: IrOperand::Var(element_var), current: Some(active) };
-            }
+        if let IrOperand::Var(arr_var) = &lowered_arr.operand
+            && let Some(elements) = self.aggregate_elements.get(&arr_var.id)
+        {
+            let Some(index_value) = const_usize_operand(&lowered_idx.operand) else {
+                self.record_error("local fixed-array indexing requires a compile-time constant index", index.span);
+                return LoweredExpr { operand: IrOperand::Const(IrConst::U64(0)), current: Some(active) };
+            };
+            let Some(element_var) = elements.get(index_value).cloned() else {
+                self.record_error(
+                    format!("array index {} is out of bounds for local fixed array of length {}", index_value, elements.len()),
+                    index.span,
+                );
+                return LoweredExpr { operand: IrOperand::Const(IrConst::U64(0)), current: Some(active) };
+            };
+            return LoweredExpr { operand: IrOperand::Var(element_var), current: Some(active) };
         }
 
         let Some(result_ty) = self.index_result_type(&lowered_arr.operand) else {
@@ -4497,7 +4512,7 @@ impl IrGenerator {
         LoweredExpr { operand: IrOperand::Var(dest), current: Some(active) }
     }
 
-    fn lower_empty_array_expr_with_ir_type(&mut self, ir_ty: IrType, current: BlockId, blocks: &mut Vec<IrBlock>) -> LoweredExpr {
+    fn lower_empty_array_expr_with_ir_type(&mut self, ir_ty: IrType, current: BlockId, blocks: &mut [IrBlock]) -> LoweredExpr {
         if !matches!(ir_ty, IrType::Array(_, 0)) {
             self.record_error("empty array literal requires a zero-length declared array type", Span::default());
             return LoweredExpr { operand: IrOperand::Const(IrConst::U64(0)), current: Some(current) };
@@ -4649,10 +4664,10 @@ impl IrGenerator {
                 return LoweredExpr { operand: IrOperand::Var(dest), current: Some(active) };
             }
 
-            if let Some(fields) = self.aggregate_fields.get(&base_var.id) {
-                if let Some(field_var) = fields.get(&field.field) {
-                    return LoweredExpr { operand: IrOperand::Var(field_var.clone()), current: Some(active) };
-                }
+            if let Some(fields) = self.aggregate_fields.get(&base_var.id)
+                && let Some(field_var) = fields.get(&field.field)
+            {
+                return LoweredExpr { operand: IrOperand::Var(field_var.clone()), current: Some(active) };
             }
 
             if let Some(field_var) = self.materialize_schema_field(base_var, &field.field, active, blocks) {
@@ -6067,13 +6082,13 @@ impl IrGenerator {
                 "len" if call.args.is_empty() => {
                     let lowered = self.lower_expr(&field.expr, current, blocks, vars);
                     let active = lowered.current?;
-                    if let IrOperand::Var(var) = &lowered.operand {
-                        if let Some(elements) = self.aggregate_elements.get(&var.id) {
-                            return Some(LoweredExpr {
-                                operand: IrOperand::Const(IrConst::U64(elements.len() as u64)),
-                                current: Some(active),
-                            });
-                        }
+                    if let IrOperand::Var(var) = &lowered.operand
+                        && let Some(elements) = self.aggregate_elements.get(&var.id)
+                    {
+                        return Some(LoweredExpr {
+                            operand: IrOperand::Const(IrConst::U64(elements.len() as u64)),
+                            current: Some(active),
+                        });
                     }
                     let dest = self.new_var("len_tmp", IrType::U64);
                     self.block_mut(blocks, active)
@@ -6084,13 +6099,13 @@ impl IrGenerator {
                 "is_empty" if call.args.is_empty() => {
                     let lowered = self.lower_expr(&field.expr, current, blocks, vars);
                     let active = lowered.current?;
-                    if let IrOperand::Var(var) = &lowered.operand {
-                        if let Some(elements) = self.aggregate_elements.get(&var.id) {
-                            return Some(LoweredExpr {
-                                operand: IrOperand::Const(IrConst::Bool(elements.is_empty())),
-                                current: Some(active),
-                            });
-                        }
+                    if let IrOperand::Var(var) = &lowered.operand
+                        && let Some(elements) = self.aggregate_elements.get(&var.id)
+                    {
+                        return Some(LoweredExpr {
+                            operand: IrOperand::Const(IrConst::Bool(elements.is_empty())),
+                            current: Some(active),
+                        });
                     }
                     let len_dest = self.new_var("is_empty_len_tmp", IrType::U64);
                     let dest = self.new_var("is_empty_tmp", IrType::Bool);
@@ -6166,34 +6181,30 @@ impl IrGenerator {
                     let collection_operand = lowered_collection.operand;
                     if let (Expr::Identifier(receiver_name), IrOperand::Var(collection_var)) =
                         (field.expr.as_ref(), &collection_operand)
+                        && matches!(&collection_var.ty, IrType::Named(name) if name == "Vec")
+                        && let (Some(item_ty), Some(receiver_var)) =
+                            (inline_ir_type_repr(&self.operand_type(&lowered_value.operand)), vars.get_mut(receiver_name))
+                        && receiver_var.id == collection_var.id
                     {
-                        if matches!(&collection_var.ty, IrType::Named(name) if name == "Vec") {
-                            if let (Some(item_ty), Some(receiver_var)) =
-                                (inline_ir_type_repr(&self.operand_type(&lowered_value.operand)), vars.get_mut(receiver_name))
-                            {
-                                if receiver_var.id == collection_var.id {
-                                    receiver_var.ty = IrType::Named(format!("Vec<{}>", item_ty));
-                                }
-                            }
-                        }
+                        receiver_var.ty = IrType::Named(format!("Vec<{}>", item_ty));
                     }
                     let block = self.block_mut(blocks, active);
                     block.instructions.push(IrInstruction::CollectionPush {
                         collection: collection_operand.clone(),
                         value: lowered_value.operand.clone(),
                     });
-                    if let IrOperand::Var(collection_var) = &collection_operand {
-                        if let Some((root_id, field_name)) = self.schema_field_roots.get(&collection_var.id).cloned() {
-                            self.mutated_fields.entry(root_id).or_default().insert(field_name.clone());
-                            self.mutated_field_transitions.entry(root_id).or_default().insert(
-                                field_name.clone(),
-                                MutateFieldTransition {
-                                    field: field_name,
-                                    op: MutateTransitionOp::Append,
-                                    operand: lowered_value.operand,
-                                },
-                            );
-                        }
+                    if let IrOperand::Var(collection_var) = &collection_operand
+                        && let Some((root_id, field_name)) = self.schema_field_roots.get(&collection_var.id).cloned()
+                    {
+                        self.mutated_fields.entry(root_id).or_default().insert(field_name.clone());
+                        self.mutated_field_transitions.entry(root_id).or_default().insert(
+                            field_name.clone(),
+                            MutateFieldTransition {
+                                field: field_name,
+                                op: MutateTransitionOp::Append,
+                                operand: lowered_value.operand,
+                            },
+                        );
                     }
                     Some(LoweredExpr { operand: IrOperand::Const(IrConst::Bool(true)), current: Some(active) })
                 }
@@ -6245,16 +6256,12 @@ impl IrGenerator {
                     let collection_operand = lowered_collection.operand;
                     if let (Expr::Identifier(receiver_name), IrOperand::Var(collection_var)) =
                         (field.expr.as_ref(), &collection_operand)
+                        && matches!(&collection_var.ty, IrType::Named(name) if name == "Vec")
+                        && let (Some(item_ty), Some(receiver_var)) =
+                            (inline_ir_type_repr(&self.operand_type(&lowered_value.operand)), vars.get_mut(receiver_name))
+                        && receiver_var.id == collection_var.id
                     {
-                        if matches!(&collection_var.ty, IrType::Named(name) if name == "Vec") {
-                            if let (Some(item_ty), Some(receiver_var)) =
-                                (inline_ir_type_repr(&self.operand_type(&lowered_value.operand)), vars.get_mut(receiver_name))
-                            {
-                                if receiver_var.id == collection_var.id {
-                                    receiver_var.ty = IrType::Named(format!("Vec<{}>", item_ty));
-                                }
-                            }
-                        }
+                        receiver_var.ty = IrType::Named(format!("Vec<{}>", item_ty));
                     }
                     let dest = self.new_var("contains_tmp", IrType::Bool);
                     self.block_mut(blocks, active).instructions.push(IrInstruction::CollectionContains {
@@ -6298,16 +6305,12 @@ impl IrGenerator {
                     let collection_operand = lowered_collection.operand;
                     if let (Expr::Identifier(receiver_name), IrOperand::Var(collection_var)) =
                         (field.expr.as_ref(), &collection_operand)
+                        && matches!(&collection_var.ty, IrType::Named(name) if name == "Vec")
+                        && let (Some(item_ty), Some(receiver_var)) =
+                            (inline_ir_type_repr(&self.operand_type(&lowered_value.operand)), vars.get_mut(receiver_name))
+                        && receiver_var.id == collection_var.id
                     {
-                        if matches!(&collection_var.ty, IrType::Named(name) if name == "Vec") {
-                            if let (Some(item_ty), Some(receiver_var)) =
-                                (inline_ir_type_repr(&self.operand_type(&lowered_value.operand)), vars.get_mut(receiver_name))
-                            {
-                                if receiver_var.id == collection_var.id {
-                                    receiver_var.ty = IrType::Named(format!("Vec<{}>", item_ty));
-                                }
-                            }
-                        }
+                        receiver_var.ty = IrType::Named(format!("Vec<{}>", item_ty));
                     }
                     self.block_mut(blocks, active).instructions.push(IrInstruction::CollectionInsert {
                         collection: collection_operand,
@@ -6326,16 +6329,12 @@ impl IrGenerator {
                     let collection_operand = lowered_collection.operand;
                     if let (Expr::Identifier(receiver_name), IrOperand::Var(collection_var)) =
                         (field.expr.as_ref(), &collection_operand)
+                        && matches!(&collection_var.ty, IrType::Named(name) if name == "Vec")
+                        && let (Some(item_ty), Some(receiver_var)) =
+                            (inline_ir_type_repr(&self.operand_type(&lowered_value.operand)), vars.get_mut(receiver_name))
+                        && receiver_var.id == collection_var.id
                     {
-                        if matches!(&collection_var.ty, IrType::Named(name) if name == "Vec") {
-                            if let (Some(item_ty), Some(receiver_var)) =
-                                (inline_ir_type_repr(&self.operand_type(&lowered_value.operand)), vars.get_mut(receiver_name))
-                            {
-                                if receiver_var.id == collection_var.id {
-                                    receiver_var.ty = IrType::Named(format!("Vec<{}>", item_ty));
-                                }
-                            }
-                        }
+                        receiver_var.ty = IrType::Named(format!("Vec<{}>", item_ty));
                     }
                     self.block_mut(blocks, active).instructions.push(IrInstruction::CollectionSet {
                         collection: collection_operand,
@@ -6352,18 +6351,13 @@ impl IrGenerator {
                     let collection_operand = lowered_collection.operand;
                     if let (Expr::Identifier(receiver_name), IrOperand::Var(collection_var)) =
                         (field.expr.as_ref(), &collection_operand)
+                        && matches!(&collection_var.ty, IrType::Named(name) if name == "Vec")
+                        && let (IrType::Array(inner, _), Some(receiver_var)) =
+                            (self.operand_type(&lowered_slice.operand), vars.get_mut(receiver_name))
+                        && receiver_var.id == collection_var.id
+                        && let Some(item_ty) = inline_ir_type_repr(inner.as_ref())
                     {
-                        if matches!(&collection_var.ty, IrType::Named(name) if name == "Vec") {
-                            if let (IrType::Array(inner, _), Some(receiver_var)) =
-                                (self.operand_type(&lowered_slice.operand), vars.get_mut(receiver_name))
-                            {
-                                if receiver_var.id == collection_var.id {
-                                    if let Some(item_ty) = inline_ir_type_repr(inner.as_ref()) {
-                                        receiver_var.ty = IrType::Named(format!("Vec<{}>", item_ty));
-                                    }
-                                }
-                            }
-                        }
+                        receiver_var.ty = IrType::Named(format!("Vec<{}>", item_ty));
                     }
                     let block = self.block_mut(blocks, active);
                     block
@@ -6377,7 +6371,7 @@ impl IrGenerator {
         }
     }
 
-    fn lower_script_args_empty(&mut self, current: BlockId, blocks: &mut Vec<IrBlock>) -> LoweredExpr {
+    fn lower_script_args_empty(&mut self, current: BlockId, blocks: &mut [IrBlock]) -> LoweredExpr {
         let aggregate = self.new_var("script_args", IrType::Named(CKB_SCRIPT_ARGS_TYPE.to_string()));
         let bytes = self.new_var("script_args_bytes", IrType::Array(Box::new(IrType::U8), 0));
         let len = self.new_var("script_args_len", IrType::U64);
@@ -6876,10 +6870,10 @@ impl IrGenerator {
         if let Some(label) = self.call_target_labels.get(name) {
             return label.clone();
         }
-        if let Some((module, symbol)) = name.rsplit_once("::") {
-            if module == self.module.name {
-                return symbol.to_string();
-            }
+        if let Some((module, symbol)) = name.rsplit_once("::")
+            && module == self.module.name
+        {
+            return symbol.to_string();
         }
         name.to_string()
     }
@@ -6902,13 +6896,7 @@ impl IrGenerator {
             .cloned()
     }
 
-    fn materialize_schema_field(
-        &mut self,
-        base_var: &IrVar,
-        field: &str,
-        current: BlockId,
-        blocks: &mut Vec<IrBlock>,
-    ) -> Option<IrVar> {
+    fn materialize_schema_field(&mut self, base_var: &IrVar, field: &str, current: BlockId, blocks: &mut [IrBlock]) -> Option<IrVar> {
         let field_ty = self.lookup_field_ir_type(&base_var.ty, field)?;
         let field_var = self.new_var(format!("{}_{}", base_var.name, field), field_ty);
         self.block_mut(blocks, current).instructions.push(IrInstruction::FieldAccess {
@@ -7370,10 +7358,10 @@ fn qualify_validity_dependencies(
 ) {
     match expr {
         Expr::Call(call) => {
-            if let Expr::Identifier(name) = call.func.as_mut() {
-                if let Some((callee_module, function)) = resolver.resolve_function_with_module(owner_module, name) {
-                    *name = format!("{}::{}", callee_module, function_def_name(&function));
-                }
+            if let Expr::Identifier(name) = call.func.as_mut()
+                && let Some((callee_module, function)) = resolver.resolve_function_with_module(owner_module, name)
+            {
+                *name = format!("{}::{}", callee_module, function_def_name(&function));
             }
             qualify_validity_dependencies(&mut call.func, owner_module, resolver, fields, constant_dependencies);
             for arg in &mut call.args {
@@ -7475,6 +7463,16 @@ fn generate_with_resolver_inner(
     generate_with_resolver_diagnostics_inner(ast, resolver, module_name, include_external_callables).map_err(collapse_ir_errors)
 }
 
+#[derive(Default)]
+struct ExternalCallableContext {
+    function_effects: HashMap<String, EffectClass>,
+    function_param_types: HashMap<String, Vec<IrType>>,
+    function_return_types: HashMap<String, Option<IrType>>,
+    target_labels: HashMap<String, String>,
+    abis: Vec<IrCallableAbi>,
+    names: HashSet<String>,
+}
+
 fn generate_with_resolver_diagnostics_inner(
     ast: &Module,
     resolver: &ModuleResolver,
@@ -7487,13 +7485,8 @@ fn generate_with_resolver_diagnostics_inner(
     let mut flow_states = HashMap::new();
     let mut external_type_defs = Vec::new();
     let mut external_type_names = HashSet::new();
-    let mut external_callable_abis = Vec::new();
-    let mut external_callable_names = HashSet::new();
     let mut external_enum_definitions = HashMap::new();
-    let mut external_function_effects = HashMap::new();
-    let mut external_function_param_types = HashMap::new();
-    let mut external_function_return_types = HashMap::new();
-    let mut call_target_labels = HashMap::new();
+    let mut external_callables = ExternalCallableContext::default();
 
     let mut resolved_external_types: Vec<(String, String, TypeDef)> = Vec::new();
 
@@ -7529,12 +7522,7 @@ fn generate_with_resolver_diagnostics_inner(
                     &function,
                     resolver,
                     Some(&local_name),
-                    &mut external_function_effects,
-                    &mut external_function_param_types,
-                    &mut external_function_return_types,
-                    &mut call_target_labels,
-                    &mut external_callable_abis,
-                    &mut external_callable_names,
+                    &mut external_callables,
                 );
             }
         }
@@ -7570,28 +7558,33 @@ fn generate_with_resolver_diagnostics_inner(
                 &function,
                 resolver,
                 None,
-                &mut external_function_effects,
-                &mut external_function_param_types,
-                &mut external_function_return_types,
-                &mut call_target_labels,
-                &mut external_callable_abis,
-                &mut external_callable_names,
+                &mut external_callables,
             );
         }
     }
 
+    let ExternalCallableContext {
+        function_effects: external_function_effects,
+        function_param_types: external_function_param_types,
+        function_return_types: external_function_return_types,
+        target_labels: call_target_labels,
+        abis: external_callable_abis,
+        names: _,
+    } = external_callables;
     let generator = IrGenerator::with_import_context(
         ast.name.clone(),
-        type_fields,
-        type_kinds,
-        receipt_claim_outputs,
-        flow_states,
-        imported_type_validity,
-        external_enum_definitions,
-        external_function_effects,
-        external_function_param_types,
-        external_function_return_types,
-        call_target_labels,
+        IrImportContext {
+            type_fields,
+            type_kinds,
+            receipt_claim_outputs,
+            flow_states,
+            type_validity: imported_type_validity,
+            enum_definitions: external_enum_definitions,
+            external_function_effects,
+            external_function_param_types,
+            external_function_return_types,
+            call_target_labels,
+        },
     );
     let mut ir = generator.generate_diagnostics(ast)?;
     ir.external_type_defs = external_type_defs;
@@ -7704,18 +7697,14 @@ fn register_external_callable_context(
     function: &FunctionDef,
     resolver: &ModuleResolver,
     preferred_label: Option<&str>,
-    external_function_effects: &mut HashMap<String, EffectClass>,
-    external_function_param_types: &mut HashMap<String, Vec<IrType>>,
-    external_function_return_types: &mut HashMap<String, Option<IrType>>,
-    call_target_labels: &mut HashMap<String, String>,
-    external_callable_abis: &mut Vec<IrCallableAbi>,
-    external_callable_names: &mut HashSet<String>,
+    context: &mut ExternalCallableContext,
 ) {
     let symbol = function_def_name(function);
     let full_path = format!("{}::{}", owner_module, symbol);
-    let label = call_target_labels
+    let label = context
+        .target_labels
         .get(&full_path)
-        .or_else(|| call_target_labels.get(source_name))
+        .or_else(|| context.target_labels.get(source_name))
         .cloned()
         .or_else(|| preferred_label.map(str::to_string))
         .unwrap_or_else(|| callable_label_for(consumer_module, owner_module, symbol));
@@ -7724,14 +7713,14 @@ fn register_external_callable_context(
     let return_type = function_def_return_type(function);
 
     for key in [source_name.to_string(), full_path.clone(), label.clone()] {
-        external_function_effects.insert(key.clone(), effect);
-        external_function_param_types.insert(key.clone(), params.clone());
-        external_function_return_types.insert(key, return_type.clone());
+        context.function_effects.insert(key.clone(), effect);
+        context.function_param_types.insert(key.clone(), params.clone());
+        context.function_return_types.insert(key, return_type.clone());
     }
-    call_target_labels.insert(source_name.to_string(), label.clone());
-    call_target_labels.entry(full_path).or_insert_with(|| label.clone());
+    context.target_labels.insert(source_name.to_string(), label.clone());
+    context.target_labels.entry(full_path).or_insert_with(|| label.clone());
     if owner_module != consumer_module {
-        push_external_callable_abi(external_callable_abis, external_callable_names, label, function);
+        push_external_callable_abi(&mut context.abis, &mut context.names, label, function);
     }
 }
 

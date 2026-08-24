@@ -1,10 +1,13 @@
 # CellScript 0.23 Roadmap
 
-**Status**: Draft, pending release-line coordination before adoption
-**Scope**: public registry production deployment on `cellscript.dev`, Python
-test/fixture scaffolding ported to Rust, deeper RGB++ / Fiber integration, and
-a Myelin-aligned Off-Chain Session Runtime profile with initial concurrency
-support
+**Status**: Implementation scope frozen on 2026-08-09; stable release and
+production CKB claims still require their documented clean-tree gates and
+external evidence
+**Scope**: one Edition 2026 source-semantics epoch, an independently resolved
+compatibility profile, canonical CKB
+`WitnessArgs.input_type` entry placement, public registry production deployment
+on `cellscript.dev`, completed native test/fixture tooling, and the bounded
+Fiber/RGB++ evidence actually obtained on this line
 **Depends on**: the 0.22 typed transaction views, bounded collections, stable
 `E2xxx` diagnostics, the existing `cellscript-fiber-adapter` no-profile path,
 the implemented `services/registry-api` write boundary, the production
@@ -12,68 +15,270 @@ boundary ADR, and the Myelin Session L2 plan
 
 ## Goal
 
-0.23 is the first CellScript release whose headline is *operational* rather
+0.23 is the first CellScript release line whose headline is *operational* rather
 than language-theoretic. 0.22 closed the first slice of the type/set roadmap
 and the bounded Fiber path; 0.23 turns those compiler facts into a running
-public package registry, drops Python from the project's tooling contract,
-pushes RGB++ / Fiber further toward production, and introduces a new
-Off-Chain Session Runtime profile so that the Myelin vendored fork can stop
-diverging.
+public package registry, drops Python from the project's tooling contract, and
+preserves the bounded Fiber/RGB++ path without overstating incomplete external
+evidence.
 
-The four pillars below are independent enough to be tracked as separate work
-packages, but they share one discipline: every claim must remain tied to
-compiler evidence or builder-backed chain evidence, and every "production"
-word must distinguish *deployed and observed* from *gated and certified*.
+The four original pillars below were independent planning packages. The final
+scope adopts the first two, preserves only the bounded completed slice of the
+third, and retires the fourth. They share one discipline: every claim remains
+tied to compiler evidence or builder-backed chain evidence, and every
+"production" word distinguishes *deployed and observed* from *gated and
+certified*.
 
-This is a draft roadmap, not an implementation contract. It must be matched
-against `CHANGELOG.md`, the release gate, and any in-flight branch before
-adoption.
+This file preserves the original four-pillar plan and records the final scope
+decision below. It must be read with `CHANGELOG.md`, the 0.23 release notes, and
+the release gate; historical planned text is not evidence that a deferred item
+shipped.
+
+## Final Scope Decision (2026-08-09)
+
+The 0.23 implementation boundary is frozen around the work that is present and
+gated in this repository:
+
+- Edition 2026, the resolved compatibility profile, metadata schema 57,
+  canonical `WitnessArgs.input_type` placement, and the persisted identity cut;
+- the deployed public Registry read/write/source-package verification slice,
+  generalized artifact/reproduction/deployment/commitment support, the
+  publisher browser-session flow, and the isolated Pudge sandbox;
+- the Rust/shell/Node native tooling boundary and repository source policy;
+- the content-addressed bounded Fiber evidence/adapter improvements actually
+  recorded by the release line; and
+- the website, Wiki, release-note, and toolchain freshness closure enforced by
+  `dev` and `ci`.
+
+Three categories are deliberately not relabelled as completed 0.23 work:
+
+1. Deploying the canonical Registry Scripts on CKB mainnet, spending a real
+   publisher wallet, and publishing the first real non-CellScript commitment
+   need operator authority, funds, wallet approval, public-chain transactions,
+   confirmations, and configuration readback. They remain external operational
+   checkpoints rather than local implementation tasks.
+2. The complete pinned Fiber lifecycle/negative matrix and protocol-level
+   RGB++ promotion remain external evidence work. Representative devnet rows do
+   not close those matrices.
+3. The proposed Off-Chain Session Runtime compiler profile is retired rather
+   than shipped. Current Myelin no longer vendors CellScript: it invokes an
+   independently versioned compiler process through an attested adapter,
+   compiles production requests under `ckb`, keeps scheduler plans as sidecar
+   evidence, and forces `CkbStrict` for session/court paths. Moving
+   `MyelinExtended` semantics into CellScript would weaken that separation.
+
+The independent artifact checker, executable package tests, source maps,
+Myelin adapter handoff, and conditional Fiber/RGB++ promotion are specified in
+the [0.24 roadmap](CELLSCRIPT_0_24_ROADMAP.md). This scope decision follows the
+risk register's existing permission to cut the CellScript release when Myelin
+or external evidence slips; it does not claim that the deferred evidence
+passed.
+
+## Completed Release-Line Foundation: Source Edition And Compatibility Axes
+
+Before the four operational pillars, 0.23 closes two compiler-wide contracts
+that every later package and builder depends on.
+
+### One Edition Contract
+
+Edition 2026 is the first and only CellScript edition. Every package declares
+`edition = "2026"`; missing or different values fail during manifest parsing.
+There is no migration command, implicit alternate edition, or compatibility
+parser because no published CellScript ecosystem needs one. `2026` is a
+long-lived source-semantics epoch label, not a promise to mint one edition per
+year.
+
+The edition owns source-language meaning: syntax ambiguity, name resolution,
+type/coercion behavior, desugaring, and source-observable semantics. Target
+profile, primitive assurance, entry-payload encoding, CKB witness placement,
+metadata schemas, and compiler SemVer are independent version axes. The
+compiler composes all compatibility-relevant axes except compiler SemVer into
+`cellscript-resolved-compatibility-profile-v1`, emits it in metadata, and
+hashes it into registry records, `Cell.lock`, `Deployed.toml`, compile
+receipts, and generated action builders. A tool cannot change one axis while
+continuing to claim the same build identity.
+
+The same edition value crosses every compiler consumer:
+
+- CLI package commands read it from `Cell.toml`;
+- standalone and in-memory compiler calls use the current edition explicitly;
+- LSP-loaded modules carry the edition into compilation;
+- WASM exports require the caller to pass `"2026"`; and
+- the website worker and generated TypeScript bindings pass and report the same
+  value.
+
+### Canonical Entry Witness Placement
+
+The entry payload keeps the self-identifying `cellscript-entry-witness-v1`
+format (`CSARGv1\0` plus positional arguments). The independently versioned
+placement ABI gives it one CKB location:
+
+```mermaid
+flowchart LR
+    A["CKB witnesses: Bytes[]"] --> B["GroupInput#0<br/>or GroupOutput#0"]
+    B --> C["Molecule WitnessArgs"]
+    C --> L["lock: signer/Lock Script data"]
+    C --> I["input_type: CSARGv1 CellScript entry payload"]
+    C --> O["output_type: other Type Script data"]
+```
+
+The generated entry wrapper first loads `GroupInput#0`; for an output-only
+script group it uses `GroupOutput#0`. It validates the Molecule table and the
+`BytesOpt` field before decoding `input_type`. A raw `CSARGv1` payload, malformed
+table, absent `input_type`, or payload placed in `lock`/`output_type` fails
+closed with runtime error 25. Builders preserve the other two fields and reject
+an occupied `input_type` instead of silently overwriting it.
+
+This removes the former ambiguity between two byte layouts without inventing a
+CellScript-specific replacement for CKB's shared Witness convention.
+
+### Persisted Identity Cut
+
+Because no ecosystem migration is required, 0.23 accepts only the new identity
+set:
+
+- compile metadata schema 57 with source schema 2, artifact schema 1, and
+  constraints schema 2;
+- `Cell.lock` version 2;
+- `Deployed.toml` version 2 with
+  `cellscript-deployed-v0.23-edition-2026`;
+- edition-bound compile receipts and generated action builders; and
+- registry build records with a required compatibility-profile hash.
+
+Readers reject missing, mismatched, or superseded identities. They do not
+infer ABI or metadata versions from Edition 2026.
+
+### Acceptance Boundary
+
+The foundation is complete only when manifest parsing, compile metadata,
+artifact verification, registry resolution, lock/deployment checks, CLI, LSP,
+WASM, website bindings, entry-wrapper codegen, builders, examples, and docs all
+agree. Valid and invalid CKB-VM fixtures must cover canonical
+`WitnessArgs.input_type`, malformed offsets, absent fields, raw-payload
+rejection, and output-only group selection. NovaSeal live and planned-profile
+devnet constructors must use the same placement rather than maintaining a
+release-only raw-witness path. Routine merge evidence is `dev` and `ci`; because
+witness placement changes generated RISC-V, the clean-tree `backend` gate
+remains required before a production claim.
+
+The 2026-07-31 syntax audit also closed the source-level consistency slice of
+this foundation:
+
+- comma-terminated type fields are the formatter's canonical output, while
+  comma-free fields remain accepted compatibility input;
+- quick, CI, and deep syntax-combination matrices require both field forms;
+- the checked atomic-swap, NFT, timelock, and multi-phase-DAO example pairs use
+  local `U64_MAX` constants instead of opaque maximum or `MAX - delta`
+  literals; and
+- CKB-VM crypto primitive fixtures place `CSARGv1` in
+  `WitnessArgs.input_type`, so they exercise placement ABI v2 rather than the
+  retired raw-witness alias.
+
+The `dev` and `ci` gates enforce the canonical example and integer-boundary
+rules. This closure does not add syntax, relax the entry ABI, or expand the
+production example matrix.
+
+Source documents:
+
+- [0.23 development release notes](../docs/releases/CELLSCRIPT_0_23_RELEASE_NOTES.md)
+- [CellScript Edition Policy](../docs/CELLSCRIPT_EDITION_POLICY.md)
+- [Entry Witness ABI](../docs/CELLSCRIPT_ENTRY_WITNESS_ABI.md)
+- [Metadata verification tutorial](../docs/wiki/Tutorial-06-Metadata-Verification-and-Production-Gates.md)
 
 ## Pillar 1: Public Registry Production Deployment
 
-The registry is the largest 0.23 feature. The write API (`services/registry-api`)
-is already implemented to the boundary described in
+**Status (2026-08-02): production infrastructure, public reads, website, CLI
+resolution, evidence promotion, and the bounded automatic source/build
+verification pipeline are implemented and deployed. The generalized artifact,
+independent reproduction, mainnet deployment, and configured chain-commitment
+paths are implemented in-tree. Production chain commitment is not active until
+the canonical Registry Type Script, commitment custody Lock, and both code
+CellDeps are deployed, sufficiently confirmed, and configured. A publisher-owned wallet publication, a real
+non-CellScript mainnet artifact, and clean-machine consumption remain adoption
+checkpoints.**
+
+The canonical Registry Type Script source, reproducible release identity,
+CKB-VM lifecycle/authorization tests, and production configuration pinning are
+now implemented in-tree. The unchecked item below is specifically the external
+mainnet transaction, confirmation, and operator configuration checkpoint.
+
+The registry is the largest 0.23 feature. The write API
+(`services/registry-api`) implements the boundary described in
 [`docs/CELLSCRIPT_REGISTRY_PRODUCTION_BOUNDARY_ADR.md`](../docs/CELLSCRIPT_REGISTRY_PRODUCTION_BOUNDARY_ADR.md):
-JoyID-rooted capability authorisation, scoped capability keys, namespace claim
-cooldown, R2 source snapshots, Neon Postgres state, static `/packages/*` read
-path, idempotent publish, and admin-gated status transitions. The 0.23 work
-is to actually deploy it on `cellscript.dev` and to wire the frontend and CLI
-into the same trust model.
+wallet-rooted JoyID or CKB secp256k1 capability authorisation, scoped capability
+keys, namespace claim
+cooldown, content-addressed source snapshots, Postgres state, a separate static
+`/packages/*` read path, idempotent publish, admin-gated suppressive
+transitions, and evidence-gated assurance promotion.
+
+The Edition 2026 plus resolved-profile contract slice is complete across the
+Rust publisher/reader, API validation, deployed Postgres schema,
+version-addressed package JSON, checked-in registry fixture, and website data
+model. These surfaces accept one complete entry shape; there is no fallback
+reader for omitted fields. Generic admin status changes cannot create
+`verified_build`, `deployed`, or `on_chain_committed` claims. The ordered
+`/promote` endpoint requires identity-bound evidence for each transition.
 
 ### Production Domains And Hosting
 
 ```text
-cellscript.dev                -> Astro site (Cloudflare Pages) + playground
-registry.cellscript.dev       -> static/CDN read path backed by R2 objects
-api.registry.cellscript.dev   -> authenticated Cloudflare Worker write API
+cellscript.dev                -> Astro static site + WASM playground
+registry.cellscript.dev       -> read-only nginx over the Registry object volume
+api.registry.cellscript.dev   -> Node 22 Registry API + Postgres 17
+HTTPS                          -> shared HTTPS Portal with persisted ACME state
 ```
 
-The site stays static where it can and only the write path is dynamic.
-Ordinary package reads never touch Hyperdrive or the write store; the
-`/packages/:namespace/:name/versions/:version.json` route is served from R2
-with CDN cache headers.
+All three public hosts are live on the production server. The API/database use
+an isolated internal network; only the API and static read container join the
+existing TLS proxy network. Source snapshots and package JSON share a
+persistent volume, mounted read/write by the API and read-only by nginx.
+Ordinary direct package reads therefore do not touch Postgres or the write
+process. The Cloudflare Worker/Hyperdrive/R2 implementation remains a portable
+alternative deployment, not a claim about the current topology.
 
 ### Scope
 
-- Stand up `services/registry-api` on Cloudflare Workers against a real Neon
-  Postgres instance through Hyperdrive, with the `REGISTRY_ADMIN_TOKEN`,
-  Hyperdrive, and R2 bindings configured as secrets/bindings rather than in
-  `wrangler.toml`.
-- Provision the two R2 buckets (`REGISTRY_OBJECTS`, `SOURCE_SNAPSHOTS`) and
-  the static `/packages/*` write-before-admit path described in the ADR.
-- Bring the staging slice (`staging-registry.cellscript.dev`) up first; the
-  production slice is cut over only after staging has run the acceptance
-  scenarios end to end.
-- Wire the Astro frontend (the existing `website/src/pages/registry*` surface
-  and `RegistryLayout.astro`) to the live read path so the website renders
-  real registry entries instead of the static
-  `website/src/data/registry-packages.json` snapshot.
-- Replace the website publish page with a real JoyID/CCC-backed submit flow
-  that signs `cellscript-registry-auth-v1` capability payloads through the
-  CCC JoyID CKB signer and posts them to `/v1/capabilities`.
-- Keep the existing `npm run prepare:registry` regeneration as a fallback
-  fixture path; it must not become the read authority for the production
-  site.
+- [x] Deploy `services/registry-api` with generated database/admin secrets,
+  persistent Postgres/object volumes, migrations, health checks, bounded
+  request bodies, read-only root filesystems, structured logs, and log rotation.
+- [x] Serve version-addressed `/packages/*` JSON from a read-only process
+  independent of the API and Postgres.
+- [x] Publish trusted TLS for `registry.cellscript.dev` and
+  `api.registry.cellscript.dev`; configure the API vhost for the publish
+  contract's 8 MiB proxy limit.
+- [x] Wire the Astro Registry list and dynamic detail pages to the live API,
+  remove Coming Soon, and label the checked-in fixture strictly as a read-only
+  mirror used only when the API is unavailable.
+- [x] Keep the CCC wallet submit page on the same canonical
+  `cellscript-registry-auth-v1` capability protocol.
+- [x] Expose namespace ownership as an explicit first-publish step through
+  `cellc auth namespace claim` and the submit page, matching the deployed
+  `/v1/namespaces/claim` admission boundary.
+- [x] Implement and expose public search/detail/evidence reads plus ordered
+  evidence promotions.
+- [x] Make publish admission enqueue a transactional verification job; claim it
+  with Postgres leases and `SKIP LOCKED`; authenticate and compile the immutable
+  snapshot in a bounded, least-privilege worker; atomically promote it to
+  `verified_build`; converge the static version object; and expose queue
+  metrics, dead letters, and audited manual requeue.
+- [x] Keep unverified versions available by direct URL and explicit status
+  query, while limiting the default public list/search and resolver to
+  `verified_build`, `deployed`, and `on_chain_committed`.
+- [x] Separate CellScript dependencies, deployable CKB executables, runtime
+  verifiers, reproducible binaries, and copy-only templates with closed
+  artifact/profile/language/consumption contracts across API, CLI, verifier,
+  website, and immutable bundles.
+- [x] Require independent `reproduced_build` reports before a reproducible
+  artifact can become verified or acquire deployment evidence.
+- [x] Generate wallet-ready Registry commitment intents, scan exact configured
+  Type Script matches, and reconcile spent commitments or stale deployments
+  without deleting historical evidence.
+- [ ] Deploy and configure the canonical mainnet Registry Type Script,
+  commitment custody Lock, and both code CellDeps; then publish and commit the first real non-CellScript
+  mainnet artifact.
+- [ ] Complete a publisher-owned wallet capability, namespace claim,
+  publication, replay, revocation, and first clean-machine install against
+  production.
 
 ### CLI Alignment
 
@@ -81,45 +286,84 @@ with CDN cache headers.
   keeping `--offline` and the Git/`registry.json` path as explicit audit and
   fallback modes.
 - Verify `cellc auth capability create/submit/revoke` against the deployed
-  Worker end to end, including the JoyID signature verification, capability
-  key persistence in the OS keychain, and CI signing via
+  write service end to end, including JoyID and CKB secp256k1 signature
+  verification, capability-key persistence in the OS keychain, and CI signing via
   `CELLSCRIPT_CAPABILITY_PRIVATE_KEY_PKCS8_B64`.
 - Confirm idempotency (`Idempotency-Key`, `x-idempotency-status: replayed`),
-  nonce consumption ordering, and the fail-fast-before-object-storage rule
-  against the live Worker.
-- Ensure `cellc install`/`cellc update` resolve against
-  `registry.cellscript.dev` by default and keep hash-first verification
-  (source hash, manifest hash, build identity) intact.
+  request-owned nonce release on pre-admission failure, transactional admission,
+  and the fail-fast-before-object-storage rule against the live write service.
+- `cellc install`/`cellc update` now query
+  `api.registry.cellscript.dev` by default, select only accepted public
+  statuses, then download the version's immutable Registry snapshot and verify
+  its SHA-256 descriptor, per-file BLAKE2b hashes, safe paths, edition/profile,
+  and whole-tree source hash. `CELLSCRIPT_REGISTRY_URL` remains the explicit
+  legacy Git/`registry.json` offline authority override.
 
 ### Acceptance Boundary
 
-Production-readiness for the registry means all of:
+Production-readiness evidence for the already deployed source-package slice
+currently proves:
 
-- staging runs the full positive and negative publish flow (capability
-  creation, JoyID signature, namespace claim cooldown, publish, replay,
-  revoke, quarantine, yank);
-- the static read path survives a write-store outage (packages remain
-  readable from R2);
-- existing package versions are rejected before source snapshot writes;
-- per-IP/ASN/principal/capability/namespace/package quotas behave under
-  forged-payload, replay, and burst tests;
-- the admin audit log records every capability, namespace, publish, and
-  override transition with an attributable actor;
-- the first real CellScript source package is published through the
-  production flow and resolves on a clean machine via `cellc install`.
+- all API type checks and 42 admission/state-machine tests pass locally;
+- the independent Rust verifier compiles a generated snapshot with the real
+  compiler and rejects source, manifest, and compatibility-profile drift;
+- an isolated production Compose topology completed a real `cellc publish` from
+  queue admission through leased compilation, evidence persistence,
+  `verified_build`, default-list visibility, and static-object publication;
+- the live production topology repeated that path from external `cellc publish`
+  through real compiler verification and a fresh consumer install/check/build
+  without `--allow-unverified`; the explicitly seeded smoke identity and its
+  served rows/objects were removed afterward;
+- live health/readiness checks cover Postgres, the object volume, runtime, and
+  admin configuration;
+- the website has a tracked read-only nginx/Compose deployment, and all three
+  public surfaces preserve their intended security headers through TLS;
+- the proxy admits a 2 MiB body to application validation and the Node adapter
+  rejects 7 MiB + 1 byte with a structured 413;
+- unauthorised admin writes, invalid public queries, static POSTs, and traversal
+  attempts are rejected;
+- immutable snapshot descriptors are present in public/static version records,
+  and the resolver fails closed on opaque archives, traversal, file-hash drift,
+  object-hash drift, or source-tree drift;
+- API restart recovery preserves the database, audit log, and object volumes;
+- the daily systemd backup produces checksum-verified Postgres and object-store
+  archives, and a post-`0002` backup captured the migrated, cleaned production
+  state; an isolated Postgres 17/object-volume drill restored both migrations,
+  all seven core tables, and the complete object archive;
+- the website serves the live Registry and contains no Coming Soon surface.
+- a cryptographically valid WebAuthn-shaped P-256 fixture completes capability
+  registration, explicit namespace claim, signed publish, idempotent replay,
+  API/static/snapshot reads, and a fresh-directory install/check/build against
+  production; this proves deployment mechanics but is not publisher-owned
+  JoyID evidence.
 
-The existing `services/registry-api` test suite is the baseline. New
-end-to-end coverage belongs in a deployable scenario harness, not in the
-compiler test gate.
+The remaining deployment checkpoints are intentionally concrete: complete a
+positive publisher-owned wallet flow and install its first accepted source
+package on a clean machine; then deploy/configure the canonical Registry
+Scripts and exercise reproduction, deployment, commitment, index discovery,
+and lifecycle demotion with a real mainnet non-CellScript artifact. Unit-test
+signatures, transaction intents, or direct database seeding do not satisfy
+those checkpoints.
+
+The existing `services/registry-api` typecheck, unit suite, Node API/verifier
+builds, dry-run Worker build, and the independent Rust verifier tests/clippy run
+in the unified `ci` gate as the local contract baseline. `dev` checks the Rust
+verifier crate. Deployed end-to-end coverage still belongs in a staging
+scenario harness; local compiler CI is not evidence for either the self-hosted
+runtime or the optional Cloudflare/R2/Hyperdrive/Neon adapter.
 
 ### Non-Goals
 
-- No on-chain deployment record submission in the first slice. On-chain
-  attestation uses the same identity model but is feature-gated and must not
-  be mixed into the first write API.
+- No claim that a transaction intent is an on-chain commitment. Only a
+  sufficiently confirmed live mainnet Cell matching the configured Registry
+  Type Script, commitment Lock, exact commitment data, and both live code
+  CellDeps can produce current `on_chain_committed` state.
+- No Registry ownership of application business Cells. The Registry identifies
+  code, build, TCB, deployment, and commitment evidence; application state Cells
+  remain under their own Lock/Type Scripts and transaction protocols.
 - No bond or refundable deposit mechanism; the schema leaves `policy_hooks`
   and `bond_policy_hooks` for later.
-- No non-`joyid_ckb` publisher principals.
+- No testnet Registry authorisation, deployment, or commitment state.
 - No D1 as primary database.
 
 Source documents:
@@ -128,63 +372,39 @@ Source documents:
 - [Registry Phase 1 walkthrough](../docs/CELLSCRIPT_REGISTRY_PHASE1.md)
 - [Registry API service README](../services/registry-api/README.md)
 
-## Pillar 2: Python Tooling Ported To Rust
+## Pillar 2: Native Tooling Migration Complete
 
-CellScript currently carries a non-trivial Python surface in `scripts/`,
-`proposals/*/scripts/`, and `website/scripts/`. None of it is the compiler,
-but several pieces are load-bearing for the gate, for NovaSeal/Evolving-DOB
-evidence, and for the website registry data:
+CellScript's load-bearing tooling is now Python-free. Gate, evidence, and
+proposal logic lives in Rust; Astro-facing website data generation stays in
+the website's native Node runtime.
 
-- `cellscript_strict_backend_audit.py` — drives the strict backend audit
-  mode of the gate.
-- `cellscript_syntax_combo_audit.py` — drives the syntax-combination matrix
-  in `tests/syntax_combo/`.
-- `validate_ckb_cellscript_production_evidence.py`,
-  `validate_cellscript_tooling_release.py` — release evidence validators
-  consumed by `scripts/ckb_cellscript_acceptance.sh` and the gate.
-- `novaseal_*.py` and `evolving_dob_*.py` — proposal-scoped devnet/stateful
-  harnesses, signing vectors, and external evidence adapters under
-  `proposals/novaseal/scripts/`, `proposals/novaseal/v0-mvp-skeleton/scripts/`,
-  `proposals/novaseal/agreement-profile-v0/scripts/`, and
-  `proposals/evolving-dob/evolving-dob-profile-v1/scripts/`.
-- `check_cellscript_skill_pack.py` — validates the CellScript programming
-  skill pack surface.
-- `website/scripts/regen-website-data.py`,
-  `website/scripts/generate-registry-data.py`,
-  `website/scripts/fetch-github-data.py` — website data regeneration.
+### Implemented Scope
 
-### Scope
-
-Port the load-bearing Python surface into Rust workspace members or
-crate-local test harnesses, with one rule: any ported tool that the release
-gate depends on must continue to produce byte-identical evidence reports so
-historical comparisons remain valid.
-
-Concretely:
-
-- introduce a `cellscript-tools` workspace crate (already partially present
-  as `crates/cellscript-tools`) that hosts the Rust ports of the
-  backend-audit, syntax-combo driver, production-evidence validator, and
-  tooling-release validator. Each port keeps the same output schema and the
-  same exit-code contract as the Python original.
-- move the NovaSeal and Evolving-DOB proposal scripts into per-proposal
-  Rust harnesses under their existing `proposals/*/` trees, preserving the
-  content-addressed evidence-file discipline (CKB Blake2b-256 digest,
-  non-empty regular file, reject symlinks/parent traversal/absolute paths).
-- replace `website/scripts/*.py` with TypeScript/Node scripts under
-  `website/scripts/` that the Astro build already understands, so the
-  website build stops pulling a Python runtime.
-- delete the original Python files only after the Rust/TS port passes the
-  same gate mode that the Python original gated.
-- update `scripts/cellscript_gate.sh` mode definitions (`dev`, `ci`,
-  `backend`, `release`, `release-quick`) to invoke the Rust/TS ports, and
-  drop the `python3` shell-syntax check arm once no tracked Python remains.
+- `crates/cellscript-tools` owns strict backend and syntax-combination audits,
+  repository checks, release validators, CKB acceptance, NovaSeal fixtures,
+  external-evidence adapters, Fiber experiments, and live/stateful runners.
+- `proposals/novaseal/tools` owns NovaSeal package-local vector, schema, ABI,
+  audit-surface, and fixture harnesses.
+- `proposals/evolving-dob/evolving-dob-profile-v1/tools` owns registry pressure
+  and devnet workflow validation.
+- `website/scripts/*.mjs` owns registry, compiler-output, and GitHub activity
+  data generation without introducing a second runtime into the Astro build.
+- `scripts/cellscript_gate.sh` invokes only Rust, shell, and Node tooling. The
+  retired syntax-check arm and all tracked interpreter sources have been
+  removed; a repository-wide native source policy prevents reintroduction.
+- Evidence producers preserve their established JSON shape where it remains
+  part of the release contract; implementation-origin fields now truthfully
+  identify the Rust harness and transaction-recipe replay path.
+- Profile-operator fixture generation accepts an explicit evidence root, and
+  its integration coverage constructs isolated reports instead of depending
+  on stale developer-machine files below `target/`.
 
 ### Acceptance Boundary
 
-- `./scripts/cellscript_gate.sh dev` and `ci` pass without Python installed.
-- Every historical evidence report a ported tool used to produce can still be
-  reproduced bit-for-bit from the same inputs.
+- `./scripts/cellscript_gate.sh dev` and `ci` pass with only the declared Rust,
+  shell, and Node runtimes.
+- Deterministic static reports remain byte-stable for the same inputs; live
+  reports preserve their schemas while binding fresh devnet transactions.
 - The NovaSeal verifier pinning check still recomputes BLAKE2b and SHA-256
   over the same ELF and compares against the same `Cell.toml` and
   `proofs/*.template.json` hashes.
@@ -194,8 +414,8 @@ Concretely:
 ### Non-Goals
 
 - No rewrite of the compiler, the gate script's bash orchestration, or the
-  CKB acceptance harness's bash wrappers. Only the Python leaves the
-  contract.
+  CKB acceptance harness's bash wrappers. The migration changes the native
+  tooling implementation, not those orchestration boundaries.
 - No change to the evidence schema or file naming.
 - No dropping of historical evidence files; the ports must keep reading
   them.
@@ -207,6 +427,12 @@ Source documents:
 - [`scripts/cellscript_gate.sh`](../scripts/cellscript_gate.sh)
 
 ## Pillar 3: RGB++ And Fiber Integration
+
+**Final 0.23 disposition**: bounded adapter and content-addressed evidence
+hardening is retained; the complete external Fiber matrix and RGB++ protocol
+promotion move to the conditional evidence track in 0.24. This section records
+the original target and the remaining boundary, not a claim that every item
+below completed.
 
 0.22 shipped a narrow, no-profile Fiber path: the dedicated
 `fungible-type-group-v1` compiler entry, the `cellscript-fiber-adapter`, and
@@ -282,105 +508,64 @@ Source documents:
 
 ## Pillar 4: Off-Chain Session Runtime Profile (Myelin Alignment)
 
-The Myelin repository vendors a copy of CellScript at
-`/Users/arthur/RustroverProjects/Myelin/cellscript`, currently pinned at
-`0.21.1`. It has already diverged: the workspace members differ, the
-vendored fork is behind the 0.22 type/set surface, and Myelin's own session
-L2 plan calls for a court-facing `CkbStrict` VM profile and a finite session
-ledger whose disputed chunks project into CKB-compatible replay. 0.23
-absorbs the language-side needs of that plan so Myelin can stop carrying a
-private fork.
+**Final 0.23 disposition**: superseded and not implemented as a CellScript
+target profile. Myelin's current repository has already removed the vendored
+compiler architecture assumed by this proposal. Its `cellscript-adapter`
+attests an independently versioned external compiler, production requests use
+the CellScript `ckb` target, scheduler plans remain off-chain sidecars, and
+session/court execution is Myelin-owned `CkbStrict`. The 0.24 handoff therefore
+updates that adapter to the completed CellScript identity/checker boundary
+without introducing `MyelinExtended` semantics into CellScript.
 
-### Scope
+### Current Boundary
 
-Introduce an `Off-Chain Session Runtime` target profile in the CellScript
-compiler that gives Myelin (and any other bounded off-chain session runtime)
-a first-class, fail-closed compilation entry for session-shaped contracts.
-The profile is opt-in and does not change the default CKB profile.
+- CellScript owns source semantics, the `ckb` target contract, generated
+  artifact/metadata identities, and scheduler access templates.
+- Myelin owns its finite-session VM, authenticated state resolution, conflict
+  hashes, scheduler plans, finality, DA, projection receipts, and the
+  distinction between `CkbStrict` and `MyelinExtended` execution.
+- Scheduler binding names are diagnostics. Myelin resolves every final
+  conflict key from authenticated concrete Cells and validated type-script
+  identity.
+- Myelin compiler fixtures may live in Myelin, but compiler source and
+  workspace crates do not.
 
-The profile's initial deliverables:
+### 0.24 Handoff
 
-- A new target profile metadata entry, distinct from the existing `ckb`
-  profile, that records:
-  - `vm_profile` (e.g. `ckb_strict` vs `myelin_extended`);
-  - session commitment shape (`SessionId`, `ChunkCommitment`,
-    `DisputeBundle`, `SettlementIntent` references, not values);
-  - whether the artifact is court-facing or off-chain-only;
-  - whether concurrency is permitted.
-- A bounded concurrency primitive surface for the off-chain path only. This
-  is the *initial* concurrency support: a finite, scheduler-visible set of
-  session-scoped operations whose semantics are well-defined under Myelin's
-  session model (ordered chunk commitments, deterministic state-root
-  transitions, scheduler commitments). It is **not** a general
-  threading/actor model and does not enter the CKB profile.
-- A fail-closed rule: any artifact compiled under the Off-Chain Session
-  Runtime profile that is later projected into a CKB court path must
-  recompile under `ckb_strict` and must not carry `MyelinExtended` semantics
-  unless the projection layer explicitly proves compatibility.
-- Compiler metadata and `cellc explain-*` output that distinguish
-  court-facing from off-chain-only artifacts, so auditors can tell which
-  profile an artifact was built under.
+The next integration step is one explicit adapter-lock transition to the
+completed Edition 2026, metadata/profile, and canonical witness identities,
+followed by adoption of the independent artifact checker. No fallback reader,
+raw-witness alias, off-chain compiler target, or general concurrency syntax is
+added to make that transition easier.
 
-### Myelin Re-Convergence
-
-After the profile lands in upstream CellScript:
-
-- Myelin drops its vendored fork and consumes the published CellScript
-  release as a normal dependency.
-- The Myelin Session L2 P0 skeleton (`SessionOpen`, `ChunkCommitment`,
-  `DisputeBundle`, `SettlementIntent`) consumes the new profile instead of
-  patching the compiler.
-- The `CkbStrict` default for court-facing execution becomes a CellScript
-  profile fact, not a Myelin-local deviation.
-- Legacy group-source encoding and other deviations recorded in
-  `MYELIN_CKB_SEMANTIC_DEVIATIONS.md` move into the upstream profile contract
-  or are removed.
-
-### Acceptance Boundary
-
-- The Off-Chain Session Runtime profile is parser/type/lowering/metadata/
-  codegen/LSP/docs gated just like any other target profile.
-- The concurrency surface is bounded: every permitted concurrent operation
-  has a documented scheduler contract, a deterministic replay story, and a
-  fail-closed fallback when the host runtime does not provide it.
-- No `MyelinExtended` artifact may claim CKB court compatibility without an
-  explicit projection proof in metadata.
-- The Myelin Teeworlds fixture still finalises with both the static
-  committee and Tendermint and produces identical state-transition
-  commitments but different finality evidence.
-
-### Non-Goals
-
-- No general `channel` or session-type syntax in the core language. The 0.22
-  type/set roadmap already defers this; 0.23 keeps it deferred.
-- No independent app-chain features for Myelin: block production, P2P
-  gossip, fork choice, validator-set lifecycle, slashing, fee markets, or
-  app-chain governance stay out of scope, matching the Myelin Session L2
-  plan.
-- No implicit promotion of off-chain semantics onto the CKB court path.
+Acceptance belongs to the 0.24 roadmap: the adapter must verify exact compiler,
+source, artifact, metadata, source-map, lowering-record, and checker identities;
+court-facing requests stay on `ckb`; and the same deterministic session
+transition must retain consensus-independent state commitments with distinct
+finality evidence.
 
 Source documents:
 
-- [Myelin Session L2 plan](../../Myelin/MYELIN_SESSION_L2_PLAN.md)
-- [Myelin CKB semantic deviations](../../Myelin/MYELIN_CKB_SEMANTIC_DEVIATIONS.md)
-- [Myelin production gate](../../Myelin/MYELIN_PRODUCTION_GATE.md)
+- [Myelin Session L2 plan](https://github.com/Myelin-Labs/Myelin/blob/main/MYELIN_SESSION_L2_PLAN.md)
+- [Myelin CKB semantic deviations](https://github.com/Myelin-Labs/Myelin/blob/main/MYELIN_CKB_SEMANTIC_DEVIATIONS.md)
+- [Myelin production gate](https://github.com/Myelin-Labs/Myelin/blob/main/MYELIN_PRODUCTION_GATE.md)
 - [0.22 type/set roadmap (session-type deferral)](CELLSCRIPT_0_22_TYPE_AND_SET_THEORY_ROADMAP.md)
+- [0.24 roadmap](CELLSCRIPT_0_24_ROADMAP.md)
 
 ## Cross-Cutting Discipline
 
 0.23 does not relax any existing project contract:
 
-- Trailing-whitespace, forbidden tracked-file, and `git diff --check` gates
-  still apply. The Python-to-Rust port must re-run `cargo fmt` and fix
-  whitespace.
+- Trailing-whitespace, native source-policy, and `git diff --check` gates still
+  apply. Native tooling changes must re-run `cargo fmt` and fix whitespace.
 - The website build still regenerates
   `website/src/data/registry-packages.json` and fails if it is dirty in the
   working tree; if the production registry changes what gets regenerated,
   commit the result.
 - The wasm bundle size budget (600 KB gzip) still holds. Any compiler
-  surface added for the Off-Chain Session Runtime profile must be gated so
-  the `wasm32-unknown-unknown` playground build does not pull native-IO or
-  concurrency deps.
+  surface must be gated so the `wasm32-unknown-unknown` playground build does
+  not pull native-IO or host-runtime concurrency dependencies. The retired
+  Off-Chain Session Runtime proposal adds no 0.23 WASM surface.
 - Release notes continue to separate highlights, scope boundaries,
   validation commands, and detailed docs. Roadmap promises stay out of
   `docs/` and in `roadmap/`.
@@ -390,41 +575,52 @@ Source documents:
 
 ## Sequencing
 
-The four pillars are largely independent and can be tracked as parallel
-work streams. Suggested ordering for *release-blocking* slices:
+The final 0.23 sequence is:
 
-1. Pillar 2 (Python → Rust) lands first, because it changes the shape of the
-   gate itself and every later pillar's evidence runs through that gate.
-2. Pillar 1 (registry production) lands next, because it unblocks real
-   package publishing for everything else.
-3. Pillar 4 (Off-Chain Session Runtime profile) lands next, because Myelin
-   re-convergence depends on it and it is the riskiest compiler change.
-4. Pillar 3 (RGB++ / Fiber) lands last, because it is the most
-   evidence-bound and the least likely to be fully "done" in one release;
-   partial closure with an explicit pending matrix is acceptable.
+1. native tooling migration and source-policy enforcement;
+2. Edition/profile/entry-ABI and persisted-identity closure;
+3. public Registry infrastructure, automatic source verification, artifact
+   evidence, publisher-session, Pudge, website, and documentation closure; and
+4. bounded Fiber evidence hardening without promoting an incomplete external
+   matrix.
+
+The proposed Off-Chain Session Runtime profile is not inserted after those
+steps. The current Myelin process-adapter architecture makes that compiler
+surface unnecessary. Independent artifact verification, executable package
+tests, source maps, the Myelin adapter handoff, and conditional Fiber/RGB++
+promotion start from the 0.24 roadmap.
 
 ## Risk Register
 
-- **Registry production cut-over**. The write API is implemented but has
-  only run locally and in tests. The first real deployment may surface
-  Hyperdrive/R2/Neon integration issues that the test suite does not cover.
-  Mitigation: staging-first, fail-fast-before-object-storage, full admin
-  audit log.
-- **Python-to-Rust port drift**. A subtle difference in evidence-report
-  formatting breaks historical comparisons. Mitigation: byte-identical
-  output requirement, parallel-run period before Python deletion.
-- **Off-Chain Session Runtime scope creep**. The profile can easily grow
-  into a general concurrency model. Mitigation: bounded scheduler-visible
-  operations only, fail-closed when the host does not provide them, no
-  core-language channel/session syntax.
+- **Registry publisher adoption**. The self-hosted production stack and public
+  read surfaces are live, but the first publisher-owned wallet package has not
+  completed the positive publication/install loop. Mitigation: keep
+  source-published entries out of default resolution, require the existing
+  evidence chain, and do not replace the final interactive checkpoint with
+  seeded database state.
+- **Registry chain activation**. Transaction intent, Script-indexed discovery,
+  and lifecycle reconciliation are implemented, but no public commitment may
+  be claimed until the canonical mainnet Registry Type Script, commitment Lock,
+  and both code CellDeps are deployed and pinned. Mitigation: leave all four
+  settings absent, fail readiness on partial or immature configuration, and require a real live-Cell
+  drill before marking the checkpoint complete.
+- **Native tooling serialization drift**. A subtle difference in
+  evidence-report formatting breaks historical comparisons. Mitigation:
+  byte-identical output requirements, stable schemas, and regression vectors.
+- **Off-Chain Session Runtime scope creep**. The proposed compiler profile
+  would duplicate Myelin-owned VM/session semantics and blur court-facing CKB
+  claims. Resolution: retire the profile proposal; keep production compilation
+  on `ckb`, keep `MyelinExtended` inside Myelin, and harden the external adapter
+  and independent checker boundary in 0.24.
 - **Fiber full matrix never closing**. The matrix is large and depends on an
   external Fiber binary. Mitigation: keep the harness standalone and
   non-gating until the matrix is complete; release 0.23 with an explicit
   pending matrix rather than blocking on it.
-- **Myelin re-convergence slip**. If the profile lands late, Myelin keeps
-  diverging. Mitigation: land the profile early in the cycle and cut a
-  CellScript release that Myelin can consume even if the other pillars slip
-  to 0.24.
+- **Myelin handoff drift**. Myelin's current adapter lock still identifies an
+  earlier reviewed compiler line while CellScript 0.23 changes edition,
+  schemas, profile identity, and witness placement. Mitigation: do not add
+  compatibility aliases to 0.23; coordinate one explicit adapter-lock and
+  fixture transition under the 0.24 checker contract.
 
 ## Roadmap Discipline
 

@@ -1,40 +1,13 @@
 mod common;
 
+use base64::Engine as _;
 use common::cellc_command;
+use sha2::{Digest as _, Sha256};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
-
-fn git_init(repo_dir: &std::path::Path) {
-    let status = Command::new("git").args(["init"]).current_dir(repo_dir).status().expect("git init");
-    assert!(status.success());
-}
-
-fn git_add_all(repo_dir: &std::path::Path) {
-    let status = Command::new("git").args(["add", "."]).current_dir(repo_dir).status().expect("git add");
-    assert!(status.success());
-}
-
-fn git_commit(repo_dir: &std::path::Path, msg: &str) {
-    git_add_all(repo_dir);
-    let status = Command::new("git")
-        .args(["-c", "commit.gpgsign=false", "commit", "-m", msg, "--author=test <test@test.com>"])
-        .env("GIT_AUTHOR_DATE", "2026-01-01T00:00:00+00:00")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test.com")
-        .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00+00:00")
-        .current_dir(repo_dir)
-        .status()
-        .expect("git commit");
-    assert!(status.success());
-}
-
-fn git_tag(repo_dir: &std::path::Path, tag: &str) {
-    let status = Command::new("git").args(["-c", "tag.gpgSign=false", "tag", tag]).current_dir(repo_dir).status().expect("git tag");
-    assert!(status.success());
-}
 
 fn hex_lower(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -43,6 +16,11 @@ fn hex_lower(bytes: &[u8]) -> String {
 fn hash_json_for_test<T: serde::Serialize>(value: &T) -> String {
     let bytes = serde_json::to_vec(value).unwrap();
     hex_lower(&cellscript::ckb_blake2b256(&bytes))
+}
+
+fn lock_package(root: &std::path::Path) {
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("lock").output().unwrap();
+    assert!(output.status.success(), "lock failed: {}", String::from_utf8_lossy(&output.stderr));
 }
 
 fn ckb_script_hash_for_test(code_hash: &str, hash_type: &str, args: &str) -> String {
@@ -174,6 +152,7 @@ fn cellc_auth_help_hides_legacy_login_alias() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("capability"), "unexpected auth help: {stdout}");
+    assert!(stdout.contains("reproducer"), "unexpected auth help: {stdout}");
     assert!(!stdout.contains("login"), "legacy auth login alias should be hidden from auth help: {stdout}");
 }
 
@@ -319,6 +298,7 @@ fn cellscript_mcp_check_tool_preserves_structured_boundaries() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "mcp-demo"
 version = "0.1.0"
 "#,
@@ -1109,6 +1089,7 @@ fn cellc_check_multiple_diagnostics_prints_each_source_context() {
     std::fs::write(
         temp.path().join("Cell.toml"),
         r#"[package]
+edition = "2026"
 name = "bad"
 version = "0.1.0"
 entry = "src/main.cell"
@@ -1180,6 +1161,58 @@ fn cellc_auth_login_outputs_capability_authorisation_payload() {
 }
 
 #[test]
+fn cellc_auth_capability_create_infers_only_the_exact_publish_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("Cell.toml"),
+        r#"[package]
+edition = "2026"
+name = "amm"
+version = "0.1.0"
+namespace = "cellscript"
+"#,
+    )
+    .unwrap();
+
+    let output = cellc_command()
+        .args(["auth", "capability", "create"])
+        .arg("--principal-id")
+        .arg("0xjoyidprincipal")
+        .arg("--capability-pubkey")
+        .arg("0xcapabilitypubkey")
+        .arg("--json")
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(payload["requested_scopes"], serde_json::json!(["publish:cellscript/amm"]));
+}
+
+#[test]
+fn cellc_auth_capability_create_rejects_unknown_or_duplicate_scopes() {
+    for scopes in [vec!["admin:cellscript/amm"], vec!["publish:cellscript/amm", "publish:cellscript/amm"]] {
+        let mut command = cellc_command();
+        command
+            .args(["auth", "capability", "create"])
+            .arg("--principal-id")
+            .arg("0xjoyidprincipal")
+            .arg("--capability-pubkey")
+            .arg("0xcapabilitypubkey")
+            .arg("--json");
+        for scope in scopes {
+            command.arg("--scope").arg(scope);
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success(), "unexpected success: {}", String::from_utf8_lossy(&output.stdout));
+        let failure: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let message = failure["diagnostics"][0]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("capability scope"), "unexpected failure: {failure}");
+    }
+}
+
+#[test]
 fn cellc_auth_capability_create_requires_principal_id() {
     let output = cellc_command()
         .arg("auth")
@@ -1202,12 +1235,98 @@ fn cellc_auth_capability_create_requires_principal_id() {
     assert!(message.contains("--principal-id"), "unexpected failure: {failure}");
 }
 
+#[cfg(unix)]
+#[test]
+fn cellc_auth_reproducer_create_keeps_private_key_out_of_public_enrollment() {
+    let temp = tempfile::tempdir().unwrap();
+    let private_key_path = temp.path().join("builder-private.pkcs8.b64");
+    let output = cellc_command()
+        .args(["auth", "reproducer", "create"])
+        .arg("--builder-id")
+        .arg("independent-builder-a")
+        .arg("--trust-domain")
+        .arg("independent-org-a")
+        .arg("--private-key-output")
+        .arg(&private_key_path)
+        .arg("--json")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let enrollment: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(enrollment["schema"], "cellscript-reproducer-builder-enrollment-v1");
+    assert_eq!(enrollment["builder_id"], "independent-builder-a");
+    assert_eq!(enrollment["trust_domain"], "independent-org-a");
+    assert_eq!(enrollment["policy_builder"]["builder_id"], "independent-builder-a");
+    assert_eq!(enrollment["policy_builder"]["trust_domain"], "independent-org-a");
+    assert_eq!(enrollment["private_key_storage"]["kind"], "pkcs8_base64_file");
+
+    let public_key = enrollment["builder_public_key"].as_str().unwrap();
+    assert!(public_key.starts_with("p256-spki:"));
+    let spki = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(public_key.trim_start_matches("p256-spki:")).unwrap();
+    assert_eq!(spki.len(), 91);
+    let expected_key_id = format!("cap_{}", &hex::encode(Sha256::digest(public_key.as_bytes()))[..32]);
+    assert_eq!(enrollment["builder_key_id"], expected_key_id);
+    assert_eq!(enrollment["policy_builder"]["public_key"], public_key);
+
+    let private_key_secret = std::fs::read_to_string(&private_key_path).unwrap();
+    let private_key = base64::engine::general_purpose::STANDARD.decode(private_key_secret.trim()).unwrap();
+    assert!(private_key.len() > 100);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(private_key_secret.trim()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(std::fs::metadata(&private_key_path).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    let second = cellc_command()
+        .args(["auth", "reproducer", "create"])
+        .arg("--builder-id")
+        .arg("independent-builder-a")
+        .arg("--trust-domain")
+        .arg("independent-org-a")
+        .arg("--private-key-output")
+        .arg(&private_key_path)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(!second.status.success(), "existing private-key file must not be overwritten");
+    assert_eq!(std::fs::read_to_string(&private_key_path).unwrap(), private_key_secret);
+}
+
+#[cfg(not(unix))]
+#[test]
+fn cellc_auth_reproducer_create_rejects_private_key_file_without_unix_permissions() {
+    let temp = tempfile::tempdir().unwrap();
+    let private_key_path = temp.path().join("builder-private.pkcs8.b64");
+    let output = cellc_command()
+        .args(["auth", "reproducer", "create"])
+        .arg("--builder-id")
+        .arg("independent-builder-a")
+        .arg("--trust-domain")
+        .arg("independent-org-a")
+        .arg("--private-key-output")
+        .arg(&private_key_path)
+        .arg("--json")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("requires Unix mode-0600 permission semantics"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!private_key_path.exists());
+}
+
 fn write_publish_fixture_package(root: &std::path::Path) {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "1.2.3"
 namespace = "cellscript"
@@ -1232,6 +1351,154 @@ action identity(value: u64) -> u64 {
     .unwrap();
 }
 
+fn write_declared_artifact_fixture(root: &std::path::Path) {
+    std::fs::write(
+        root.join("Artifact.toml"),
+        r#"schema = "cellscript-registry-artifact"
+namespace = "cellscript"
+name = "rust-contract"
+release = "1.0.0"
+kind = "deployable_contract"
+language = "rust"
+bundle = "artifact-bundle.json"
+description = "Rust CKB contract"
+repository = "https://example.com/cellscript/rust-contract"
+"#,
+    )
+    .unwrap();
+    let abi_hash = hex::encode(cellscript::ckb_blake2b256(b"abi"));
+    let profile_contract = serde_json::json!({
+        "schema": "cellscript-registry-profile-contract-v1",
+        "artifact_kind": "deployable_contract",
+        "profile": "ckb_executable",
+        "build": {
+            "target": "riscv64imac-unknown-none-elf",
+            "toolchain": "rustc 1.97.1",
+            "profile": "release",
+            "source_revision": "0123456789abcdef",
+            "reproducible": false
+        },
+        "security": { "status": "review_required" },
+        "ckb": {
+            "vm_version": "2",
+            "script_role": "type",
+            "hash_type": "data1",
+            "dep_type": "code",
+            "abi_hash": abi_hash
+        }
+    });
+    let bundle = serde_json::json!({
+        "schema": "cellscript-registry-bundle",
+        "namespace": "cellscript",
+        "name": "rust-contract",
+        "release": "1.0.0",
+        "profile": "ckb_executable",
+        "manifest_json": cellscript::package::registry::canonical_artifact_contract_json(&profile_contract).unwrap(),
+        "objects": [
+            {"role":"source","content_base64":"c291cmNl"},
+            {"role":"executable","content_base64":"ZWxm"},
+            {"role":"abi","content_base64":"YWJp"}
+        ]
+    });
+    std::fs::write(root.join("artifact-bundle.json"), serde_json::to_vec_pretty(&bundle).unwrap()).unwrap();
+}
+
+#[test]
+fn cellc_ls_idl_validate_bind_and_bundle_preserve_raw_digest() {
+    let temp = tempfile::tempdir().unwrap();
+    let idl = br#"{"idl_version":"0.1","name":"demo_lock","witness":[{"name":"signature","type":"secp256k1_sig","required":true}]}"#;
+    let idl_path = temp.path().join("idl.json");
+    let executable_path = temp.path().join("lock");
+    let bound_path = temp.path().join("lock.ls-idl");
+    let source_path = temp.path().join("lock.rs");
+    std::fs::write(&idl_path, idl).unwrap();
+    std::fs::write(&executable_path, b"\x7fELFdemo-lock").unwrap();
+    std::fs::write(&source_path, b"fn main() {}").unwrap();
+
+    let validate = cellc_command().args(["artifact", "ls-idl", "validate", "--idl"]).arg(&idl_path).arg("--json").output().unwrap();
+    assert!(validate.status.success(), "stderr: {}", String::from_utf8_lossy(&validate.stderr));
+
+    let bind = cellc_command()
+        .args(["artifact", "ls-idl", "bind", "--idl"])
+        .arg(&idl_path)
+        .arg("--executable")
+        .arg(&executable_path)
+        .arg("--output")
+        .arg(&bound_path)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(bind.status.success(), "stderr: {}", String::from_utf8_lossy(&bind.stderr));
+    let bound = std::fs::read(&bound_path).unwrap();
+    let digest: [u8; 32] = Sha256::digest(idl).into();
+    assert_eq!(&bound[bound.len() - 32..], digest);
+
+    let bundle = cellc_command()
+        .args(["artifact", "ls-idl", "bundle", "--idl"])
+        .arg(&idl_path)
+        .arg("--executable")
+        .arg(&bound_path)
+        .arg("--source")
+        .arg(&source_path)
+        .args([
+            "--namespace",
+            "cellscript",
+            "--name",
+            "demo-ls-idl-lock",
+            "--release",
+            "0.1.0",
+            "--language",
+            "rust",
+            "--hash-type",
+            "data1",
+            "--dep-type",
+            "code",
+            "--toolchain",
+            "rustc-1.97.1",
+            "--source-revision",
+            "0123456789abcdef0123456789abcdef01234567",
+            "--output",
+            "artifact.bundle.json",
+            "--artifact-manifest-output",
+            "Artifact.toml",
+            "--json",
+        ])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    assert!(bundle.status.success(), "stderr: {}", String::from_utf8_lossy(&bundle.stderr));
+
+    let publish = cellc_command()
+        .args(["publish", "--artifact-manifest", "Artifact.toml", "--dry-run", "--json"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    assert!(publish.status.success(), "stderr: {}", String::from_utf8_lossy(&publish.stderr));
+}
+
+#[test]
+fn cellc_publish_dry_run_validates_declared_non_cellscript_artifact() {
+    let temp = tempfile::tempdir().unwrap();
+    write_declared_artifact_fixture(temp.path());
+    let output = cellc_command()
+        .arg("publish")
+        .arg("--artifact-manifest")
+        .arg("Artifact.toml")
+        .arg("--dry-run")
+        .arg("--json")
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "valid");
+    assert_eq!(result["coordinate"], "cellscript/rust-contract@1.0.0");
+    assert_eq!(result["artifact"]["kind"], "deployable_contract");
+    assert_eq!(result["artifact"]["profile"], "ckb_executable");
+    assert_eq!(result["artifact"]["consumption_mode"], "deployment");
+    assert_eq!(result["source_hash"].as_str().unwrap().len(), 64);
+}
+
 #[test]
 fn cellc_publish_default_requires_capability_inputs_without_writing_registry_json() {
     let temp = tempfile::tempdir().unwrap();
@@ -1241,8 +1508,9 @@ fn cellc_publish_default_requires_capability_inputs_without_writing_registry_jso
 
     assert!(!output.status.success(), "unexpected success: {}", String::from_utf8_lossy(&output.stdout));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("capability key id is required for public publish"), "unexpected stderr: {stderr}");
-    assert!(stderr.contains("cellc auth capability create --principal-id <principal_id>"), "unexpected stderr: {stderr}");
+    assert!(stderr.contains("wallet-authorised publishing key"), "unexpected stderr: {stderr}");
+    assert!(stderr.contains("cellc publish --authorise"), "unexpected stderr: {stderr}");
+    assert!(stderr.contains("--capability-key-id"), "unexpected stderr: {stderr}");
     assert!(!temp.path().join("registry.json").exists(), "default public publish must not silently write offline registry.json");
 }
 
@@ -1263,7 +1531,7 @@ fn cellc_publish_print_payload_outputs_signable_registry_publish_payload() {
 
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(envelope["endpoint"], "https://api.registry.cellscript.dev/v1/packages/cellscript/demo/versions");
+    assert_eq!(envelope["endpoint"], "https://api.registry.cellscript.dev/v1/artifacts/cellscript/demo/releases");
     assert_eq!(envelope["payload"]["protocol"], "cellscript-registry-publish-v1");
     assert_eq!(envelope["payload"]["action"], "publish");
     assert_eq!(envelope["payload"]["registry_origin"], "https://api.registry.cellscript.dev");
@@ -1271,11 +1539,36 @@ fn cellc_publish_print_payload_outputs_signable_registry_publish_payload() {
     assert_eq!(envelope["payload"]["name"], "demo");
     assert_eq!(envelope["payload"]["version"], "1.2.3");
     assert_eq!(envelope["payload"]["capability_key_id"], "cap_test");
-    assert_eq!(envelope["payload"]["registry_entry"]["versions"][0]["status"], "source_published");
+    assert_eq!(envelope["payload"]["artifact"]["kind"], "source_library");
+    assert_eq!(envelope["payload"]["registry_entry"]["versions"][0]["verification_status"], "pending");
     let canonical_payload = envelope["canonical_payload"].as_str().expect("canonical payload");
     let canonical_json: serde_json::Value = serde_json::from_str(canonical_payload).unwrap();
     assert_eq!(canonical_json, envelope["payload"]);
     assert!(!temp.path().join("registry.json").exists(), "payload preview must not write offline registry.json");
+}
+
+#[test]
+fn cellc_publish_profile_library_preserves_the_declared_artifact_kind() {
+    let temp = tempfile::tempdir().unwrap();
+    write_publish_fixture_package(temp.path());
+
+    let output = cellc_command()
+        .arg("publish")
+        .arg("--artifact-kind")
+        .arg("profile_library")
+        .arg("--capability-key-id")
+        .arg("cap_test")
+        .arg("--print-payload")
+        .arg("--json")
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["payload"]["artifact"]["kind"], "profile_library");
+    assert_eq!(envelope["payload"]["artifact"]["profile"], "cellscript_source");
+    assert_eq!(envelope["payload"]["registry_entry"]["artifact"]["kind"], "profile_library");
 }
 
 #[test]
@@ -1285,8 +1578,10 @@ fn cellc_publish_posts_signed_request_to_registry_api() {
 
     let (api_url, request_rx) = start_mock_registry_api_capture_request(serde_json::json!({
         "request_id": "req_test",
-        "status": "source_published",
-        "direct_url": "https://registry.cellscript.dev/packages/cellscript/demo/versions/1.2.3.json",
+        "verification_status": "pending",
+        "deployment_status": "not_applicable",
+        "availability_status": "active",
+        "direct_url": "https://registry.cellscript.dev/artifacts/cellscript/demo/releases/1.2.3.json",
         "snapshot_hash": "sha256:test",
         "verification": "queued"
     }));
@@ -1322,9 +1617,10 @@ fn cellc_publish_posts_signed_request_to_registry_api() {
 
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
     let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(response["status"], "source_published");
+    assert_eq!(response["verification_status"], "pending");
+    assert_eq!(response["deployment_status"], "not_applicable");
     let request = request_rx.recv_timeout(Duration::from_secs(5)).expect("registry API request");
-    assert_eq!(request.path, "/v1/packages/cellscript/demo/versions");
+    assert_eq!(request.path, "/v1/artifacts/cellscript/demo/releases");
     assert!(
         request
             .header("idempotency-key")
@@ -1350,8 +1646,10 @@ fn cellc_publish_honors_explicit_idempotency_key() {
 
     let (api_url, request_rx) = start_mock_registry_api_capture_request(serde_json::json!({
         "request_id": "req_test",
-        "status": "source_published",
-        "direct_url": "https://registry.cellscript.dev/packages/cellscript/demo/versions/1.2.3.json",
+        "verification_status": "pending",
+        "deployment_status": "not_applicable",
+        "availability_status": "active",
+        "direct_url": "https://registry.cellscript.dev/artifacts/cellscript/demo/releases/1.2.3.json",
         "snapshot_hash": "sha256:test",
         "verification": "queued"
     }));
@@ -1398,8 +1696,10 @@ fn cellc_publish_retries_transient_registry_error_with_same_idempotency_key() {
 
     let (api_url, request_rx) = start_mock_registry_api_retry_then_success(serde_json::json!({
         "request_id": "req_retry",
-        "status": "source_published",
-        "direct_url": "https://registry.cellscript.dev/packages/cellscript/demo/versions/1.2.3.json",
+        "verification_status": "pending",
+        "deployment_status": "not_applicable",
+        "availability_status": "active",
+        "direct_url": "https://registry.cellscript.dev/artifacts/cellscript/demo/releases/1.2.3.json",
         "snapshot_hash": "sha256:test",
         "verification": "queued"
     }));
@@ -1446,7 +1746,7 @@ fn cellc_publish_retries_transient_registry_error_with_same_idempotency_key() {
 }
 
 #[test]
-fn cellc_auth_capability_submit_posts_joyid_signature_to_registry_api() {
+fn cellc_auth_capability_submit_posts_ckb_wallet_signature_to_registry_api() {
     let temp = tempfile::tempdir().unwrap();
     let (api_url, request_rx) = start_mock_registry_api_expect_path(
         "/v1/capabilities",
@@ -1463,11 +1763,78 @@ fn cellc_auth_capability_submit_posts_joyid_signature_to_registry_api() {
         .arg("--registry-origin")
         .arg(&api_url)
         .arg("--principal-id")
-        .arg("0x1111111111111111111111111111111111111111")
+        .arg(format!("0x{}", "11".repeat(32)))
+        .arg("--principal-type")
+        .arg("ckb_secp256k1")
         .arg("--capability-pubkey")
         .arg("p256-spki:test")
         .arg("--scope")
         .arg("publish:cellscript/demo")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(create.status.success(), "stderr: {}", String::from_utf8_lossy(&create.stderr));
+    let payload: serde_json::Value = serde_json::from_slice(&create.stdout).unwrap();
+    let payload_path = temp.path().join("capability-payload.json");
+    let signature_path = temp.path().join("wallet-signature.json");
+    std::fs::write(&payload_path, serde_json::to_vec_pretty(&payload).unwrap()).unwrap();
+    std::fs::write(
+        &signature_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "scheme": "ckb_secp256k1",
+            "challenge": serde_json::to_string(&payload).unwrap(),
+            "signature": format!("0x{}", "22".repeat(65)),
+            "public_key": format!("0x02{}", "33".repeat(32))
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let output = cellc_command()
+        .arg("auth")
+        .arg("capability")
+        .arg("submit")
+        .arg("--api-url")
+        .arg(&api_url)
+        .arg("--payload")
+        .arg(&payload_path)
+        .arg("--wallet-signature")
+        .arg(&signature_path)
+        .arg("--json")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["status"], "active");
+    let request = request_rx.recv_timeout(Duration::from_secs(5)).expect("capability request");
+    assert_eq!(request["payload"], payload);
+    assert_eq!(request["wallet_signature"]["scheme"], "ckb_secp256k1");
+}
+
+#[test]
+fn cellc_auth_namespace_claim_posts_signed_capability_payload_to_registry_api() {
+    let temp = tempfile::tempdir().unwrap();
+    let (api_url, request_rx) = start_mock_registry_api_expect_path(
+        "/v1/namespaces/claim",
+        serde_json::json!({
+            "request_id": "req_namespace",
+            "namespace": "exampleorg",
+            "status": "active"
+        }),
+    );
+    let create = cellc_command()
+        .arg("auth")
+        .arg("capability")
+        .arg("create")
+        .arg("--registry-origin")
+        .arg(&api_url)
+        .arg("--principal-id")
+        .arg("0x1111111111111111111111111111111111111111")
+        .arg("--capability-pubkey")
+        .arg("p256-spki:test")
+        .arg("--scope")
+        .arg("publish:exampleorg/demo")
         .arg("--json")
         .output()
         .unwrap();
@@ -1492,10 +1859,12 @@ fn cellc_auth_capability_submit_posts_joyid_signature_to_registry_api() {
 
     let output = cellc_command()
         .arg("auth")
-        .arg("capability")
-        .arg("submit")
+        .arg("namespace")
+        .arg("claim")
         .arg("--api-url")
         .arg(&api_url)
+        .arg("--namespace")
+        .arg("exampleorg")
         .arg("--payload")
         .arg(&payload_path)
         .arg("--joyid-signature")
@@ -1507,9 +1876,10 @@ fn cellc_auth_capability_submit_posts_joyid_signature_to_registry_api() {
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
     let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(response["status"], "active");
-    let request = request_rx.recv_timeout(Duration::from_secs(5)).expect("capability request");
+    let request = request_rx.recv_timeout(Duration::from_secs(5)).expect("namespace claim request");
+    assert_eq!(request["namespace"], "exampleorg");
     assert_eq!(request["payload"], payload);
-    assert_eq!(request["joyid_signature"]["signature"], "sig");
+    assert_eq!(request["wallet_signature"]["signature"], "sig");
 }
 
 #[test]
@@ -1605,6 +1975,8 @@ fn cellc_publish_offline_writes_source_published_registry_fixture() {
 
 fn locked_build_from_metadata_for_test(metadata: &cellscript::CompileMetadata) -> cellscript::package::LockedBuildInfo {
     let abi = serde_json::json!({
+        "edition": metadata.edition,
+        "compatibility_profile": &metadata.compatibility_profile,
         "metadata_schema_version": metadata.metadata_schema_version,
         "metadata_schema_versions": {
             "metadata": metadata.metadata_schema_version,
@@ -1621,6 +1993,8 @@ fn locked_build_from_metadata_for_test(metadata: &cellscript::CompileMetadata) -
         "cell_data_codec_manifest": &metadata.cell_data_codec_manifest,
     });
     cellscript::package::LockedBuildInfo {
+        edition: cellscript::CURRENT_EDITION,
+        compatibility_profile_hash: hash_json_for_test(&metadata.compatibility_profile),
         compiler_version: Some(metadata.compiler_version.clone()),
         target_profile: Some(metadata.target_profile.name.clone()),
         artifact_hash: metadata.artifact_hash.clone(),
@@ -1780,7 +2154,7 @@ fn read_http_request_path_headers_and_body(stream: &mut std::net::TcpStream) -> 
                     let (name, value) = line.split_once(':')?;
                     name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().unwrap())
                 })
-                .unwrap();
+                .unwrap_or(0);
             let body_start = header_end + 4;
             while request.len() < body_start + content_length {
                 let read = stream.read(&mut buffer).unwrap();
@@ -1800,6 +2174,7 @@ fn write_live_registry_fixture_with(root: &std::path::Path, data_hash: &str, cod
     let out_point = "0xaaaa:0".to_string();
     let mut lockfile = cellscript::package::Lockfile::new();
     lockfile.package = cellscript::package::LockfilePackageInfo {
+        edition: cellscript::CURRENT_EDITION,
         name: "token".to_string(),
         version: "1.0.0".to_string(),
         namespace: Some("cellscript".to_string()),
@@ -1807,6 +2182,8 @@ fn write_live_registry_fixture_with(root: &std::path::Path, data_hash: &str, cod
         compiler_source_hash: None,
     };
     lockfile.package_build = Some(cellscript::package::LockedBuildInfo {
+        edition: cellscript::CURRENT_EDITION,
+        compatibility_profile_hash: "test-compatibility-profile".to_string(),
         compiler_version: Some("0.20.0".to_string()),
         target_profile: Some("ckb".to_string()),
         artifact_hash: Some("artifact_hash".to_string()),
@@ -1829,14 +2206,17 @@ fn write_live_registry_fixture_with(root: &std::path::Path, data_hash: &str, cod
     lockfile.write_to_root(root).unwrap();
 
     let deployed = cellscript::package::DeployedManifest {
-        version: 1,
-        schema: None,
+        version: cellscript::package::DeployedManifest::CURRENT_VERSION,
+        schema: cellscript::package::DEPLOYED_MANIFEST_SCHEMA.to_string(),
         package: cellscript::package::DeployedPackageInfo {
+            edition: cellscript::CURRENT_EDITION,
             name: "token".to_string(),
             version: "1.0.0".to_string(),
             source_hash: Some("source_hash".to_string()),
         },
         build: Some(cellscript::package::DeployedBuildInfo {
+            edition: cellscript::CURRENT_EDITION,
+            compatibility_profile_hash: "test-compatibility-profile".to_string(),
             compiler_version: Some("0.20.0".to_string()),
             artifact_hash: Some("artifact_hash".to_string()),
             metadata_hash: Some("metadata_hash".to_string()),
@@ -1846,6 +2226,8 @@ fn write_live_registry_fixture_with(root: &std::path::Path, data_hash: &str, cod
             constraints_hash: Some("constraints_hash".to_string()),
         }),
         deployments: vec![cellscript::package::DeploymentRecord {
+            edition: cellscript::CURRENT_EDITION,
+            compatibility_profile_hash: "test-compatibility-profile".to_string(),
             network: "aggron4".to_string(),
             chain_id: "ckb-testnet".to_string(),
             tx_hash: "0xaaaa".to_string(),
@@ -1945,6 +2327,49 @@ action add(x: u64, y: u64) -> u64 {
     assert!(metadata.contains("\"source_metadata_schema_version\""));
     assert!(metadata.contains("\"artifact_metadata_schema_version\""));
     assert!(metadata.contains("\"constraints_metadata_schema_version\""));
+}
+
+#[test]
+fn cellc_direct_elf_build_writes_and_reports_verified_sidecars() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("sample.cell");
+    let output = dir.path().join("sample.elf");
+    std::fs::write(
+        &input,
+        r#"
+module test
+
+action ping() -> u64 {
+    verification
+        1
+}
+"#,
+    )
+    .unwrap();
+
+    let result = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .arg(&input)
+        .args(["--target", "riscv64-elf", "--json", "-o"])
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+
+    let payload: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let lowering = dir.path().join("sample.elf.lowering.json");
+    let source_map = dir.path().join("sample.elf.sourcemap.json");
+    assert_eq!(payload["lowering_record"], lowering.to_string_lossy().as_ref());
+    assert_eq!(payload["source_map"], source_map.to_string_lossy().as_ref());
+    assert!(lowering.is_file());
+    assert!(source_map.is_file());
+
+    let verify = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .arg("verify-artifact")
+        .arg(&output)
+        .args(["--expect-target-profile", "ckb", "--json"])
+        .output()
+        .unwrap();
+    assert!(verify.status.success(), "{}", String::from_utf8_lossy(&verify.stderr));
 }
 
 #[test]
@@ -2146,6 +2571,7 @@ fn cellc_constraints_subcommand_surfaces_ckb_deployment_manifest() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -2196,7 +2622,7 @@ action main(value: u64) -> u64 {
     assert_eq!(dep["tx_hash"], "0x1111111111111111111111111111111111111111111111111111111111111111");
     assert_eq!(dep["index"], 0);
     assert_eq!(dep["hash_type"], "type");
-    assert_eq!(ckb["profile_abi_contract"]["witness_abi"], "ckb-molecule-witness-args+cellscript-entry-witness-v1");
+    assert_eq!(ckb["profile_abi_contract"]["witness_abi"], "ckb-molecule-witness-args-input-type-v2+cellscript-entry-witness-v1");
     assert_eq!(ckb["profile_abi_contract"]["lock_args_abi"], "ckb-script-args-typed-fixed-bytes");
     assert_eq!(ckb["profile_abi_contract"]["source_encoding"], "ckb-source-group-high-bit");
     assert_eq!(ckb["profile_abi_contract"]["cell_dep_abi"], "ckb-cell-dep-outpoint-and-dep-group");
@@ -2279,7 +2705,7 @@ action swap(input: Pool) -> output: Pool {
         .unwrap();
     assert!(receipt_output.status.success(), "{}", String::from_utf8_lossy(&receipt_output.stderr));
     let receipt_json: serde_json::Value = serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
-    assert_eq!(receipt_json["schema"], "cellscript-compile-receipt-v1");
+    assert_eq!(receipt_json["schema"], "cellscript-compile-receipt-v2");
     assert_eq!(receipt_json["artifact_hash"], metadata["artifact_hash"]);
     assert!(receipt_json["template_layout_hash"].as_str().is_some_and(|hash| hash.len() == 64));
 
@@ -2649,6 +3075,7 @@ fn cellc_compiles_package_with_local_path_dependency() {
         dep_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "dep_pkg"
 version = "0.1.0"
 "#,
@@ -2670,6 +3097,7 @@ resource Token has store, replace, relock, consume, burn {
         app_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "app_pkg"
 version = "0.1.0"
 
@@ -2695,6 +3123,7 @@ action pass_through(token: Token) -> Token {
     )
     .unwrap();
 
+    lock_package(&app_root);
     let output = app_root.join("build").join("main.s");
     let status = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).status().unwrap();
 
@@ -2716,6 +3145,7 @@ fn cellc_rejects_registry_dependency_without_namespace() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -2737,28 +3167,27 @@ action ping() -> u64 {
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(root).output().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("lock").output().unwrap();
 
     assert!(!output.status.success(), "unexpected success: {}", String::from_utf8_lossy(&output.stdout));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("registry dependency 'remote' requires a namespace"), "unexpected stderr: {}", stderr);
-    assert!(!root.join("build").join("main.s").exists());
-    assert!(!root.join("build").join("main.s.meta.json").exists());
+    assert!(!root.join("Cell.lock").exists());
 }
 
 #[test]
-fn cellc_build_resolves_registry_dependency_and_writes_phase1_lockfile() {
+fn cellc_build_resolves_artifact_api_dependency_and_writes_lockfile() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     let dep_root = root.join("token");
     let app_root = root.join("app");
-    let registry_root = root.join("registry");
 
     std::fs::create_dir_all(dep_root.join("src")).unwrap();
     std::fs::write(
         dep_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "token"
 version = "0.3.0"
 namespace = "cellscript"
@@ -2777,11 +3206,13 @@ resource Token has store, replace, relock, consume, burn {
     )
     .unwrap();
     let source_hash = cellscript::package::registry::compute_source_hash(&dep_root).unwrap();
-    cellscript::package::registry::RegistryIndex::append_version(
-        &dep_root,
-        "token",
-        "cellscript",
-        cellscript::package::registry::RegistryVersion {
+    let registry_entry = cellscript::package::registry::RegistryIndex {
+        schema_version: cellscript::package::registry::RegistryIndex::CURRENT_SCHEMA_VERSION,
+        name: "token".to_string(),
+        namespace: "cellscript".to_string(),
+        versions: vec![cellscript::package::registry::RegistryVersion {
+            edition: cellscript::CURRENT_EDITION,
+            compatibility_profile_hash: "test-compatibility-profile".to_string(),
             version: "0.3.0".to_string(),
             tag: "v0.3.0".to_string(),
             source_hash: source_hash.clone(),
@@ -2797,30 +3228,100 @@ resource Token has store, replace, relock, consume, burn {
             yanked_reason: None,
             replaced_by: None,
             audit: None,
-        },
-    )
-    .unwrap();
-    git_init(&dep_root);
-    git_add_all(&dep_root);
-    git_commit(&dep_root, "publish token");
-    git_tag(&dep_root, "v0.3.0");
-
-    std::fs::create_dir_all(registry_root.join("cellscript")).unwrap();
-    git_init(&registry_root);
-    let entry = cellscript::package::registry::DiscoveryEntry {
-        name: "token".to_string(),
-        namespace: "cellscript".to_string(),
-        source: dep_root.to_string_lossy().to_string(),
+        }],
     };
-    std::fs::write(registry_root.join("cellscript/token.json"), serde_json::to_string_pretty(&entry).unwrap()).unwrap();
-    git_add_all(&registry_root);
-    git_commit(&registry_root, "add token");
+
+    let snapshot_file = |path: &str, content: &[u8]| {
+        serde_json::json!({
+            "path": path,
+            "blake2b256": hex_lower(&cellscript::ckb_blake2b256(content)),
+            "content_base64": base64::engine::general_purpose::STANDARD.encode(content),
+        })
+    };
+    let manifest_bytes = std::fs::read(dep_root.join("Cell.toml")).unwrap();
+    let source_bytes = std::fs::read(dep_root.join("src/token.cell")).unwrap();
+    let snapshot_bytes = serde_json::to_vec(&serde_json::json!({
+        "schema": "cellscript-source-snapshot-v1",
+        "package": { "namespace": "cellscript", "name": "token", "version": "0.3.0" },
+        "files": [
+            snapshot_file("Cell.toml", &manifest_bytes),
+            snapshot_file("src/token.cell", &source_bytes),
+        ],
+    }))
+    .unwrap();
+    let snapshot_digest = Sha256::digest(&snapshot_bytes);
+    let snapshot_hash = format!("sha256:{}", hex_lower(&snapshot_digest));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let api_origin = format!("http://{address}");
+    let snapshot_path = "/source-snapshots/cellscript/token/0.3.0/token.json";
+    let api_body = serde_json::json!({
+        "schema": "cellscript-registry-artifact",
+        "namespace": "cellscript",
+        "name": "token",
+        "repository": "https://example.test/cellscript/token",
+        "artifact": {
+            "kind": "source_library",
+            "profile": "cellscript_source",
+            "consumption_mode": "dependency",
+            "language": "cellscript"
+        },
+        "releases": [{
+            "release": "0.3.0",
+            "verification_status": "verified",
+            "availability_status": "active",
+            "registry_entry": registry_entry,
+            "immutable_bundle": {
+                "schema": "cellscript-registry-immutable-bundle",
+                "url": format!("{api_origin}{snapshot_path}"),
+                "snapshot_hash": snapshot_hash,
+                "source_hash": source_hash,
+                "size_bytes": snapshot_bytes.len(),
+                "content_type": "application/vnd.cellscript.source-snapshot+json"
+            }
+        }]
+    })
+    .to_string();
+    let served_snapshot = snapshot_bytes.clone();
+    listener.set_nonblocking(true).unwrap();
+    let stop_server = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server_stop = std::sync::Arc::clone(&stop_server);
+    let server = std::thread::spawn(move || {
+        while !server_stop.load(std::sync::atomic::Ordering::Acquire) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    let (path, _) = read_http_request_path_and_body(&mut stream);
+                    assert!(matches!(
+                        path.as_str(),
+                        "/v1/artifacts/cellscript/token" | "/source-snapshots/cellscript/token/0.3.0/token.json"
+                    ));
+                    let (body, content_type) = if path == snapshot_path {
+                        (served_snapshot.as_slice(), "application/vnd.cellscript.source-snapshot+json")
+                    } else {
+                        (api_body.as_bytes(), "application/json")
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                    stream.write_all(body).unwrap();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => panic!("artifact API mock failed: {error}"),
+            }
+        }
+    });
 
     std::fs::create_dir_all(app_root.join("src")).unwrap();
     std::fs::write(
         app_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "app"
 version = "0.1.0"
 namespace = "cellscript"
@@ -2846,14 +3347,23 @@ action pass_through(token: Token) -> Token {
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cellc"))
-        .arg("build")
-        .env(cellscript::package::registry::REGISTRY_URL_ENV, &registry_root)
+    let lock = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .arg("lock")
+        .env(cellscript::package::registry::REGISTRY_API_URL_ENV, &api_origin)
         .current_dir(&app_root)
         .output()
         .unwrap();
+    assert!(lock.status.success(), "stderr: {}", String::from_utf8_lossy(&lock.stderr));
 
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .arg("build")
+        .arg("--locked")
+        .env(cellscript::package::registry::REGISTRY_API_URL_ENV, &api_origin)
+        .current_dir(&app_root)
+        .output()
+        .unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
     let lockfile: cellscript::package::Lockfile =
         toml::from_str(&std::fs::read_to_string(app_root.join("Cell.lock")).unwrap()).unwrap();
     assert!(lockfile.package.source_hash.is_some());
@@ -2865,16 +3375,19 @@ action pass_through(token: Token) -> Token {
     assert!(build.schema_hash.is_some());
     assert!(build.abi_hash.is_some());
     assert!(build.constraints_hash.is_some());
-    let token = lockfile.dependencies.get("token").expect("locked registry dependency");
+    let token_node = lockfile.root.dependencies.get("token").expect("locked registry root edge");
+    let token = lockfile.dependencies.get(token_node).expect("locked registry dependency");
     assert_eq!(token.source_hash.as_deref(), Some(source_hash.as_str()));
 
     let verify = Command::new(env!("CARGO_BIN_EXE_cellc"))
         .arg("package")
         .arg("verify")
-        .env(cellscript::package::registry::REGISTRY_URL_ENV, &registry_root)
+        .env(cellscript::package::registry::REGISTRY_API_URL_ENV, &api_origin)
         .current_dir(&app_root)
         .output()
         .unwrap();
+    stop_server.store(true, std::sync::atomic::Ordering::Release);
+    server.join().unwrap();
     assert!(verify.status.success(), "stderr: {}", String::from_utf8_lossy(&verify.stderr));
 }
 
@@ -2886,6 +3399,8 @@ fn cellc_registry_edit_yanks_existing_version() {
         "token",
         "cellscript",
         cellscript::package::registry::RegistryVersion {
+            edition: cellscript::CURRENT_EDITION,
+            compatibility_profile_hash: "test-compatibility-profile".to_string(),
             version: "1.0.0".to_string(),
             tag: "v1.0.0".to_string(),
             source_hash: "abc123".to_string(),
@@ -2953,6 +3468,7 @@ fn cellc_registry_verify_json_fails_closed_for_missing_deployment_ref() {
 
     let mut lockfile = cellscript::package::Lockfile::new();
     lockfile.package = cellscript::package::LockfilePackageInfo {
+        edition: cellscript::CURRENT_EDITION,
         name: "token".to_string(),
         version: "1.0.0".to_string(),
         namespace: Some("cellscript".to_string()),
@@ -2960,6 +3476,8 @@ fn cellc_registry_verify_json_fails_closed_for_missing_deployment_ref() {
         compiler_source_hash: None,
     };
     lockfile.package_build = Some(cellscript::package::LockedBuildInfo {
+        edition: cellscript::CURRENT_EDITION,
+        compatibility_profile_hash: "test-compatibility-profile".to_string(),
         compiler_version: Some("0.19.0".to_string()),
         target_profile: Some("ckb".to_string()),
         artifact_hash: Some("artifact_hash".to_string()),
@@ -2972,14 +3490,17 @@ fn cellc_registry_verify_json_fails_closed_for_missing_deployment_ref() {
     lockfile.write_to_root(root).unwrap();
 
     let deployed = cellscript::package::DeployedManifest {
-        version: 1,
-        schema: None,
+        version: cellscript::package::DeployedManifest::CURRENT_VERSION,
+        schema: cellscript::package::DEPLOYED_MANIFEST_SCHEMA.to_string(),
         package: cellscript::package::DeployedPackageInfo {
+            edition: cellscript::CURRENT_EDITION,
             name: "token".to_string(),
             version: "1.0.0".to_string(),
             source_hash: Some("source_hash".to_string()),
         },
         build: Some(cellscript::package::DeployedBuildInfo {
+            edition: cellscript::CURRENT_EDITION,
+            compatibility_profile_hash: "test-compatibility-profile".to_string(),
             compiler_version: Some("0.19.0".to_string()),
             artifact_hash: Some("artifact_hash".to_string()),
             metadata_hash: Some("metadata_hash".to_string()),
@@ -2989,6 +3510,8 @@ fn cellc_registry_verify_json_fails_closed_for_missing_deployment_ref() {
             constraints_hash: Some("constraints_hash".to_string()),
         }),
         deployments: vec![cellscript::package::DeploymentRecord {
+            edition: cellscript::CURRENT_EDITION,
+            compatibility_profile_hash: "test-compatibility-profile".to_string(),
             network: "aggron4".to_string(),
             chain_id: "ckb-testnet".to_string(),
             tx_hash: "0xaaaa".to_string(),
@@ -3035,6 +3558,7 @@ fn write_offline_fixture_with_lineage(root: &std::path::Path, lineage: Option<&s
     let out_point = "0xbbbb:0".to_string();
     let mut lockfile = cellscript::package::Lockfile::new();
     lockfile.package = cellscript::package::LockfilePackageInfo {
+        edition: cellscript::CURRENT_EDITION,
         name: "token".to_string(),
         version: "1.0.0".to_string(),
         namespace: Some("cellscript".to_string()),
@@ -3042,6 +3566,8 @@ fn write_offline_fixture_with_lineage(root: &std::path::Path, lineage: Option<&s
         compiler_source_hash: None,
     };
     lockfile.package_build = Some(cellscript::package::LockedBuildInfo {
+        edition: cellscript::CURRENT_EDITION,
+        compatibility_profile_hash: "test-compatibility-profile".to_string(),
         compiler_version: Some("0.20.0".to_string()),
         target_profile: Some("ckb".to_string()),
         artifact_hash: Some("artifact_hash".to_string()),
@@ -3064,14 +3590,17 @@ fn write_offline_fixture_with_lineage(root: &std::path::Path, lineage: Option<&s
     lockfile.write_to_root(root).unwrap();
 
     let deployed = cellscript::package::DeployedManifest {
-        version: 1,
-        schema: None,
+        version: cellscript::package::DeployedManifest::CURRENT_VERSION,
+        schema: cellscript::package::DEPLOYED_MANIFEST_SCHEMA.to_string(),
         package: cellscript::package::DeployedPackageInfo {
+            edition: cellscript::CURRENT_EDITION,
             name: "token".to_string(),
             version: "1.0.0".to_string(),
             source_hash: Some("source_hash".to_string()),
         },
         build: Some(cellscript::package::DeployedBuildInfo {
+            edition: cellscript::CURRENT_EDITION,
+            compatibility_profile_hash: "test-compatibility-profile".to_string(),
             compiler_version: Some("0.20.0".to_string()),
             artifact_hash: Some("artifact_hash".to_string()),
             metadata_hash: Some("metadata_hash".to_string()),
@@ -3081,6 +3610,8 @@ fn write_offline_fixture_with_lineage(root: &std::path::Path, lineage: Option<&s
             constraints_hash: Some("constraints_hash".to_string()),
         }),
         deployments: vec![cellscript::package::DeploymentRecord {
+            edition: cellscript::CURRENT_EDITION,
+            compatibility_profile_hash: "test-compatibility-profile".to_string(),
             network: "aggron4".to_string(),
             chain_id: "ckb-testnet".to_string(),
             tx_hash: "0xbbbb".to_string(),
@@ -3402,6 +3933,7 @@ fn cellc_rejects_underdeclared_effects_from_path_dependency_calls() {
         dep_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "dep_pkg"
 version = "0.1.0"
 "#,
@@ -3431,6 +3963,7 @@ action issue(amount: u64) -> Token {
         app_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "app_pkg"
 version = "0.1.0"
 
@@ -3456,6 +3989,7 @@ action wrapper(amount: u64) -> Token {
     )
     .unwrap();
 
+    lock_package(&app_root);
     let output = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).output().unwrap();
     assert!(!output.status.success(), "unexpected success: {}", String::from_utf8_lossy(&output.stdout));
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3499,6 +4033,7 @@ fn cellc_compiles_external_dependency_function_calls() {
         dep_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "dep_pkg"
 version = "0.1.0"
 "#,
@@ -3520,6 +4055,7 @@ fn add_one(x: u64) -> u64 {
         app_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "app_pkg"
 version = "0.1.0"
 
@@ -3541,6 +4077,7 @@ action run(x: u64) -> u64 {
     )
     .unwrap();
 
+    lock_package(&app_root);
     let output = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).output().unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 
@@ -3564,6 +4101,7 @@ fn cellc_compiles_aliased_external_dependency_function_calls() {
         dep_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "dep_pkg"
 version = "0.1.0"
 "#,
@@ -3585,6 +4123,7 @@ fn add_one(x: u64) -> u64 {
         app_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "app_pkg"
 version = "0.1.0"
 
@@ -3609,6 +4148,7 @@ action run(x: u64) -> u64 {
     )
     .unwrap();
 
+    lock_package(&app_root);
     let output = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).output().unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 
@@ -3640,6 +4180,7 @@ fn cellc_compiles_same_basename_external_dependency_function_calls_without_colli
             format!(
                 r#"
 [package]
+edition = "2026"
 name = "{package}"
 version = "0.1.0"
 "#
@@ -3665,6 +4206,7 @@ fn add_one(x: u64) -> u64 {{
         app_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "app_pkg"
 version = "0.1.0"
 
@@ -3687,6 +4229,7 @@ action run(x: u64) -> u64 {
     )
     .unwrap();
 
+    lock_package(&app_root);
     let output = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).output().unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 
@@ -3716,6 +4259,7 @@ fn cellc_compiles_transitive_external_dependency_function_calls() {
         dep_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "dep_pkg"
 version = "0.1.0"
 "#,
@@ -3741,6 +4285,7 @@ fn add_two(x: u64) -> u64 {
         app_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "app_pkg"
 version = "0.1.0"
 
@@ -3762,6 +4307,7 @@ action run(x: u64) -> u64 {
     )
     .unwrap();
 
+    lock_package(&app_root);
     let output = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&app_root).output().unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 
@@ -3785,6 +4331,7 @@ fn cellc_uses_manifest_build_out_dir_for_package_input() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -3826,6 +4373,7 @@ fn cellc_cli_target_overrides_manifest_build_target() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -3868,6 +4416,7 @@ fn cellc_uses_manifest_build_target_by_default() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -3910,6 +4459,7 @@ fn cellc_build_and_check_subcommands_use_package_flow() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -3972,6 +4522,7 @@ fn cellc_check_all_targets_checks_asm_and_elf_without_writing_artifacts() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -4032,6 +4583,7 @@ fn cellc_check_json_reports_multiple_compile_diagnostics() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4077,6 +4629,7 @@ fn cellc_check_json_reports_multiple_parse_diagnostics() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4121,6 +4674,7 @@ fn cellc_check_json_reports_diagnostics_on_stdout() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4189,6 +4743,7 @@ fn cellc_check_json_reports_multiple_ir_diagnostics() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4251,6 +4806,7 @@ fn cellc_build_accepts_pure_ckb_target_profile_without_vm_abi_trailer() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4322,6 +4878,7 @@ fn cellc_check_accepts_pure_ckb_target_profile() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4369,6 +4926,7 @@ fn cellc_check_accepts_ckb_profile_timepoint() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4403,6 +4961,7 @@ fn cellc_check_production_rejects_fail_closed_runtime_paths() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4452,6 +5011,7 @@ fn cellc_errors_include_runtime_ecode_when_policy_failure_maps_to_runtime_regist
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4491,6 +5051,7 @@ fn cellc_check_production_rejects_incomplete_output_verification() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4540,6 +5101,7 @@ fn cellc_check_can_reject_runtime_required_obligations() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4611,6 +5173,7 @@ fn cellc_check_reports_transaction_invariant_checked_subconditions() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4768,6 +5331,7 @@ fn cellc_check_reports_resource_conservation_blocker_class() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4838,6 +5402,7 @@ fn cellc_check_reports_explicit_output_binding_without_mutable_state_blockers() 
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4894,6 +5459,7 @@ fn cellc_check_reports_settle_finalization_blocker_class() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -4965,6 +5531,7 @@ fn cellc_check_rejects_cell_backed_vec_with_source_aware_guidance() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5022,6 +5589,7 @@ fn cellc_check_accepts_u128_mutable_state_transition_with_u64_delta() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5074,6 +5642,7 @@ fn cellc_check_rejects_undeclared_flow_edge() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5126,6 +5695,7 @@ fn cellc_check_accepts_declared_cyclic_flow_edge() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5177,6 +5747,7 @@ fn cellc_check_accepts_declared_linear_flow_edge() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5223,6 +5794,7 @@ fn cellc_check_rejects_flow_create_missing_state_field() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5266,6 +5838,7 @@ fn cellc_check_rejects_initial_flow_create_non_static_state() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5314,6 +5887,7 @@ fn cellc_check_rejects_flow_state_index_out_of_range() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5359,6 +5933,7 @@ fn cellc_check_rejects_duplicate_flow_edge() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5407,6 +5982,7 @@ fn cellc_check_rejects_transition_on_type_without_flow_block() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5450,6 +6026,7 @@ fn cellc_check_rejects_aggregate_invariant_scope_mismatch() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -5507,6 +6084,7 @@ fn cellc_check_reports_claim_source_predicate_blocker_class() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5586,6 +6164,7 @@ fn cellc_check_reports_pool_invariant_policy_families() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5681,6 +6260,7 @@ fn cellc_check_reports_amm_pool_without_runtime_blockers() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5737,6 +6317,7 @@ fn cellc_check_uses_manifest_policy_defaults() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -5788,6 +6369,7 @@ fn cellc_build_uses_manifest_policy_before_writing_artifacts() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -5843,6 +6425,7 @@ fn cellc_test_subcommand_compiles_test_sources() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5907,6 +6490,7 @@ fn cellc_test_subcommand_supports_expected_compile_failures() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -5957,6 +6541,7 @@ fn cellc_test_subcommand_rejects_missing_expected_error_text() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -6006,6 +6591,7 @@ fn cellc_test_subcommand_supports_target_directive() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -6055,6 +6641,7 @@ fn cellc_test_subcommand_supports_policy_directives() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -6117,6 +6704,7 @@ fn cellc_test_subcommand_supports_runtime_metadata_directives() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -6183,6 +6771,7 @@ fn cellc_test_subcommand_rejects_missing_runtime_metadata() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -6232,6 +6821,7 @@ fn cellc_test_subcommand_supports_entrypoint_metadata_directives() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -6289,6 +6879,7 @@ fn cellc_test_subcommand_rejects_missing_entrypoint_metadata() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -6338,6 +6929,7 @@ fn cellc_test_subcommand_rejects_unknown_directives() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -6388,6 +6980,7 @@ fn cellc_test_subcommand_rejects_conflicting_expectations() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -6437,6 +7030,7 @@ fn cellc_doc_subcommand_generates_markdown_docs() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -6597,7 +7191,7 @@ fn cellc_explain_profile_reports_ckb_v0_14_contract() {
 
     let summary: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(summary["profile"], "ckb");
-    assert_eq!(summary["witness_abi"], "ckb-molecule-witness-args+cellscript-entry-witness-v1");
+    assert_eq!(summary["witness_abi"], "ckb-molecule-witness-args-input-type-v2+cellscript-entry-witness-v1");
     assert_eq!(summary["lock_args_abi"], "ckb-script-args-typed-fixed-bytes");
     assert_eq!(summary["source_encoding"], "ckb-source-group-high-bit");
     assert_eq!(summary["spawn_ipc_abi"], "ckb-vm-v2-spawn-ipc-syscalls-2601-2608");
@@ -6841,6 +7435,7 @@ fn cellc_check_denies_metadata_only_declared_invariant() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -6889,6 +7484,7 @@ fn cellc_check_production_rejects_metadata_only_executable_claim() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -6954,6 +7550,7 @@ fn cellc_info_subcommand_supports_json_summary() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 authors = ["Audit Bot"]
@@ -6986,11 +7583,23 @@ deny_fail_closed = true
 fn cellc_add_and_remove_subcommands_honor_dev_path_and_json() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("math/src")).unwrap();
+    std::fs::create_dir_all(root.join("contracts")).unwrap();
+    std::fs::create_dir_all(root.join("shared")).unwrap();
+    std::fs::write(root.join("src/main.cell"), "module demo;\n").unwrap();
+    std::fs::write(
+        root.join("math/Cell.toml"),
+        "[package]\nedition = \"2026\"\nname = \"math\"\nversion = \"0.1.0\"\nentry = \"src/lib.cell\"\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("math/src/lib.cell"), "module math;\n").unwrap();
 
     std::fs::write(
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 entry = "src/main.cell"
@@ -7009,25 +7618,30 @@ out_dir = "artifacts"
         .arg("add")
         .arg("--dev")
         .arg("--path")
-        .arg("../math")
+        .arg("math")
         .arg("--json")
         .arg("math")
         .output()
         .unwrap();
-    assert!(add_output.status.success(), "stderr: {}", String::from_utf8_lossy(&add_output.stderr));
+    assert!(
+        add_output.status.success(),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&add_output.stdout),
+        String::from_utf8_lossy(&add_output.stderr)
+    );
 
     let add_summary: serde_json::Value = serde_json::from_slice(&add_output.stdout).unwrap();
     assert_eq!(add_summary["status"], "ok");
     assert_eq!(add_summary["target"], "dev-dependencies");
     assert_eq!(add_summary["added"][0], "math");
-    assert_eq!(add_summary["dependency"]["path"], "../math");
+    assert_eq!(add_summary["dependency"]["path"], "math");
 
     let manifest: toml::Value = std::fs::read_to_string(root.join("Cell.toml")).unwrap().parse().unwrap();
     assert_eq!(manifest["package"]["source_roots"].as_array().unwrap().len(), 2);
     assert_eq!(manifest["build"]["target"].as_str().unwrap(), "riscv64-elf");
     assert_eq!(manifest["build"]["target_profile"].as_str().unwrap(), "ckb");
     assert_eq!(manifest["build"]["out_dir"].as_str().unwrap(), "artifacts");
-    assert_eq!(manifest["dev_dependencies"]["math"]["path"].as_str().unwrap(), "../math");
+    assert_eq!(manifest["dev_dependencies"]["math"]["path"].as_str().unwrap(), "math");
     assert!(manifest.get("dependencies").and_then(|value| value.get("math")).is_none());
 
     let remove_output = Command::new(env!("CARGO_BIN_EXE_cellc"))
@@ -7063,10 +7677,13 @@ fn cellc_install_path_updates_lockfile_and_remove_prunes_it() {
 
     std::fs::create_dir_all(dep_root.join("src")).unwrap();
     std::fs::create_dir_all(util_root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/main.cell"), "module demo;\n").unwrap();
     std::fs::write(
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -7076,8 +7693,10 @@ version = "0.1.0"
         dep_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "math"
 version = "0.2.0"
+entry = "src/lib.cell"
 
 [dependencies.util]
 version = "0.1.0"
@@ -7085,15 +7704,19 @@ path = "../util"
 "#,
     )
     .unwrap();
+    std::fs::write(dep_root.join("src/lib.cell"), "module math;\n").unwrap();
     std::fs::write(
         util_root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "util"
 version = "0.1.0"
+entry = "src/lib.cell"
 "#,
     )
     .unwrap();
+    std::fs::write(util_root.join("src/lib.cell"), "module util;\n").unwrap();
 
     let install = Command::new(env!("CARGO_BIN_EXE_cellc"))
         .current_dir(root)
@@ -7109,24 +7732,220 @@ version = "0.1.0"
     assert_eq!(manifest["dependencies"]["math"]["path"].as_str().unwrap(), "math");
 
     let lockfile: cellscript::package::Lockfile = toml::from_str(&std::fs::read_to_string(root.join("Cell.lock")).unwrap()).unwrap();
-    let locked = lockfile.dependencies.get("math").expect("math should be locked");
+    let math_node = lockfile.root.dependencies.get("math").expect("math root edge should be locked");
+    let locked = lockfile.dependencies.get(math_node).expect("math should be locked");
     assert_eq!(locked.version, "0.2.0");
     assert!(matches!(&locked.source, cellscript::package::LockedSource::Path { path } if path == "math"));
-    let util = lockfile.dependencies.get("util").expect("transitive util should be locked");
+    let util_node = locked.dependencies.get("util").expect("math should have a util edge");
+    let util = lockfile.dependencies.get(util_node).expect("transitive util should be locked");
     assert_eq!(util.version, "0.1.0");
 
     let update = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("update").output().unwrap();
     assert!(update.status.success(), "stderr: {}", String::from_utf8_lossy(&update.stderr));
     let update_stdout = String::from_utf8_lossy(&update.stdout);
-    assert!(update_stdout.contains("Updated 2 dependencies"), "{update_stdout}");
+    assert!(update_stdout.contains("Updated 2 dependency nodes"), "{update_stdout}");
     assert!(!update_stdout.contains("Warning: lockfile is not consistent"), "{update_stdout}");
 
     let remove = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("remove").arg("math").output().unwrap();
     assert!(remove.status.success(), "stderr: {}", String::from_utf8_lossy(&remove.stderr));
 
     let pruned: cellscript::package::Lockfile = toml::from_str(&std::fs::read_to_string(root.join("Cell.lock")).unwrap()).unwrap();
-    assert!(!pruned.dependencies.contains_key("math"));
-    assert!(!pruned.dependencies.contains_key("util"));
+    assert!(pruned.root.dependencies.is_empty());
+    assert!(pruned.dependencies.is_empty());
+}
+
+#[test]
+fn cellc_build_uses_authoritative_lock_and_frozen_is_offline_and_read_only() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("math/src")).unwrap();
+    std::fs::write(
+        root.join("Cell.toml"),
+        r#"
+[package]
+edition = "2026"
+name = "demo"
+version = "0.1.0"
+
+[dependencies.math]
+path = "math"
+version = "^1.2.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/main.cell"),
+        r#"
+module demo::main
+
+action ping(value: u64) -> u64 {
+    verification
+        value
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("math/Cell.toml"),
+        r#"
+[package]
+edition = "2026"
+name = "math"
+version = "1.2.3"
+"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("math/src/lib.cell"), "module math;\n").unwrap();
+
+    let missing = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").output().unwrap();
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("Cell.lock is missing"));
+
+    let lock = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("lock").arg("--json").output().unwrap();
+    assert!(lock.status.success(), "stderr: {}", String::from_utf8_lossy(&lock.stderr));
+    let summary: serde_json::Value = serde_json::from_slice(&lock.stdout).unwrap();
+    assert_eq!(summary["schema"], cellscript::package::Lockfile::CURRENT_SCHEMA);
+    assert_eq!(summary["dependency_nodes"], 1);
+
+    let build = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").arg("--locked").output().unwrap();
+    assert!(build.status.success(), "stderr: {}", String::from_utf8_lossy(&build.stderr));
+    let before_frozen = std::fs::read(root.join("Cell.lock")).unwrap();
+    let frozen =
+        Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").arg("--frozen").arg("--offline").output().unwrap();
+    assert!(frozen.status.success(), "stderr: {}", String::from_utf8_lossy(&frozen.stderr));
+    assert_eq!(std::fs::read(root.join("Cell.lock")).unwrap(), before_frozen);
+
+    std::fs::write(root.join("math/src/lib.cell"), "module math;\n// source drift\n").unwrap();
+    let drift = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").arg("--locked").output().unwrap();
+    assert!(!drift.status.success());
+    assert!(String::from_utf8_lossy(&drift.stderr).contains("source hash mismatch"));
+
+    let update = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("update").output().unwrap();
+    assert!(update.status.success(), "stderr: {}", String::from_utf8_lossy(&update.stderr));
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").arg("--locked").output().unwrap();
+    assert!(rebuilt.status.success(), "stderr: {}", String::from_utf8_lossy(&rebuilt.stderr));
+}
+
+#[test]
+fn bundled_scenario_basics_executes_positive_and_exact_negative_cases_on_both_backends() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/scenario_basics");
+    let lock_before = std::fs::read(root.join("Cell.lock")).expect("scenario example must carry a tracked lockfile");
+
+    let graph_only_verify =
+        Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(&root).args(["package", "verify", "--json"]).output().unwrap();
+    assert!(!graph_only_verify.status.success());
+    assert!(
+        String::from_utf8_lossy(&graph_only_verify.stdout).contains("Cell.lock has no [package.build]")
+            || String::from_utf8_lossy(&graph_only_verify.stderr).contains("Cell.lock has no [package.build]")
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .current_dir(&root)
+        .args(["test", "--frozen", "--offline", "--backend", "all", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["status"], "ok");
+    assert_eq!(report["scenario_files"], 2);
+    assert_eq!(report["scenario_runs"], 4);
+    let scenarios = report["scenarios"].as_array().expect("scenario reports");
+    assert!(scenarios.iter().any(|row| {
+        row["scenario"] == "bundled-positive-entry"
+            && row["backend"] == "simulator"
+            && row["evidence_tier"] == "development-non-consensus"
+    }));
+    assert!(scenarios.iter().any(|row| {
+        row["scenario"] == "bundled-positive-entry" && row["backend"] == "ckb-vm" && row["evidence_tier"] == "authoritative-runtime"
+    }));
+    let exact_negative = scenarios.iter().filter(|row| row["scenario"] == "bundled-exact-runtime-error").collect::<Vec<_>>();
+    assert_eq!(exact_negative.len(), 2, "exact-negative scenario should run once per backend");
+    assert!(exact_negative.iter().all(|row| {
+        row["steps"][0]["status"] == "expected-runtime-error"
+            && row["steps"][0]["runtime_error"]["code"] == 5
+            && row["steps"][0]["runtime_error"]["name"] == "assertion-failed"
+    }));
+
+    let build = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .current_dir(&root)
+        .args(["build", "--frozen", "--offline", "--json"])
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "stderr: {}", String::from_utf8_lossy(&build.stderr));
+    for file in ["main.elf", "main.elf.meta.json", "main.elf.lowering.json", "main.elf.sourcemap.json"] {
+        assert!(root.join("build").join(file).is_file(), "verified-artifact example should emit {file}");
+    }
+    let verify = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .current_dir(&root)
+        .args(["verify-artifact", "build/main.elf", "--verify-sources", "--json"])
+        .output()
+        .unwrap();
+    assert!(verify.status.success(), "stderr: {}", String::from_utf8_lossy(&verify.stderr));
+    let verify_report: serde_json::Value = serde_json::from_slice(&verify.stdout).unwrap();
+    assert_eq!(verify_report["status"], "ok");
+    assert_eq!(verify_report["structural_verification"], "verified");
+    assert_eq!(verify_report["sources_verified"], true);
+    std::fs::remove_dir_all(root.join("build")).expect("remove generated bundled-example artifacts");
+
+    assert_eq!(
+        std::fs::read(root.join("Cell.lock")).unwrap(),
+        lock_before,
+        "frozen scenario execution must not rewrite the tracked graph"
+    );
+}
+
+#[test]
+fn bundled_package_graph_exercises_alias_features_test_scope_and_ckb_environments() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/package_graph");
+    let manifest = std::fs::read_to_string(root.join("Cell.toml")).expect("package graph manifest");
+    for needle in [
+        "package = \"canonical_math\"",
+        "version = \"^1.2.0\"",
+        "optional = true",
+        "[dev_dependencies.test_support]",
+        "auditing = [\"dep:audit\"]",
+        "full = [\"auditing\"]",
+        "[environments.mainnet]",
+        "[environments.testnet]",
+        "[dependency_overrides.testnet.contracts]",
+    ] {
+        assert!(manifest.contains(needle), "package graph example should contain `{needle}`");
+    }
+
+    let lock_before = std::fs::read(root.join("Cell.lock")).expect("package graph example must carry a tracked lockfile");
+    let lock_text = String::from_utf8(lock_before.clone()).unwrap();
+    for needle in [
+        "schema = \"cellscript-lock-v0.24-graph-v1\"",
+        "[environments.mainnet.dependencies]",
+        "[environments.mainnet.dev_dependencies]",
+        "[environments.testnet.dependencies]",
+        "[environments.testnet.dev_dependencies]",
+        "network_contracts@1.0.0|path:deps/contracts-mainnet|env=mainnet",
+        "network_contracts@2.0.0|path:deps/contracts-testnet|env=testnet",
+    ] {
+        assert!(lock_text.contains(needle), "package graph lock should contain `{needle}`");
+    }
+
+    let missing_environment =
+        Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(&root).args(["check", "--frozen", "--offline"]).output().unwrap();
+    assert!(!missing_environment.status.success());
+    assert!(String::from_utf8_lossy(&missing_environment.stderr).contains("--environment"));
+
+    for args in [
+        vec!["check", "--frozen", "--offline", "--environment", "mainnet"],
+        vec!["check", "--frozen", "--offline", "--environment", "testnet", "--features", "full"],
+        vec!["test", "--no-run", "--frozen", "--offline", "--environment", "testnet", "--all-features"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(&root).args(&args).output().unwrap();
+        assert!(output.status.success(), "cellc {} failed: {}", args.join(" "), String::from_utf8_lossy(&output.stderr));
+    }
+    assert_eq!(
+        std::fs::read(root.join("Cell.lock")).unwrap(),
+        lock_before,
+        "frozen package-graph commands must not rewrite the tracked graph"
+    );
 }
 
 #[test]
@@ -7139,6 +7958,7 @@ fn cellc_metadata_subcommand_emits_lowering_runtime_json() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -7196,6 +8016,7 @@ fn cellc_metadata_reports_multiple_compile_diagnostics() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -7234,6 +8055,7 @@ fn cellc_explain_generics_reports_checked_vec_instantiations() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -7348,6 +8170,7 @@ fn cellc_action_build_emits_builder_plan_json() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -7437,7 +8260,10 @@ action mint(amount: u64) -> Token {
     assert_eq!(plan["adapter_contract"]["accepted_output_state"], "AcceptedActionTx");
     assert_eq!(plan["adapter_contract"]["must_not_infer_protocol_semantics_from_action_name"], true);
     assert_eq!(plan["adapter_contract"]["witness_policy"]["entry_payload_abi"], "cellscript-entry-witness-v1");
+    assert_eq!(plan["adapter_contract"]["witness_policy"]["placement_abi"], "cellscript-witnessargs-input-type-v2");
     assert_eq!(plan["adapter_contract"]["witness_policy"]["default_action_payload_field"], "input_type");
+    assert_eq!(plan["adapter_contract"]["witness_policy"]["runtime_source"], "group-input-0-then-group-output-0");
+    assert_eq!(plan["adapter_contract"]["witness_policy"]["raw_v1_compatible"], false);
     assert_eq!(plan["adapter_contract"]["witness_policy"]["lock_signature_policy"], "explicit-adapter-owned-do-not-overwrite");
     assert!(plan["adapter_contract"]["resolved_tx_required_fields"]
         .as_array()
@@ -7464,6 +8290,7 @@ fn cellc_action_build_emits_runtime_required_scan_selectors() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -7534,6 +8361,7 @@ fn cellc_action_build_emits_cellfabric_intent_envelope() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -7665,6 +8493,7 @@ fn write_xudt_package(root: &std::path::Path, source: &str) {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -7886,6 +8715,7 @@ fn cellc_atomic_swap_full_lifecycle_build_check_audit_receipt() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -7990,6 +8820,7 @@ fn cellc_multi_phase_dao_flow_lifecycle_build_check_audit_receipt() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -8135,6 +8966,7 @@ fn cellc_multi_phase_dao_rejects_undeclared_state_transition() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -8186,7 +9018,14 @@ fn cellc_cross_module_launch_composition_distributes_correctly() {
     // audit lifecycle and the eight-output distribution shape.
     let launch_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples").join("launch");
 
-    let build = Command::new(env!("CARGO_BIN_EXE_cellc")).arg(&launch_path).output().unwrap();
+    let lock_before = std::fs::read(launch_path.join("Cell.lock")).expect("bundled launch package must carry a tracked lockfile");
+    let build = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .current_dir(&launch_path)
+        .arg("build")
+        .arg("--frozen")
+        .arg("--offline")
+        .output()
+        .unwrap();
     assert!(build.status.success(), "build failed: {}", String::from_utf8_lossy(&build.stderr));
 
     let metadata: serde_json::Value =
@@ -8218,6 +9057,11 @@ fn cellc_cross_module_launch_composition_distributes_correctly() {
     let bundle: serde_json::Value =
         serde_json::from_slice(&std::fs::read(audit_dir.path().join("audit-bundle.json")).unwrap()).unwrap();
     assert_eq!(bundle["protocol_graph"]["schema"], "cellscript-protocol-graph-v0.22");
+    assert_eq!(
+        std::fs::read(launch_path.join("Cell.lock")).unwrap(),
+        lock_before,
+        "frozen/offline build and audit must not rewrite the tracked dependency graph"
+    );
 }
 
 #[test]
@@ -8230,6 +9074,7 @@ fn cellc_gen_builder_typescript_emits_package_scaffold() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -8303,7 +9148,7 @@ action mint(amount: u64, owner: Address) -> Token {
 
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(output_dir.join("cellscript-builder-manifest.json")).unwrap()).unwrap();
-    assert_eq!(manifest["schema"], "cellscript-generated-action-builder-v0.20");
+    assert_eq!(manifest["schema"], "cellscript-generated-action-builder-v0.23-edition-2026");
     assert_eq!(manifest["target"], "typescript");
     assert_eq!(manifest["actions"][0]["name"], "mint");
     assert_eq!(manifest["cell_data_codec_manifest"]["schema"], "cellscript-cell-data-codec-manifest-v1");
@@ -8396,6 +9241,7 @@ fn cellc_gen_builder_typescript_declares_raw_cell_data_codec_manifest() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "raw-codec-demo"
 version = "0.1.0"
 
@@ -8479,6 +9325,7 @@ fn cellc_gen_builder_lockfile_identity_fails_closed() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -8521,15 +9368,19 @@ action mint(amount: u64, owner: Address) -> Token {
     let deployment_out_point = "0xaaaa:0";
     let package_source_hash = "package-registry-source-hash".to_string();
     let mut lockfile = cellscript::package::Lockfile {
-        version: 1,
+        version: cellscript::package::Lockfile::CURRENT_VERSION,
+        schema: cellscript::package::Lockfile::CURRENT_SCHEMA.to_string(),
         package: cellscript::package::LockfilePackageInfo {
+            edition: cellscript::CURRENT_EDITION,
             name: "demo".to_string(),
             version: "0.1.0".to_string(),
             namespace: None,
             source_hash: Some(package_source_hash.clone()),
             compiler_source_hash: metadata.source_hash.clone(),
         },
+        root: Default::default(),
         dependencies: Default::default(),
+        environments: Default::default(),
         package_build: Some(build_info.clone()),
         deployment: Default::default(),
     };
@@ -8547,14 +9398,17 @@ action mint(amount: u64, owner: Address) -> Token {
     std::fs::write(&lockfile_path, toml::to_string_pretty(&lockfile).unwrap()).unwrap();
 
     let deployed = cellscript::package::DeployedManifest {
-        version: 1,
-        schema: None,
+        version: cellscript::package::DeployedManifest::CURRENT_VERSION,
+        schema: cellscript::package::DEPLOYED_MANIFEST_SCHEMA.to_string(),
         package: cellscript::package::DeployedPackageInfo {
+            edition: cellscript::CURRENT_EDITION,
             name: "demo".to_string(),
             version: "0.1.0".to_string(),
             source_hash: Some(package_source_hash.clone()),
         },
         build: Some(cellscript::package::DeployedBuildInfo {
+            edition: cellscript::CURRENT_EDITION,
+            compatibility_profile_hash: build_info.compatibility_profile_hash.clone(),
             compiler_version: build_info.compiler_version.clone(),
             artifact_hash: build_info.artifact_hash.clone(),
             metadata_hash: build_info.metadata_hash.clone(),
@@ -8564,6 +9418,8 @@ action mint(amount: u64, owner: Address) -> Token {
             constraints_hash: build_info.constraints_hash.clone(),
         }),
         deployments: vec![cellscript::package::DeploymentRecord {
+            edition: cellscript::CURRENT_EDITION,
+            compatibility_profile_hash: build_info.compatibility_profile_hash.clone(),
             network: deployment_network.to_string(),
             chain_id: "ckb-testnet".to_string(),
             tx_hash: "0xaaaa".to_string(),
@@ -8787,6 +9643,7 @@ fn cellc_entry_witness_subcommand_emits_parameterized_witness_json() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -8823,6 +9680,10 @@ action main(amount: u64) -> u64 {
     let stdout: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(stdout["status"], "ok");
     assert_eq!(stdout["abi"], "cellscript-entry-witness-v1");
+    assert_eq!(stdout["placement_abi"], "cellscript-witnessargs-input-type-v2");
+    assert_eq!(stdout["witness_args_field"], "input_type");
+    assert_eq!(stdout["witness_source"], "group-input-0-then-group-output-0");
+    assert_eq!(stdout["raw_v1_compatible"], false);
     assert_eq!(stdout["entry_kind"], "action");
     assert_eq!(stdout["entry"], "main");
     assert_eq!(stdout["witness_hex"], "43534152477631004d00000000000000");
@@ -8955,6 +9816,7 @@ fn cellc_abi_subcommand_explains_entry_witness_layout() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -9009,6 +9871,7 @@ fn cellc_scheduler_plan_consumes_shared_touch_hints() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -9098,6 +9961,10 @@ fn cellc_ckb_std_compat_reports_runtime_boundary() {
     assert_eq!(report["ckb_std_refs"]["type_id"], "ckb_std::type_id");
     assert_eq!(report["inline_abi"]["fields"]["cell_occupied_capacity"], 6);
     assert_eq!(report["witness_args_policy"]["entry_payload_abi"], "cellscript-entry-witness-v1");
+    assert_eq!(report["witness_args_policy"]["placement_abi"], "cellscript-witnessargs-input-type-v2");
+    assert_eq!(report["witness_args_policy"]["default_action_payload_field"], "input_type");
+    assert_eq!(report["witness_args_policy"]["runtime_source"], "group-input-0-then-group-output-0");
+    assert_eq!(report["witness_args_policy"]["raw_v1_compatible"], false);
     assert_eq!(report["witness_args_policy"]["final_witness_args_owner"], "adapter");
     assert_eq!(report["witness_args_policy"]["lock_signature_policy"], "explicit-adapter-owned-do-not-overwrite");
     assert_eq!(report["adapter_boundary"]["transaction_realizer"], "ckb-sdk-rust-or-CCC-adapter");
@@ -9170,6 +10037,7 @@ fn cellc_entry_witness_subcommand_encodes_schema_backed_params() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -9222,6 +10090,7 @@ fn cellc_entry_witness_subcommand_rejects_wrong_width_fixed_bytes() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -9268,6 +10137,7 @@ fn cellc_fmt_subcommand_formats_sources() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -9315,7 +10185,7 @@ fn cellc_run_simulate_json_reports_steps_and_null_cycles() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(root.join("Cell.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n").unwrap();
+    std::fs::write(root.join("Cell.toml"), "[package]\nedition = \"2026\"\nname = \"demo\"\nversion = \"0.1.0\"\n").unwrap();
     std::fs::write(root.join("src/main.cell"), "module demo::main\naction main() -> u64 {\n    verification\n        0\n}\n").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).args(["run", "--simulate", "--json"]).output().unwrap();
@@ -9344,6 +10214,7 @@ fn cellc_run_subcommand_executes_pure_elf_package() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -9388,6 +10259,7 @@ fn cellc_run_subcommand_rejects_parameterized_schema_elf() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -9429,6 +10301,7 @@ fn cellc_run_subcommand_rejects_ckb_runtime_elf() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 "#,
@@ -9479,6 +10352,7 @@ members = ["pkg_a", "pkg_b"]
     std::fs::write(
         pkg_a.join("Cell.toml"),
         r#"[package]
+edition = "2026"
 name = "pkg_a"
 version = "0.1.0"
 "#,
@@ -9502,6 +10376,7 @@ action hello() -> u64 {
     std::fs::write(
         pkg_b.join("Cell.toml"),
         r#"[package]
+edition = "2026"
 name = "pkg_b"
 version = "0.1.0"
 "#,
@@ -9545,6 +10420,7 @@ members = ["alpha", "beta"]
     std::fs::write(
         alpha.join("Cell.toml"),
         r#"[package]
+edition = "2026"
 name = "alpha"
 version = "0.1.0"
 "#,
@@ -9564,6 +10440,7 @@ action run() -> u64 { verification let x: u64 = 1 return x }
     std::fs::write(
         beta.join("Cell.toml"),
         r#"[package]
+edition = "2026"
 name = "beta"
 version = "0.1.0"
 "#,
@@ -9610,6 +10487,7 @@ members = ["lib_a"]
     std::fs::write(
         lib_a.join("Cell.toml"),
         r#"[package]
+edition = "2026"
 name = "lib_a"
 version = "0.1.0"
 "#,
@@ -9649,6 +10527,7 @@ members = ["shared_types", "app"]
     std::fs::write(
         shared.join("Cell.toml"),
         r#"[package]
+edition = "2026"
 name = "shared_types"
 version = "0.1.0"
 entry = "src/types.cell"
@@ -9671,6 +10550,7 @@ resource Token has store, replace, relock, consume, burn {
     std::fs::write(
         app.join("Cell.toml"),
         r#"[package]
+edition = "2026"
 name = "app"
 version = "0.1.0"
 
@@ -9693,6 +10573,7 @@ action passthrough(token: Token) -> Token {
     )
     .unwrap();
 
+    lock_package(&app);
     let output =
         Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").arg("-p").arg("app").arg("--json").output().unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
@@ -9716,6 +10597,7 @@ fn cellc_incremental_cache_hit_on_second_build() {
     std::fs::write(
         root.join("Cell.toml"),
         r#"[package]
+edition = "2026"
 name = "cache_test"
 version = "0.1.0"
 "#,
@@ -9758,6 +10640,7 @@ fn cellc_incremental_cache_invalidated_on_source_change() {
     std::fs::write(
         root.join("Cell.toml"),
         r#"[package]
+edition = "2026"
 name = "inval_test"
 version = "0.1.0"
 "#,
@@ -9804,6 +10687,7 @@ fn cellc_clean_cache_flag_removes_incremental_cache() {
     std::fs::write(
         root.join("Cell.toml"),
         r#"[package]
+edition = "2026"
 name = "clean_test"
 version = "0.1.0"
 "#,
@@ -9852,6 +10736,7 @@ fn cellc_entry_action_bypasses_incremental_cache() {
     std::fs::write(
         root.join("Cell.toml"),
         r#"[package]
+edition = "2026"
 name = "entry_bypass"
 version = "0.1.0"
 "#,
@@ -9898,6 +10783,7 @@ fn cellc_install_rejects_self_path_dependency() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -9950,6 +10836,7 @@ fn cellc_install_rejects_self_name_dependency() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -10005,6 +10892,7 @@ fn cellc_add_rejects_self_name_dependency() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -10041,6 +10929,7 @@ fn cellc_build_writes_lockfile_deployment_ref_from_deployed_toml() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -10081,18 +10970,22 @@ action mint(amount: u64) -> Token {
     let cell_data_codec_manifest_hash = lockfile.package_build.as_ref().unwrap().cell_data_codec_manifest_hash.as_deref().unwrap();
     let abi_hash = lockfile.package_build.as_ref().unwrap().abi_hash.as_deref().unwrap();
     let constraints_hash = lockfile.package_build.as_ref().unwrap().constraints_hash.as_deref().unwrap();
+    let compatibility_profile_hash = lockfile.package_build.as_ref().unwrap().compatibility_profile_hash.as_str();
     let source_hash = lockfile.package.source_hash.as_deref().unwrap();
     let compiler_version = lockfile.package_build.as_ref().unwrap().compiler_version.as_deref().unwrap();
     let deployed = format!(
-        r#"version = 1
-schema = "cellscript-ckb-deployment-manifest-v0.19"
+        r#"version = 2
+schema = "cellscript-deployed-v0.23-edition-2026"
 
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 source_hash = "{source_hash}"
 
 [build]
+edition = "2026"
+compatibility_profile_hash = "{compatibility_profile_hash}"
 compiler_version = "{compiler_version}"
 artifact_hash = "{artifact_hash}"
 metadata_hash = "{metadata_hash}"
@@ -10102,6 +10995,8 @@ abi_hash = "{abi_hash}"
 constraints_hash = "{constraints_hash}"
 
 [[deployments]]
+edition = "2026"
+compatibility_profile_hash = "{compatibility_profile_hash}"
 name = "demo-mock"
 status = "active"
 network = "devnet"
@@ -10165,6 +11060,7 @@ fn cellc_build_omits_lockfile_deployment_when_artifact_hash_mismatches() {
         root.join("Cell.toml"),
         r#"
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 
@@ -10195,15 +11091,18 @@ action mint(amount: u64) -> Token {
     // Deployed.toml with a wrong artifact_hash. The record field still points
     // at the out_point, but the code/out_point/data/record_hash fields must
     // be left None so the verifier can surface the build-identity mismatch.
-    let deployed = r#"version = 1
-schema = "cellscript-ckb-deployment-manifest-v0.19"
+    let deployed = r#"version = 2
+schema = "cellscript-deployed-v0.23-edition-2026"
 
 [package]
+edition = "2026"
 name = "demo"
 version = "0.1.0"
 source_hash = "fake"
 
 [build]
+edition = "2026"
+compatibility_profile_hash = "mismatched-profile"
 compiler_version = "0.17.0"
 artifact_hash = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 metadata_hash = "0x00"
@@ -10212,6 +11111,8 @@ abi_hash = "0x00"
 constraints_hash = "0x00"
 
 [[deployments]]
+edition = "2026"
+compatibility_profile_hash = "mismatched-profile"
 name = "demo-mock"
 status = "active"
 network = "devnet"

@@ -1,0 +1,5 @@
+[package]
+edition = "2026"
+name = "network_contracts"
+version = "1.0.0"
+entry = "src/lib.cell"

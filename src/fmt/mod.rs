@@ -218,11 +218,11 @@ impl Formatter {
         validity: Option<&ValidityBlock>,
     ) -> Result<()> {
         let mut header = format!("{} {}", keyword, name);
-        if let Some(capabilities) = capabilities {
-            if !capabilities.is_empty() {
-                let rendered = capabilities.iter().map(format_capability).collect::<Vec<_>>().join(", ");
-                header.push_str(&format!(" has {}", rendered));
-            }
+        if let Some(capabilities) = capabilities
+            && !capabilities.is_empty()
+        {
+            let rendered = capabilities.iter().map(format_capability).collect::<Vec<_>>().join(", ");
+            header.push_str(&format!(" has {}", rendered));
         }
         if has_type_policy(identity, default_hash_type, capacity_floor) {
             self.push_line(&header);
@@ -292,10 +292,10 @@ impl Formatter {
         if let Some(capacity_floor) = capacity_floor {
             self.push_line(&format!("with_capacity_floor({})", capacity_floor.shannons));
         }
-        if let Some(identity) = identity {
-            if !matches!(identity, IdentityPolicy::None) {
-                self.push_line(&format!("identity({})", format_identity_policy(identity)));
-            }
+        if let Some(identity) = identity
+            && !matches!(identity, IdentityPolicy::None)
+        {
+            self.push_line(&format!("identity({})", format_identity_policy(identity)));
         }
     }
 
@@ -668,8 +668,11 @@ impl Formatter {
                 if call.preserve_fields.is_empty() {
                     base
                 } else {
-                    let fields = call.preserve_fields.join("\n");
-                    format!("{} {{\n{}\n}}", base, fields)
+                    let field_indent = " ".repeat((self.indent_level + 1) * self.config.indent_width);
+                    let closing_indent = " ".repeat(self.indent_level * self.config.indent_width);
+                    let fields =
+                        call.preserve_fields.iter().map(|field| format!("{}{}", field_indent, field)).collect::<Vec<_>>().join("\n");
+                    format!("{} {{\n{}\n{}}}", base, fields, closing_indent)
                 }
             }
         }
@@ -1202,6 +1205,12 @@ action transfer_coin(coin: Coin, to: Address) -> next_coin: Coin {
         assert!(
             !formatted.contains("amount, nonce"),
             "stdlib field blocks use newline-separated field names, not comma-separated lists:\n{}",
+            formatted
+        );
+        assert!(
+            formatted
+                .contains("        std::lifecycle::transfer(coin, next_coin, to) {\n            amount\n            nonce\n        }"),
+            "stdlib field blocks should retain statement-relative indentation:\n{}",
             formatted
         );
     }

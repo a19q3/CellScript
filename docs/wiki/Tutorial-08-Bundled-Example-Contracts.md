@@ -45,19 +45,37 @@ There are no checked-in `examples/business` or `examples/acceptance` mirrors;
 acceptance-only profile/effect/scheduler metadata belongs in runner
 configuration or generated files under `target/`.
 
+Three 0.24 workflow packages sit beside, but are not part of, the business
+matrix:
+
+- `examples/scenario_basics` runs one positive and one exact-negative scenario
+  through both the simulator and CKB-VM, and builds a four-file verified
+  artifact bundle;
+- `examples/package_graph` demonstrates standard SemVer, a package alias,
+  optional and transitive features, a test-only dependency, explicit CKB
+  environments, a testnet dependency override, and frozen/offline consumption
+  of the tracked graph;
+- `examples/registry_ls_idl` demonstrates the supported LS-IDL witness fields,
+  raw-byte SHA-256/executable-suffix binding, publish scaffolding, and curated
+  normal and negative compatibility vectors.
+
+These packages are deliberately small and synthetic. They teach tooling
+boundaries without implying that simulator bookkeeping or illustrative chain
+identities are production evidence.
+
 Despite its legacy filename, `multisig.cell` is not a signature verifier or a
 standalone custody Lock Script. Its `Approval` values and `reported_time`
 arguments are witness data. A surrounding Lock Script must authenticate the
 approver, and any production time policy must bind a HeaderDep-derived value.
-CellScript 0.22 has no implicit signer identity, sighash selection, or witness
-layout. Packages that need cryptographic custody may call the explicit BIP340
-CellDep verifier ABI, but the bundled threshold-approval example deliberately
-does not do so.
+Since CellScript 0.22 there has been no implicit signer identity, sighash
+selection, or witness layout. Packages that need cryptographic custody may call
+the explicit BIP340 CellDep verifier ABI, but the bundled threshold-approval
+example deliberately does not do so.
 
 ## Fiber Interoperability Examples
 
-CellScript 0.22 also includes seven bounded interoperability examples under
-`examples/fiber/`. They are not additional members of the bundled CKB
+The CellScript 0.22 line introduced seven bounded interoperability examples
+under `examples/fiber/`. They are not additional members of the bundled CKB
 production matrix:
 
 | Example | Interoperability boundary |
@@ -73,7 +91,7 @@ production matrix:
 The `cellscript-fiber` adapter derives the dedicated artifact and native Fiber
 configuration; it does not change the `.cell` source into a Fiber-specific
 language. Follow the
-[bounded Fiber interoperability guide](https://github.com/CellScript-Labs/CellScript/blob/nightly-0.22/examples/fiber/README.md)
+[bounded Fiber interoperability guide](https://github.com/CellScript-Labs/CellScript/blob/nightly-0.24/examples/fiber/README.md)
 for the check, deployment, enable, materialization, and doctor workflow.
 
 `examples/registry.cell`, `examples/atomic_swap.cell`,
@@ -135,6 +153,17 @@ cd examples
 cellc build --package token --target riscv64-elf --target-profile ckb --json
 cellc build --package amm_pool --target riscv64-elf --target-profile ckb --json
 cellc build --package launch --target riscv64-elf --target-profile ckb --json
+```
+
+For the 0.24 workflow examples, follow their tracked locks without repinning:
+
+```bash
+cd examples/scenario_basics
+cellc test --frozen --offline --backend all --json
+
+cd ../package_graph
+cellc check --frozen --offline --environment mainnet
+cellc check --frozen --offline --environment testnet --features full
 ```
 
 Do not treat `cellc build --workspace` as the canonical compile-all command for

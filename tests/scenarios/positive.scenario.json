@@ -1,0 +1,84 @@
+{
+  "schema": "cellscript-test-scenario-v1",
+  "name": "positive-two-step-cell-replacement",
+  "source": "positive.cell",
+  "target_profile": "ckb",
+  "entry": {
+    "kind": "action",
+    "name": "main",
+    "args": []
+  },
+  "initial_cells": [
+    {
+      "name": "state-0",
+      "capacity": 10000000000,
+      "data": "00",
+      "lock": {
+        "code_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "hash_type": "data1",
+        "args": ""
+      },
+      "type": null,
+      "prior_output": null
+    }
+  ],
+  "steps": [
+    {
+      "name": "replace-0-with-1",
+      "consumes": ["state-0"],
+      "outputs": [
+        {
+          "name": "state-1",
+          "capacity": 10000000000,
+          "data": "01",
+          "lock": {
+            "code_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "hash_type": "data1",
+            "args": ""
+          },
+          "type": null,
+          "prior_output": "state-0"
+        }
+      ],
+      "cell_deps": [],
+      "header_deps": [],
+      "since": {"state-0": 0},
+      "witnesses": [
+        {"input": "state-0", "lock": null, "input_type": "", "output_type": null}
+      ],
+      "expectation": {"status": "pass", "result": "()", "runtime_error": null}
+    },
+    {
+      "name": "replace-1-with-2",
+      "consumes": ["state-1"],
+      "outputs": [
+        {
+          "name": "state-2",
+          "capacity": 10000000000,
+          "data": "02",
+          "lock": {
+            "code_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+            "hash_type": "data1",
+            "args": ""
+          },
+          "type": null,
+          "prior_output": "state-1"
+        }
+      ],
+      "cell_deps": [],
+      "header_deps": [],
+      "since": {"state-1": 0},
+      "witnesses": [
+        {"input": "state-1", "lock": null, "input_type": "", "output_type": null}
+      ],
+      "expectation": {"status": "pass", "result": "()", "runtime_error": null}
+    }
+  ],
+  "limits": {
+    "max_steps": 1000,
+    "max_cycles": 10000000,
+    "max_transaction_bytes": 65536,
+    "minimum_cell_capacity": 100000000
+  },
+  "oracle": null
+}

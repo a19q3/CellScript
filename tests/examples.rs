@@ -1,5 +1,3 @@
-#![allow(clippy::too_many_arguments)]
-
 use camino::{Utf8Path, Utf8PathBuf};
 use cellscript::{
     codegen::{analyze_backend_shape, BackendShapeMetrics},
@@ -173,7 +171,9 @@ const BUNDLED_EXAMPLE_ASM_SHAPE_BUDGETS: [(&str, AssemblyShapeBudget); 9] = [
             max_lines: 24_500,
             max_fail_handlers: 64,
             max_shared_epilogues: 20,
-            max_text_bytes: 92 * 1024,
+            // The v2 placement parser adds 68 bytes to the full multisig text
+            // surface while the focused transfer entry remains below 7 KiB.
+            max_text_bytes: 93 * 1024,
             max_relaxed_branches: 4,
             max_cond_branch_abs_distance: 7_700,
             max_machine_blocks: 3_600,
@@ -500,7 +500,7 @@ fn docs_examples_cellscript_blocks_match_declared_compile_boundary() {
 
     let rejected_collections = write_wrapped_doc_snippet(&temp_root, "collections_rejected", &collections[2]);
     let rejected_source = std::fs::read_to_string(&rejected_collections).expect("rejected collection snippet should be readable");
-    let rejected_report = compile_metadata_with_diagnostics(&rejected_source, None);
+    let rejected_report = compile_metadata_with_diagnostics(&rejected_source, cellscript::CURRENT_EDITION, None);
     assert!(
         rejected_report.diagnostics.iter().any(|diagnostic| {
             diagnostic.message.contains("type 'Vec<Token>' cannot store a cell-backed resource")
@@ -522,6 +522,8 @@ fn token_amm_bootstrap_docs_cover_builder_friction_boundary() {
         "launch_token` materialises the Pool and LP receipt topology directly",
         "Do not rely on \"the first action runs on creation\" as a protocol rule",
         "Cell-bound inputs and outputs are transaction Cells, not witness payload args",
+        "place the payload in `input_type` before any lock-script signer runs",
+        "Never submit the raw `CSARGv1` payload as a transaction witness",
         "Strict v0.16 ProofPlan checks compile the bundled token, AMM, and launch actions as original scoped entries",
     ] {
         assert!(bootstrap_text.contains(needle), "bootstrap guide should contain `{needle}`");
@@ -534,6 +536,10 @@ fn token_amm_bootstrap_docs_cover_builder_friction_boundary() {
     ] {
         assert!(bootstrap.contains(needle), "bootstrap guide should contain `{needle}`");
     }
+    assert!(
+        !bootstrap.contains("Do not wrap it in `WitnessArgs.input_type`"),
+        "bootstrap guide must not reintroduce the retired raw-witness placement guidance"
+    );
 
     let flows = std::fs::read_to_string(
         Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs").join("CELLSCRIPT_EXAMPLE_BUSINESS_FLOWS.md"),

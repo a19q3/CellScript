@@ -1,0 +1,26 @@
+[package]
+name = "cellscript-registry-artifact-verifier"
+version = "0.24.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+description = "Least-privilege Registry admission worker for verified CellScript CKB artifacts"
+license = "MIT"
+
+[[bin]]
+name = "cellscript-registry-artifact-verify"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+base64 = "0.22"
+cellscript-artifact-checker = { path = "../../crates/cellscript-artifact-checker" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+
+[workspace]
+
+[dev-dependencies]
+cellscript = { path = "../.." }
+tempfile = "3.10"

@@ -2,12 +2,15 @@
 
 ## Status
 
-Implemented across the 0.20-0.21 line for the website playground, WASM
-metadata-only compile path, multi-file browser workspace, and agent-facing
-documentation surface. Path B, full ELF generation inside the browser WASM
-bundle, remains deferred.
+Implemented across the 0.20-0.23 line for the website playground, WASM
+metadata-only compile path, multi-file browser workspace, agent-facing
+documentation surface, and recoverable browser workbench. The 0.23 workbench
+persists workspace/panel state, retains explicitly stale last-valid output,
+restarts a failed compiler Worker, and derives Cell Flow plus Inspector views
+from metadata. Path B, full ELF generation inside the browser WASM bundle,
+remains deferred.
 
-Updated: 2026-07-11 for CellScript 0.21.0.
+Updated: 2026-08-09 for the CellScript 0.23 development line.
 
 ## Goal
 
@@ -66,13 +69,11 @@ The only WASM blocker is dependency shape, not architecture:
   `codegen`, `proof_plan`, `ast`, `error`) and the hash crate
   (`blake2b_simd`, pure Rust) are WASM-safe.
 
-The ELF backend is also viable: `assemble_elf_internal` is a
-self-contained pure-Rust RISC-V-to-ELF encoder, and
-`try_external_elf_toolchain` returns `Ok(None)` in the browser
-because `env::var` is empty, so the compiler falls back to the
-internal assembler with no filesystem or shell access. Path B (full
-ELF) is therefore possible but deferred to v2 to respect the bundle
-size budget; v1 ships the metadata-only path.
+The ELF backend is also viable: `assemble_elf_internal` is the sole,
+self-contained pure-Rust RISC-V-to-ELF encoder and does not require
+filesystem or shell access. Path B (full ELF) is therefore possible but
+deferred to v2 to respect the bundle size budget; v1 ships the metadata-only
+path.
 
 See §10 for the size control plan and §11 for the two-path split.
 

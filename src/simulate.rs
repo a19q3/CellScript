@@ -123,6 +123,7 @@ pub enum SimulateError {
     UndefinedFunction { name: String },
     TypeError { expected: String, got: String },
     Unsupported { description: String },
+    RuntimeError { code: u64, name: String },
 }
 
 impl std::fmt::Display for SimulateError {
@@ -133,6 +134,7 @@ impl std::fmt::Display for SimulateError {
             SimulateError::UndefinedFunction { name } => write!(f, "undefined function '{}'", name),
             SimulateError::TypeError { expected, got } => write!(f, "type error: expected {}, got {}", expected, got),
             SimulateError::Unsupported { description } => write!(f, "unsupported: {}", description),
+            SimulateError::RuntimeError { code, name } => write!(f, "CellScript runtime error {} ({})", code, name),
         }
     }
 }
@@ -160,7 +162,15 @@ impl SimulateInterpreter {
     }
 
     pub fn simulate_action(&mut self, name: &str, args: &[SimValue]) -> Result<SimulateResult, SimulateError> {
-        let key = format!("action::{}", name);
+        self.simulate_entry("action", name, args)
+    }
+
+    pub fn simulate_lock(&mut self, name: &str, args: &[SimValue]) -> Result<SimulateResult, SimulateError> {
+        self.simulate_entry("lock", name, args)
+    }
+
+    fn simulate_entry(&mut self, kind: &str, name: &str, args: &[SimValue]) -> Result<SimulateResult, SimulateError> {
+        let key = format!("{}::{}", kind, name);
         let (params, body) = self.functions.get(&key).cloned().ok_or(SimulateError::UndefinedFunction { name: key })?;
 
         for (param, arg) in params.iter().zip(args.iter()) {
@@ -381,7 +391,8 @@ impl SimulateInterpreter {
                 let msg = self.eval_expr(&assert.message)?;
                 self.trace.push(TraceEvent::Assert { condition: cond.clone(), message: msg.to_string() });
                 if !self.is_truthy(&cond) {
-                    Ok(SimValue::Simulated { ty: "assert_failed".to_string(), description: msg.to_string() })
+                    let error = crate::runtime_errors::CellScriptRuntimeError::AssertionFailed;
+                    Err(SimulateError::RuntimeError { code: error.code(), name: error.name().to_string() })
                 } else {
                     Ok(SimValue::Unit)
                 }
@@ -390,7 +401,8 @@ impl SimulateInterpreter {
                 let cond = self.eval_expr(&require.condition)?;
                 self.trace.push(TraceEvent::Assert { condition: cond.clone(), message: "require failed".to_string() });
                 if !self.is_truthy(&cond) {
-                    Ok(SimValue::Simulated { ty: "require_failed".to_string(), description: "require failed".to_string() })
+                    let error = crate::runtime_errors::CellScriptRuntimeError::AssertionFailed;
+                    Err(SimulateError::RuntimeError { code: error.code(), name: error.name().to_string() })
                 } else {
                     Ok(SimValue::Bool(true))
                 }

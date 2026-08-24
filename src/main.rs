@@ -1,6 +1,3 @@
-// Keep the Edition 2024 let-chain cleanup separate from the toolchain migration.
-#![allow(clippy::collapsible_if)]
-
 use camino::Utf8Path;
 use cellscript::error::{CompileError, CompileErrorCategory};
 use clap::{Parser, ValueEnum};
@@ -284,6 +281,7 @@ fn main() {
 
     let output = cli.output.clone();
     let options = CompileOptions {
+        edition: cellscript::CURRENT_EDITION,
         opt_level: cli.opt,
         output: output.clone(),
         debug: cli.debug,
@@ -323,6 +321,9 @@ fn main() {
             if let Err(e) = result.write_metadata_to_path(&metadata_path) {
                 terminate_cli_error(&e, message_format, None, None);
             }
+            let verified_sidecars = result
+                .write_verified_artifact_sidecars(&output_path)
+                .unwrap_or_else(|e| terminate_cli_error(&e, message_format, None, None));
 
             if message_format == MessageFormat::Json {
                 let payload = serde_json::json!({
@@ -330,6 +331,8 @@ fn main() {
                     "mode": "direct-build",
                     "artifact": output_path.as_str(),
                     "metadata": metadata_path.as_str(),
+                    "lowering_record": verified_sidecars.as_ref().map(|paths| paths.0.as_str()),
+                    "source_map": verified_sidecars.as_ref().map(|paths| paths.1.as_str()),
                     "artifact_format": result.artifact_format.display_name(),
                     "target_profile": result.metadata.target_profile.name,
                     "artifact_hash": result.metadata.artifact_hash,
@@ -343,6 +346,10 @@ fn main() {
                 println!("  Artifact hash: {:x?}", result.artifact_hash);
                 println!("  Output: {}", output_path);
                 println!("  Metadata: {}", metadata_path);
+                if let Some((lowering_record, source_map)) = verified_sidecars {
+                    println!("  Lowering record: {}", lowering_record);
+                    println!("  Source map: {}", source_map);
+                }
             }
         }
         Err(e) => {
@@ -668,10 +675,10 @@ fn diagnostic_source(
     }
 
     let file = error.file.as_deref().or(fallback_file)?;
-    if Some(file) == fallback_file {
-        if let Some(source) = fallback_source {
-            return Some((file.to_string(), source.to_string()));
-        }
+    if Some(file) == fallback_file
+        && let Some(source) = fallback_source
+    {
+        return Some((file.to_string(), source.to_string()));
     }
 
     std::fs::read_to_string(file.as_std_path()).ok().map(|source| (file.to_string(), source))

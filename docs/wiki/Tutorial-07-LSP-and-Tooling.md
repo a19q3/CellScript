@@ -24,6 +24,7 @@ instead of only the message. The same record is available through
 ## What You Will Learn
 
 - what the LSP server supports;
+- how the CLI, LSP, WASM, and playground share Edition 2026;
 - how the VS Code extension starts the server;
 - which settings matter for local development;
 - where editor tooling helps;
@@ -60,12 +61,49 @@ cellc --lsp
 
 In practice you usually let the editor start it for you.
 
-On `nightly-0.22`, qualified enum completion includes concrete payload
-constructors: after `Limit::`, `Some` advertises `Some(u64)` and inserts
+## One Edition Across Tooling
+
+The editor is not an edition compatibility layer. Package-backed LSP documents
+take `edition = "2026"` from `Cell.toml` and carry it into the same compiler
+path as `cellc`. A missing or non-2026 value is a package error; the LSP does
+not infer or migrate it.
+
+The browser boundary is equally explicit. The WASM metadata exports take an
+edition argument:
+
+```text
+compile_metadata_json(source, edition, target?)
+compile_metadata_json_diagnostics(source, edition, target?)
+compile_metadata_json_sources(sources_json, entry_path, edition, target?)
+```
+
+The only accepted value is `"2026"`. The playground worker passes that value
+and records it in compiler-output provenance, so browser metadata cannot
+silently use a different compatibility contract from native builds.
+
+Introduced on the 0.22 line and retained by the current compiler, qualified
+enum completion includes concrete payload constructors: after `Limit::`,
+`Some` advertises `Some(u64)` and inserts
 `Some(value1)`, while `None` remains a bare variant. Enum hover reads the same
 compiler metadata as `cellc metadata` and shows the tagged-union layout, ABI,
 storage class, encoded width, and linear-payload flag. Generic or
 variable-width payload ADTs are intentionally not advertised as supported.
+
+## Recoverable Browser Workbench
+
+The website playground is a metadata workbench over the WASM compiler path,
+not a browser ELF builder. Its workspace snapshot preserves source files, the
+selected entry, active panels, and saved/dirty state in browser-local storage.
+Compile failure keeps the last valid output visible with an explicit stale
+label; if the compiler Worker stops, restart it from the playground without
+reloading the page.
+
+Cell Flow derives an inputs → action → outputs view from compile metadata. The
+Inspector connects a selected action or type back to its declaration and shows
+effects, estimated cycles, capabilities, runtime features, and layout evidence.
+Raw actions, types, diagnostics, and metadata remain available alongside those
+views. None of these panels upgrades metadata into consensus proof, and the
+browser path still emits no assembly or ELF.
 
 ## VS Code Extension
 
@@ -109,6 +147,7 @@ Useful settings:
 | `cellscript.builderOutputDir` | Output directory for generated TypeScript action-builder packages. Relative paths resolve from the nearest package `Cell.toml`. |
 | `cellscript.ckbRpcUrl` | Optional CKB RPC URL for live registry verification. |
 | `cellscript.deploymentNetwork` | Optional network filter for live registry verification and generated builder deployment binding. |
+| `cellscript.registryApiUrl` | Optional Registry API base URL for LS-IDL fetch. |
 | `cellscript.registryRequirePublisherSignature` | Add `--require-publisher-signature` to registry verification commands. This is a metadata-presence gate, not cryptographic signature verification. |
 | `cellscript.registryRequireAuditReport` | Add `--require-audit-report` to registry verification commands. |
 
@@ -131,6 +170,22 @@ The extension contributes commands for the local compiler and builder loop:
 | `CellScript: Verify Registry` | `cellc registry verify --json` |
 | `CellScript: Verify Live Registry` | `cellc registry verify --live --json` |
 | `CellScript: Show Production Report` | compiler version + metadata + constraints + release-audit boundary |
+| `CellScript: Validate LS-IDL` | `cellc artifact ls-idl validate --idl <active-json>` |
+| `CellScript: Bind LS-IDL to CKB Executable` | `cellc artifact ls-idl bind --idl <active-json> --executable <file>` |
+| `CellScript: Fetch LS-IDL by CKB Script` | `cellc artifact ls-idl fetch --code-hash <hash> --output idl.json` |
+
+The LS-IDL commands preserve the interface's exact byte identity. Validation
+checks the supported schema, binding appends the raw IDL SHA-256 to a selected
+executable, and fetch writes the Registry response without JSON
+reserialisation. This proves schema and commitment identity, not that a Lock
+Script implements the interface correctly.
+
+Entry-witness commands report placement ABI
+`cellscript-witnessargs-input-type-v2` within the resolved compatibility profile:
+`CSARGv1` is stored in Molecule `WitnessArgs.input_type` on the selected
+script-group witness. Tooling must preserve `lock` and `output_type`; it must
+not emit the entry payload as raw witness bytes. Edition 2026 independently
+identifies how the source was understood.
 
 `CellScript: Show Production Report` is useful while editing because it displays
 compiler version, metadata, constraints, and release-audit boundaries.
@@ -176,6 +231,7 @@ cellc check --all-targets --json
 cellc metadata . --target riscv64-elf --target-profile ckb -o /tmp/metadata.json
 cellc build --target riscv64-elf --target-profile ckb --json
 cellc verify-artifact build/main.elf --verify-sources --expect-target-profile ckb
+cellc test --backend all --json
 cellc package verify --json
 cellc registry verify --json
 ```
@@ -251,23 +307,31 @@ The package manager supports:
 - `cellc doc`
 - `cellc add --path`
 - `cellc remove`
+- `cellc lock`
 - `cellc info`
 - `cellc package verify`
 - `cellc registry verify`
-- lockfile consistency checks for local dependencies
+- manifest-bound `Cell.lock` v3 graph checks for local, Git, and Registry
+  dependencies, feature/test modes, and named CKB environments
 
 Use the top-level `cellc path/to/file.cell` form for one-off file compilation.
 Use `cellc build` for package builds.
 
-Local `cellc install --path`, registry source-package `cellc install`, and
-`cellc update` are supported lockfile workflows for packages that can be
-resolved and source-hash verified. Public `cellc publish` is an authenticated
-registry write authorised by a JoyID-rooted capability; `cellc registry add`
-remains the local/offline discovery metadata path. Treat `run`, registry proxy
-use, cryptographic publisher signature verification, and non-CellScript artifact
-profiles as future-facing or fail-closed.
+`cellc lock`, local `cellc install --path`, registry source-package
+`cellc install`, and `cellc update` are explicit lockfile workflows for
+packages that can be resolved and source-hash verified. Normal build/check/test
+consume that graph; `--frozen` adds offline, no-write behavior. For an
+interactive first Registry write,
+`cellc publish --authorise` obtains a wallet-rooted delegated capability and
+resumes the publish; later `cellc publish` calls use the active scoped key.
+`cellc registry add` remains the local/offline discovery metadata path.
+Non-CellScript artifact profiles have explicit fetch, verify, pin, copy,
+deployment, and commitment commands and never become source dependencies by
+implicit resolver coercion.
 
 ## Next
 
 With the tooling loop in place, continue with
 [Bundled Example Contracts](https://github.com/CellScript-Labs/CellScript/wiki/Tutorial-08-Bundled-Example-Contracts).
+For the 0.24 checker and scenario boundaries, also read
+[Verified Artifacts and Executable Tests](Tutorial-14-Verified-Artifacts-and-Executable-Tests.md).

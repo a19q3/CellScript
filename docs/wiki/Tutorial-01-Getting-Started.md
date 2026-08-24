@@ -103,21 +103,24 @@ Then compile the same source to ELF:
 cargo run --locked --bin cellc -- examples/token.cell --target riscv64-elf --target-profile ckb --primitive-strict 0.16 -o /tmp/token.elf
 ```
 
-After the ELF build, look for the metadata sidecar:
+After the ELF build, look for the complete verified-artifact bundle:
 
 ```text
 /tmp/token.elf
 /tmp/token.elf.meta.json
+/tmp/token.elf.lowering.json
+/tmp/token.elf.sourcemap.json
 ```
 
-Treat the `.meta.json` file as part of the build result. The ELF is what runs.
-The metadata explains the source identity, target profile, schema, runtime
-requirements, and verification obligations that belong to that ELF.
+Treat all four files as one build result. The ELF is what runs. Metadata
+explains source identity, target profile, schema, runtime requirements, and
+verification obligations. The lowering record and source map expose the
+bounded structural contract checked against final machine bytes.
 
 ## Verify the Artifact
 
-Now ask a narrow but important question: does this artifact match its metadata
-sidecar and the CKB profile you expected?
+Now ask a narrow but important question: does this four-file bundle satisfy the
+standalone structural checker and the CKB profile you expected?
 
 ```bash
 cargo run --locked --bin cellc -- verify-artifact /tmp/token.elf --expect-target-profile ckb
