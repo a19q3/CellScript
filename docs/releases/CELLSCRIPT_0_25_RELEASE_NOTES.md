@@ -99,6 +99,22 @@ one-to-one correspondence, fresh identity, and capacity rules for
 `BoundedList`/`create_each`. Builder evidence is not accepted as a replacement
 for those on-chain checks.
 
+## Bounded Local Evidence Storage
+
+Compiler caches and local gate evidence no longer grow without a default
+bound. Incremental caches keep the 32 most recently used identities per root;
+managed syntax, strict-backend, and CKB-acceptance streams keep three runs per
+mode. Successful syntax audits discard reproducible per-case intermediates,
+and production acceptance removes its transient Cargo target and stopped-node
+database while preserving the reports and verified artifacts that identify the
+run. Matching large files are hardlinked only after SHA-256 comparison.
+
+`latest-<mode>.json` indexes retain the exact report path, hash, size, and
+status. Operators can override the bounds for an external archiver or a debug
+session. Automatic retention and `cellc clean --cache` are confined to their
+workspace/evidence roots and reject symlinked managed path components instead
+of following them outside the repository.
+
 ## Validation Before Release
 
 The implementation is not release-complete until the generated surface and

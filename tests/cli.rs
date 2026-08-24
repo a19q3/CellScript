@@ -10896,6 +10896,28 @@ action compute() -> u64 {
     assert_eq!(summary2["cache_hit"], false, "build after clean --cache should not be a cache hit");
 }
 
+#[cfg(unix)]
+#[test]
+fn cellc_clean_cache_refuses_symlinked_managed_components() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("workspace");
+    let outside = dir.path().join("outside");
+    std::fs::create_dir_all(root.join(".cell")).unwrap();
+    std::fs::create_dir_all(outside.join("cache/victim")).unwrap();
+    std::fs::write(outside.join("cache/victim/evidence"), "preserve").unwrap();
+    symlink(&outside, root.join(".cell/build")).unwrap();
+
+    let output =
+        Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(&root).arg("clean").arg("--cache").arg("--json").output().unwrap();
+
+    assert!(!output.status.success(), "clean --cache must reject an intermediate symlink");
+    let diagnostic = format!("{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(diagnostic.contains("symlink or non-directory component"), "unexpected diagnostic: {diagnostic}");
+    assert!(outside.join("cache/victim/evidence").is_file(), "clean must not escape the workspace");
+}
+
 #[test]
 fn cellc_entry_action_bypasses_incremental_cache() {
     let dir = tempfile::tempdir().unwrap();

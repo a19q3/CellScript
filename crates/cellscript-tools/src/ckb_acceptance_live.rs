@@ -787,7 +787,7 @@ pub(crate) fn run(
     if !keep_node {
         replayer.devnet.stop();
         if !keep_gate_workdirs()? {
-            remove_directory_if_present(&replayer.devnet.ckb_dir.join("data"))?;
+            remove_directory_if_present(&evidence.run_dir, &replayer.devnet.ckb_dir.join("data"))?;
         }
     }
     Ok(())

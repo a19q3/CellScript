@@ -314,9 +314,9 @@ pub fn run(root: &Path, mode: &str) -> Result<i32> {
         .with_context(|| format!("failed to write {}", report_path.display()))?;
     if managed_report {
         let latest = report_parent.join(format!("latest-{mode}.json"));
-        write_latest_index(&latest, &report_path, "strict-backend-audit", mode, if passed { "passed" } else { "failed" })?;
+        write_latest_index(root, &latest, &report_path, "strict-backend-audit", mode, if passed { "passed" } else { "failed" })?;
         let marker = format!("strict-backend-audit-{mode}-");
-        let removed = prune_report_files(report_parent, &report_path, &marker)?;
+        let removed = prune_report_files(root, report_parent, &report_path, &marker)?;
         if !removed.is_empty() {
             println!("strict backend audit retention: pruned {} old {mode} report(s)", removed.len());
         }

@@ -6827,6 +6827,11 @@ fn incremental_cache_hit(path: &Utf8Path, cache_units: &[SourceUnitMetadata], op
     let cache_key = incremental_cache_key(cache_units, options);
     let entry_dir = cache_dir.join(&cache_key);
 
+    let entry_metadata = std::fs::symlink_metadata(&entry_dir).ok()?;
+    if entry_metadata.file_type().is_symlink() || !entry_metadata.is_dir() {
+        return None;
+    }
+
     let artifact_path = entry_dir.join("artifact");
     let metadata_path = entry_dir.join("metadata.json");
     let lowering_record_path = entry_dir.join("lowering.json");
@@ -6901,6 +6906,10 @@ fn incremental_cache_store(path: &Utf8Path, cache_units: &[SourceUnitMetadata], 
     let entry_dir = cache_dir.join(&cache_key);
 
     let _ = std::fs::create_dir_all(&entry_dir);
+    let Ok(entry_metadata) = std::fs::symlink_metadata(&entry_dir) else { return };
+    if !incremental_cache_components_are_safe(&cache_dir) || entry_metadata.file_type().is_symlink() || !entry_metadata.is_dir() {
+        return;
+    }
 
     let _ = std::fs::write(entry_dir.join("artifact"), &result.artifact_bytes);
     let metadata_json = serde_json::to_string_pretty(&result.metadata).unwrap_or_default();
@@ -6943,7 +6952,7 @@ fn cache_entry_recency(path: &std::path::Path) -> std::time::SystemTime {
 }
 
 fn prune_incremental_cache_entries(cache_dir: &Utf8Path, current_key: &str, max_entries: usize) {
-    if max_entries == 0 || !cache_dir.is_dir() {
+    if max_entries == 0 || !cache_dir.is_dir() || !incremental_cache_components_are_safe(cache_dir) {
         return;
     }
     let Ok(entries) = std::fs::read_dir(cache_dir) else { return };
@@ -6979,11 +6988,24 @@ fn incremental_cache_dir(path: &Utf8Path) -> Option<Utf8PathBuf> {
     //   <pkg-root>/.cell/build/cache
     // rather than next to the source file (e.g. src/.cell/build/cache).
     // Falls back to the source file's parent when not inside a package.
-    if let Ok(Some(pkg_root)) = find_package_root(path) {
-        return Some(pkg_root.join(".cell/build/cache"));
+    let cache_dir = if let Ok(Some(pkg_root)) = find_package_root(path) {
+        pkg_root.join(".cell/build/cache")
+    } else {
+        path.parent()?.join(".cell/build/cache")
+    };
+    incremental_cache_components_are_safe(&cache_dir).then_some(cache_dir)
+}
+
+fn incremental_cache_components_are_safe(cache_dir: &Utf8Path) -> bool {
+    let Some(build_dir) = cache_dir.parent() else { return false };
+    let Some(cell_dir) = build_dir.parent() else { return false };
+    if cache_dir.file_name() != Some("cache") || build_dir.file_name() != Some("build") || cell_dir.file_name() != Some(".cell") {
+        return false;
     }
-    let parent = path.parent()?;
-    Some(parent.join(".cell/build/cache"))
+    [cell_dir, build_dir, cache_dir].into_iter().all(|path| match std::fs::symlink_metadata(path) {
+        Ok(metadata) => !metadata.file_type().is_symlink() && metadata.is_dir(),
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    })
 }
 
 fn incremental_cache_key(cache_units: &[SourceUnitMetadata], options: &CompileOptions) -> String {
@@ -28138,19 +28160,40 @@ action main() -> u64 {
     #[test]
     fn incremental_cache_pruning_is_bounded_and_ignores_unknown_entries() {
         let temp = tempfile::tempdir().unwrap();
-        let cache = Utf8Path::from_path(temp.path()).unwrap();
+        let cache = Utf8Path::from_path(temp.path()).unwrap().join(".cell/build/cache");
+        std::fs::create_dir_all(&cache).unwrap();
         let keys = (0..5).map(|index| format!("{index:064x}")).collect::<Vec<_>>();
         for key in &keys {
             std::fs::create_dir(cache.join(key)).unwrap();
         }
         std::fs::create_dir(cache.join("operator-notes")).unwrap();
 
-        prune_incremental_cache_entries(cache, &keys[4], 2);
+        prune_incremental_cache_entries(&cache, &keys[4], 2);
 
         let retained = keys.iter().filter(|key| cache.join(key).is_dir()).count();
         assert_eq!(retained, 2);
         assert!(cache.join(&keys[4]).is_dir());
         assert!(cache.join("operator-notes").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn incremental_cache_pruning_rejects_symlinked_managed_components() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let package = Utf8Path::from_path(temp.path()).unwrap().join("package");
+        let outside = Utf8Path::from_path(temp.path()).unwrap().join("outside");
+        std::fs::create_dir_all(package.join(".cell")).unwrap();
+        std::fs::create_dir_all(outside.join("cache")).unwrap();
+        let victim = outside.join("cache").join(format!("{:064x}", 1));
+        std::fs::create_dir(&victim).unwrap();
+        symlink(&outside, package.join(".cell/build")).unwrap();
+
+        let cache = package.join(".cell/build/cache");
+        assert!(!super::incremental_cache_components_are_safe(&cache));
+        prune_incremental_cache_entries(&cache, &format!("{:064x}", 2), 1);
+        assert!(victim.is_dir(), "cache retention must not cross a symlinked build directory");
     }
 
     #[test]

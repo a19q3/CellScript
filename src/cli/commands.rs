@@ -822,8 +822,10 @@ fn collect_workspace_incremental_caches(root: &Path, caches: &mut Vec<PathBuf>) 
         }
         let name = entry.file_name();
         if name == ".cell" {
-            let cache = path.join("build/cache");
-            if cache.is_dir() {
+            let build = path.join("build");
+            let Some(build) = managed_directory_if_present(&build)? else { continue };
+            let cache = build.join("cache");
+            if let Some(cache) = managed_directory_if_present(&cache)? {
                 caches.push(cache);
             }
             continue;
@@ -834,6 +836,50 @@ fn collect_workspace_incremental_caches(root: &Path, caches: &mut Vec<PathBuf>) 
         collect_workspace_incremental_caches(&path, caches)?;
     }
     Ok(())
+}
+
+fn managed_directory_if_present(path: &Path) -> Result<Option<PathBuf>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => Err(CompileError::without_span(format!(
+            "refusing managed cache path with a symlink or non-directory component: '{}'",
+            path.display()
+        ))),
+        Ok(_) => Ok(Some(path.to_path_buf())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn ensure_workspace_directory_for_removal(workspace_root: &Path, path: &Path) -> Result<PathBuf> {
+    let canonical_root = std::fs::canonicalize(workspace_root)?;
+    let absolute = if path.is_absolute() { path.to_path_buf() } else { canonical_root.join(path) };
+    let canonical_path = std::fs::canonicalize(&absolute)?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(CompileError::without_span(format!(
+            "refusing to clean path outside workspace '{}': '{}'",
+            canonical_root.display(),
+            canonical_path.display()
+        )));
+    }
+    let relative = absolute
+        .strip_prefix(&canonical_root)
+        .map_err(|_| CompileError::without_span(format!("refusing non-workspace clean path '{}'", absolute.display())))?;
+    let mut cursor = canonical_root;
+    for component in relative.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err(CompileError::without_span(format!("refusing non-canonical clean path '{}'", path.display())));
+        };
+        cursor.push(component);
+        let metadata = std::fs::symlink_metadata(&cursor)?;
+        if metadata.file_type().is_symlink() {
+            return Err(CompileError::without_span(format!("refusing to clean through symlink '{}'", cursor.display())));
+        }
+    }
+    let metadata = std::fs::symlink_metadata(&canonical_path)?;
+    if !metadata.is_dir() {
+        return Err(CompileError::without_span(format!("refusing to clean non-directory path '{}'", path.display())));
+    }
+    Ok(canonical_path)
 }
 
 impl CommandExecutor {
@@ -1724,6 +1770,7 @@ impl CommandExecutor {
     }
 
     fn clean(args: CleanArgs) -> Result<()> {
+        let workspace_root = std::fs::canonicalize(".")?;
         let mut paths = vec![PathBuf::from("target"), PathBuf::from(".cell/cache")];
         if args.cache {
             collect_workspace_incremental_caches(Path::new("."), &mut paths)?;
@@ -1734,11 +1781,8 @@ impl CommandExecutor {
 
         for path in paths {
             if path.exists() {
-                let metadata = std::fs::symlink_metadata(&path)?;
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                    return Err(CompileError::without_span(format!("refusing to clean non-directory path '{}'", path.display())));
-                }
-                std::fs::remove_dir_all(&path)?;
+                let removable = ensure_workspace_directory_for_removal(&workspace_root, &path)?;
+                std::fs::remove_dir_all(removable)?;
                 removed_paths.push(path.to_string_lossy().into_owned());
             }
         }

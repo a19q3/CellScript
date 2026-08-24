@@ -1257,7 +1257,7 @@ pub fn run(root: &Path, mode: &str, seed: u64, budget: Option<usize>, case_name:
     let run_dir = report_root.join(format!("{timestamp}-{mode}-{seed}"));
     fs::create_dir_all(&run_dir)?;
     let retention_marker = format!("-{mode}-");
-    let pruned = prune_run_directories(&report_root, &run_dir, &retention_marker)?;
+    let pruned = prune_run_directories(root, &report_root, &run_dir, &retention_marker)?;
     if !pruned.is_empty() {
         println!("syntax-combo-audit retention: pruned {} old {mode} run(s)", pruned.len());
     }
@@ -1325,10 +1325,11 @@ pub fn run(root: &Path, mode: &str, seed: u64, budget: Option<usize>, case_name:
     write_reports(&run_dir, &report, &failures)?;
     if !retain_intermediates {
         for child in ["cases", "parse_reject", "fmt", "asm", "meta", "shrink"] {
-            remove_directory_if_present(&run_dir.join(child))?;
+            remove_directory_if_present(root, &run_dir.join(child))?;
         }
     }
     write_latest_index(
+        root,
         &report_root.join(format!("latest-{mode}.json")),
         &run_dir.join("report.json"),
         "syntax-combo-audit",

@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::env;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -57,10 +57,21 @@ fn file_name(path: &Path) -> Option<&str> {
     path.file_name().and_then(|name| name.to_str())
 }
 
-fn matching_children(parent: &Path, current: &Path, marker: &str, directories: bool) -> Result<Vec<PathBuf>> {
+fn ensure_confined(root: &Path, path: &Path, label: &str) -> Result<()> {
+    let canonical_root = fs::canonicalize(root).with_context(|| format!("failed to resolve evidence root {}", root.display()))?;
+    let canonical_path = fs::canonicalize(path).with_context(|| format!("failed to resolve {label} {}", path.display()))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        bail!("refusing to access {label} outside evidence root {}: {}", canonical_root.display(), canonical_path.display());
+    }
+    Ok(())
+}
+
+fn matching_children(root: &Path, parent: &Path, current: &Path, marker: &str, directories: bool) -> Result<Vec<PathBuf>> {
     if !parent.is_dir() {
         return Ok(Vec::new());
     }
+    ensure_confined(root, parent, "evidence directory")?;
+    ensure_confined(root, current, "current evidence path")?;
     let mut paths = Vec::new();
     for entry in fs::read_dir(parent).with_context(|| format!("failed to read evidence directory {}", parent.display()))? {
         let entry = entry?;
@@ -80,15 +91,15 @@ fn matching_children(parent: &Path, current: &Path, marker: &str, directories: b
     Ok(paths)
 }
 
-pub(crate) fn prune_run_directories(parent: &Path, current: &Path, marker: &str) -> Result<Vec<PathBuf>> {
+pub(crate) fn prune_run_directories(root: &Path, parent: &Path, current: &Path, marker: &str) -> Result<Vec<PathBuf>> {
     let Some(keep) = configured_keep_runs()? else {
         return Ok(Vec::new());
     };
-    prune_run_directories_with_limit(parent, current, marker, keep)
+    prune_run_directories_with_limit(root, parent, current, marker, keep)
 }
 
-fn prune_run_directories_with_limit(parent: &Path, current: &Path, marker: &str, keep: usize) -> Result<Vec<PathBuf>> {
-    let mut candidates = matching_children(parent, current, marker, true)?;
+fn prune_run_directories_with_limit(root: &Path, parent: &Path, current: &Path, marker: &str, keep: usize) -> Result<Vec<PathBuf>> {
+    let mut candidates = matching_children(root, parent, current, marker, true)?;
     let remove_from = keep.saturating_sub(1).min(candidates.len());
     let removed = candidates.split_off(remove_from);
     for path in &removed {
@@ -97,11 +108,11 @@ fn prune_run_directories_with_limit(parent: &Path, current: &Path, marker: &str,
     Ok(removed)
 }
 
-pub(crate) fn prune_report_files(parent: &Path, current: &Path, marker: &str) -> Result<Vec<PathBuf>> {
+pub(crate) fn prune_report_files(root: &Path, parent: &Path, current: &Path, marker: &str) -> Result<Vec<PathBuf>> {
     let Some(keep) = configured_keep_runs()? else {
         return Ok(Vec::new());
     };
-    let mut candidates = matching_children(parent, current, marker, false)?;
+    let mut candidates = matching_children(root, parent, current, marker, false)?;
     let remove_from = keep.saturating_sub(1).min(candidates.len());
     let removed = candidates.split_off(remove_from);
     for path in &removed {
@@ -169,8 +180,8 @@ fn replace_with_hardlink(source: &Path, destination: &Path, expected_hash: &[u8;
 /// Hardlink immutable files in `current` to byte-identical files in sibling
 /// evidence runs. Paths and bytes stay unchanged; unsupported filesystems
 /// simply retain separate copies.
-pub(crate) fn deduplicate_run(parent: &Path, current: &Path, marker: &str) -> Result<DedupStats> {
-    let siblings = matching_children(parent, current, marker, true)?;
+pub(crate) fn deduplicate_run(root: &Path, parent: &Path, current: &Path, marker: &str) -> Result<DedupStats> {
+    let siblings = matching_children(root, parent, current, marker, true)?;
     if !current.is_dir() {
         return Ok(DedupStats::default());
     }
@@ -207,12 +218,13 @@ pub(crate) fn deduplicate_run(parent: &Path, current: &Path, marker: &str) -> Re
     Ok(stats)
 }
 
-pub(crate) fn remove_directory_if_present(path: &Path) -> Result<bool> {
+pub(crate) fn remove_directory_if_present(root: &Path, path: &Path) -> Result<bool> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
             bail!("refusing to remove non-directory gate work path {}", path.display())
         }
         Ok(_) => {
+            ensure_confined(root, path, "gate work directory")?;
             fs::remove_dir_all(path).with_context(|| format!("failed to remove gate work directory {}", path.display()))?;
             Ok(true)
         }
@@ -221,10 +233,13 @@ pub(crate) fn remove_directory_if_present(path: &Path) -> Result<bool> {
     }
 }
 
-pub(crate) fn write_latest_index(path: &Path, report_path: &Path, kind: &str, mode: &str, status: &str) -> Result<()> {
+pub(crate) fn write_latest_index(root: &Path, path: &Path, report_path: &Path, kind: &str, mode: &str, status: &str) -> Result<()> {
+    let parent = path.parent().context("latest evidence index has no parent")?;
+    ensure_confined(root, parent, "latest evidence index directory")?;
+    ensure_confined(root, report_path, "evidence report")?;
     let report_bytes = fs::read(report_path).with_context(|| format!("failed to read {}", report_path.display()))?;
     let report_sha256 = hex::encode(Sha256::digest(&report_bytes));
-    let relative = report_path.strip_prefix(path.parent().unwrap_or_else(|| Path::new("."))).unwrap_or(report_path);
+    let relative = report_path.strip_prefix(parent).unwrap_or(report_path);
     let index = serde_json::json!({
         "schema": "cellscript-local-evidence-index-v1",
         "kind": kind,
@@ -236,10 +251,27 @@ pub(crate) fn write_latest_index(path: &Path, report_path: &Path, kind: &str, mo
             "size_bytes": report_bytes.len(),
         },
     });
-    let mut output = File::create(path).with_context(|| format!("failed to write {}", path.display()))?;
-    serde_json::to_writer_pretty(&mut output, &index)?;
-    output.write_all(b"\n")?;
-    Ok(())
+    let temporary = parent.join(format!(
+        ".cellscript-latest-{}-{}-{}.tmp",
+        std::process::id(),
+        kind.replace(|character: char| !character.is_ascii_alphanumeric(), "_"),
+        mode.replace(|character: char| !character.is_ascii_alphanumeric(), "_")
+    ));
+    let write_result = (|| -> Result<()> {
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .with_context(|| format!("failed to create temporary latest index {}", temporary.display()))?;
+        serde_json::to_writer_pretty(&mut output, &index)?;
+        output.write_all(b"\n")?;
+        output.sync_all()?;
+        fs::rename(&temporary, path).with_context(|| format!("failed to publish latest evidence index {}", path.display()))
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    write_result
 }
 
 #[cfg(test)]
@@ -262,13 +294,40 @@ mod tests {
         let current = parent.join("run-5-quick");
         fs::create_dir(&current).unwrap();
 
-        let removed = prune_run_directories_with_limit(&parent, &current, "-quick", 3).unwrap();
+        let removed = prune_run_directories_with_limit(&parent, &parent, &current, "-quick", 3).unwrap();
         assert_eq!(removed.len(), 1);
         assert!(current.is_dir());
         assert!(parent.join("run-3-quick").is_dir());
         assert!(parent.join("run-2-quick").is_dir());
         assert!(!parent.join("run-1-quick").exists());
         assert!(parent.join("run-4-ci").is_dir());
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pruning_refuses_a_symlinked_evidence_root() {
+        use std::os::unix::fs::symlink;
+
+        let parent = test_root("confined-prune");
+        let repository = parent.join("repository");
+        let outside = parent.join("outside");
+        fs::create_dir(&repository).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::create_dir(outside.join("1-quick-old")).unwrap();
+        fs::create_dir(outside.join("2-quick-current")).unwrap();
+        symlink(&outside, repository.join("evidence")).unwrap();
+
+        let error = prune_run_directories_with_limit(
+            &repository,
+            &repository.join("evidence"),
+            &repository.join("evidence/2-quick-current"),
+            "-quick-",
+            1,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("outside evidence root"));
+        assert!(outside.join("1-quick-old").is_dir());
         fs::remove_dir_all(parent).unwrap();
     }
 
@@ -286,7 +345,7 @@ mod tests {
         fs::write(previous.join("artifact.elf"), &bytes).unwrap();
         fs::write(current.join("artifact.elf"), &bytes).unwrap();
 
-        let stats = deduplicate_run(&parent, &current, "-production").unwrap();
+        let stats = deduplicate_run(&parent, &parent, &current, "-production").unwrap();
         assert_eq!(stats, DedupStats { files: 1, bytes: DEDUP_MIN_BYTES });
         assert_eq!(fs::read(current.join("artifact.elf")).unwrap(), bytes);
         assert_eq!(
@@ -308,7 +367,7 @@ mod tests {
         fs::write(current.join("left.json"), &bytes).unwrap();
         fs::write(current.join("right.json"), &bytes).unwrap();
 
-        let stats = deduplicate_run(&parent, &current, "-bounded").unwrap();
+        let stats = deduplicate_run(&parent, &parent, &current, "-bounded").unwrap();
         assert_eq!(stats, DedupStats { files: 1, bytes: DEDUP_MIN_BYTES });
         assert_eq!(fs::metadata(current.join("left.json")).unwrap().ino(), fs::metadata(current.join("right.json")).unwrap().ino());
         fs::remove_dir_all(parent).unwrap();
