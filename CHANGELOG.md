@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Bound local compiler and gate storage without weakening the verified-artifact
+  contract. Incremental build caches now retain at most 32 recent identities
+  per cache root, syntax-combination success runs discard reproducible
+  per-case intermediates, production CKB acceptance removes its multi-gigabyte
+  transient Cargo target and stopped-node database, and managed gate streams
+  retain the latest three runs by default. Duplicate acceptance files within
+  and across retained runs are hardlinked when their SHA-256 identities match,
+  while stable `latest-*.json`
+  indexes point to the full reports. Failed syntax runs and explicit repro
+  runs keep their diagnostic artifacts; release automation can request
+  unlimited local retention explicitly. `cellc clean --cache` now removes
+  nested workspace `.cell/build/cache` directories as well as the root cache.
+
 - Begin the 0.25 language-completeness implementation with a compiler-owned
   executable-surface registry, pre-codegen production rejection, full-range
   `u128` decimal literals, integer bitwise/shift lowering, and exact scalar and

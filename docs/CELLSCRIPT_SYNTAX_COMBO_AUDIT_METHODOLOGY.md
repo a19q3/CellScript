@@ -208,7 +208,7 @@ top:
   SCA-TY-004 require block accepted lifecycle stdlib call case=81c03e
 ```
 
-Full artifacts stay on disk:
+Failed runs and explicit `repro` runs keep full artifacts on disk:
 
 ```text
 target/syntax-combo-audit/<run>/
@@ -220,6 +220,12 @@ target/syntax-combo-audit/<run>/
   report.json
   report.jsonl
 ```
+
+Successful `quick`, `ci`, and `deep` runs retain only `report.json` and
+`report.jsonl`; every case is reproducible from the report's mode and seed plus
+the checked-in matrix and seeds. Set `CELLSCRIPT_KEEP_GATE_WORKDIRS=1` when a
+successful debugging run also needs the intermediate tree. Managed history is
+bounded per mode; `latest-<mode>.json` points to the current full report.
 
 Report entries should be JSONL with stable keys:
 
@@ -487,7 +493,8 @@ The first implementation should be intentionally narrow:
 3. implement parser/type/fmt/IR/metadata oracles;
 4. add codegen oracle for a sampled accepted subset;
 5. add shrinker for line/block/type removal;
-6. store full artifacts under `target/syntax-combo-audit`;
+6. store full artifacts for failures and explicit repro runs under
+   `target/syntax-combo-audit`, while successful runs keep compact reports;
 7. print only compact summaries;
 8. add CI mode after quick mode is stable.
 

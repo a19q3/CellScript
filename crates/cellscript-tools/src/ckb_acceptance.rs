@@ -11,6 +11,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use crate::ckb_devnet::{ckb_hash_hex, sha256_hex};
+use crate::evidence_retention::{deduplicate_run, prune_run_directories, write_latest_index};
 use crate::production_evidence::{
     self, ACTION_RUNS, BUILD_REPORT_SCHEMA, EXPECTED_CRITICAL_ELF_ABI_EXAMPLES, EXPECTED_EXAMPLES, EXPECTED_LANGUAGE_EXAMPLES,
     EXPECTED_NON_PRODUCTION_EXAMPLES, LOCKS, PUBLIC_TIMELOCK_ACTIONS, SOURCE_PROVENANCE_SCHEMA,
@@ -582,14 +583,27 @@ pub fn run(
         }
     }
     let stamp = OffsetDateTime::now_utc().unix_timestamp();
+    let managed_run = explicit_run_dir.is_none();
     let run_dir = explicit_run_dir
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| root.join(format!("target/ckb-cellscript-acceptance/{stamp}-{}", std::process::id())));
+        .unwrap_or_else(|| root.join(format!("target/ckb-cellscript-acceptance/{stamp}-{mode}-{}", std::process::id())));
+    if managed_run {
+        fs::create_dir_all(&run_dir)?;
+        let report_root = run_dir.parent().context("managed acceptance run has no report root")?;
+        let marker = format!("-{mode}-");
+        let removed = prune_run_directories(report_root, &run_dir, &marker)?;
+        if !removed.is_empty() {
+            println!("CKB acceptance retention: pruned {} old {mode} run(s)", removed.len());
+        }
+    }
     let mut evidence = prepare(root, &run_dir, mode)?;
     if compile_only {
         if mode == "production" {
             production_evidence::run(root, &evidence.report_path, Some(root), true)?;
             eprintln!("CKB compile-only production evidence is not sufficient for external release; run without --compile-only for final hardening.");
+        }
+        if managed_run {
+            finalize_managed_run(&run_dir, &evidence.report_path, mode)?;
         }
         println!("CKB CellScript {mode} compile-only acceptance passed: {}", evidence.report_path.display());
         return Ok(0);
@@ -599,8 +613,26 @@ pub fn run(
     if mode == "production" {
         production_evidence::run(root, &evidence.report_path, Some(root), false)?;
     }
+    if managed_run {
+        finalize_managed_run(&run_dir, &evidence.report_path, mode)?;
+    }
     println!("CKB CellScript {mode} acceptance passed: {}", evidence.report_path.display());
     Ok(0)
+}
+
+fn finalize_managed_run(run_dir: &Path, report_path: &Path, mode: &str) -> Result<()> {
+    let report_root = run_dir.parent().context("managed acceptance run has no report root")?;
+    let marker = format!("-{mode}-");
+    let stats = deduplicate_run(report_root, run_dir, &marker)?;
+    if stats.files > 0 {
+        println!("CKB acceptance deduplication: hardlinked {} duplicate file(s), {} bytes", stats.files, stats.bytes);
+    }
+    let status = fs::read(report_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|report| report.get("status").and_then(Value::as_str).map(ToOwned::to_owned))
+        .unwrap_or_else(|| "unknown".to_owned());
+    write_latest_index(&report_root.join(format!("latest-{mode}.json")), report_path, "ckb-cellscript-acceptance", mode, &status)
 }
 
 #[cfg(test)]

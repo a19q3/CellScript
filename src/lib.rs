@@ -6756,6 +6756,10 @@ pub(crate) fn refresh_incremental_cache_for_input<P: AsRef<Utf8Path>>(
 /// Check incremental compilation cache for a previous compile result.
 /// Returns `Some(result)` if the cache is valid and the source has not changed.
 fn incremental_cache_hit(path: &Utf8Path, cache_units: &[SourceUnitMetadata], options: &CompileOptions) -> Option<CompileResult> {
+    let max_entries = incremental_cache_max_entries();
+    if max_entries == 0 {
+        return None;
+    }
     let cache_dir = incremental_cache_dir(path)?;
     let cache_key = incremental_cache_key(cache_units, options);
     let entry_dir = cache_dir.join(&cache_key);
@@ -6818,11 +6822,17 @@ fn incremental_cache_hit(path: &Utf8Path, cache_units: &[SourceUnitMetadata], op
         cache_hit: true,
     };
     result.validate().ok()?;
+    let _ = std::fs::write(entry_dir.join(".last_used"), []);
+    prune_incremental_cache_entries(&cache_dir, &cache_key, max_entries);
     Some(result)
 }
 
 /// Store compile result to incremental cache after a successful compile.
 fn incremental_cache_store(path: &Utf8Path, cache_units: &[SourceUnitMetadata], options: &CompileOptions, result: &CompileResult) {
+    let max_entries = incremental_cache_max_entries();
+    if max_entries == 0 {
+        return;
+    }
     let Some(cache_dir) = incremental_cache_dir(path) else { return };
     let cache_key = incremental_cache_key(cache_units, options);
     let entry_dir = cache_dir.join(&cache_key);
@@ -6846,6 +6856,58 @@ fn incremental_cache_store(path: &Utf8Path, cache_units: &[SourceUnitMetadata], 
     let _ = std::fs::write(entry_dir.join("source_hash"), &source_hash);
     if let Ok(cache_units_json) = serde_json::to_string_pretty(cache_units) {
         let _ = std::fs::write(entry_dir.join("source_units.json"), cache_units_json);
+    }
+    let _ = std::fs::write(entry_dir.join(".last_used"), []);
+    prune_incremental_cache_entries(&cache_dir, &cache_key, max_entries);
+}
+
+const DEFAULT_INCREMENTAL_CACHE_MAX_ENTRIES: usize = 32;
+const MAX_INCREMENTAL_CACHE_MAX_ENTRIES: usize = 4_096;
+
+fn incremental_cache_max_entries() -> usize {
+    std::env::var("CELLSCRIPT_INCREMENTAL_CACHE_MAX_ENTRIES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value <= MAX_INCREMENTAL_CACHE_MAX_ENTRIES)
+        .unwrap_or(DEFAULT_INCREMENTAL_CACHE_MAX_ENTRIES)
+}
+
+fn cache_entry_recency(path: &std::path::Path) -> std::time::SystemTime {
+    std::fs::metadata(path.join(".last_used"))
+        .and_then(|metadata| metadata.modified())
+        .or_else(|_| std::fs::metadata(path).and_then(|metadata| metadata.modified()))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+}
+
+fn prune_incremental_cache_entries(cache_dir: &Utf8Path, current_key: &str, max_entries: usize) {
+    if max_entries == 0 || !cache_dir.is_dir() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(cache_dir) else { return };
+    let mut entries = entries
+        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_owned();
+            if name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return None;
+            }
+            let metadata = std::fs::symlink_metadata(entry.path()).ok()?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return None;
+            }
+            let recency = cache_entry_recency(&entry.path());
+            Some((name, recency, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| right.0.cmp(&left.0)));
+
+    let mut retained = 0_usize;
+    for (name, _, path) in entries {
+        if name == current_key || retained < max_entries.saturating_sub(1) {
+            retained += usize::from(name != current_key);
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(path);
     }
 }
 
@@ -18905,9 +18967,10 @@ mod tests {
     use super::{
         compile, compile_file, compile_file_with_entry_action, compile_file_with_entry_lock, compile_fungible_type_group_entry,
         compile_path, compile_with_executable_surface_policy, decode_scheduler_witness_hex, default_output_path_for_input,
-        encode_entry_witness_args_for_params, incremental_cache_key, load_modules_for_input, resolve_input_path,
-        source_unit_from_bytes, validate_primitive_strict_017_metadata, ActionMetadata, ArtifactFormat, CkbRuntimeAccessMetadata,
-        CompileOptions, EntryWitnessArg, ExecutableSurfacePolicy, ENTRY_WITNESS_ABI_MAGIC, SCHEDULER_WITNESS_ABI_MOLECULE,
+        encode_entry_witness_args_for_params, incremental_cache_key, load_modules_for_input, prune_incremental_cache_entries,
+        resolve_input_path, source_unit_from_bytes, validate_primitive_strict_017_metadata, ActionMetadata, ArtifactFormat,
+        CkbRuntimeAccessMetadata, CompileOptions, EntryWitnessArg, ExecutableSurfacePolicy, ENTRY_WITNESS_ABI_MAGIC,
+        SCHEDULER_WITNESS_ABI_MOLECULE,
     };
     use crate::{ir, lexer, parser};
     use camino::{Utf8Path, Utf8PathBuf};
@@ -28001,6 +28064,24 @@ action main() -> u64 {
             incremental_cache_key(&cache_units, &debug_release_elf),
             "debug artefacts must not reuse a non-debug cache entry"
         );
+    }
+
+    #[test]
+    fn incremental_cache_pruning_is_bounded_and_ignores_unknown_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = Utf8Path::from_path(temp.path()).unwrap();
+        let keys = (0..5).map(|index| format!("{index:064x}")).collect::<Vec<_>>();
+        for key in &keys {
+            std::fs::create_dir(cache.join(key)).unwrap();
+        }
+        std::fs::create_dir(cache.join("operator-notes")).unwrap();
+
+        prune_incremental_cache_entries(cache, &keys[4], 2);
+
+        let retained = keys.iter().filter(|key| cache.join(key).is_dir()).count();
+        assert_eq!(retained, 2);
+        assert!(cache.join(&keys[4]).is_dir());
+        assert!(cache.join("operator-notes").is_dir());
     }
 
     #[test]

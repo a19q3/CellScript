@@ -10814,6 +10814,9 @@ action compute() -> u64 {
     // Verify cache directory was created
     let cache_dir = root.join(".cell").join("build").join("cache");
     assert!(cache_dir.exists(), "incremental cache directory should exist after build");
+    let nested_cache = root.join("examples/nested/.cell/build/cache");
+    std::fs::create_dir_all(&nested_cache).unwrap();
+    std::fs::write(nested_cache.join("generated"), "cache").unwrap();
 
     // Clean with --cache flag
     let clean_output =
@@ -10822,6 +10825,7 @@ action compute() -> u64 {
 
     // Verify cache directory was removed
     assert!(!cache_dir.exists(), "incremental cache directory should be removed after clean --cache");
+    assert!(!nested_cache.exists(), "clean --cache should remove nested workspace caches");
 
     // Verify next build is NOT a cache hit
     let output2 = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("build").arg("--json").output().unwrap();

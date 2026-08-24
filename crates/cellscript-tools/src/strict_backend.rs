@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use time::OffsetDateTime;
 
+use crate::evidence_retention::{prune_report_files, write_latest_index};
 use crate::shared::{lexical_path, stable_json_pretty};
 
 const FEATURE_IDS: &[&str] = &[
@@ -266,6 +267,7 @@ pub fn run(root: &Path, mode: &str) -> Result<i32> {
         return Ok(2);
     }
 
+    let managed_report = env::var_os("CELLSCRIPT_STRICT_BACKEND_AUDIT_REPORT").is_none();
     let report_path = match env::var_os("CELLSCRIPT_STRICT_BACKEND_AUDIT_REPORT") {
         // Collapse repeated separators and `.` without resolving symlinks or
         // `..` components.
@@ -310,6 +312,15 @@ pub fn run(root: &Path, mode: &str) -> Result<i32> {
     });
     fs::write(&report_path, format!("{}\n", stable_json_pretty(&report)?))
         .with_context(|| format!("failed to write {}", report_path.display()))?;
+    if managed_report {
+        let latest = report_parent.join(format!("latest-{mode}.json"));
+        write_latest_index(&latest, &report_path, "strict-backend-audit", mode, if passed { "passed" } else { "failed" })?;
+        let marker = format!("strict-backend-audit-{mode}-");
+        let removed = prune_report_files(report_parent, &report_path, &marker)?;
+        if !removed.is_empty() {
+            println!("strict backend audit retention: pruned {} old {mode} report(s)", removed.len());
+        }
+    }
     println!("strict backend audit report: {}", report_path.display());
     Ok(if passed { 0 } else { 1 })
 }

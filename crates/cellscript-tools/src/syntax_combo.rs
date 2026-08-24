@@ -21,6 +21,7 @@ use time::format_description;
 use time::OffsetDateTime;
 use wait_timeout::ChildExt;
 
+use crate::evidence_retention::{keep_gate_workdirs, prune_run_directories, remove_directory_if_present, write_latest_index};
 use crate::shared::{stable_json_compact, stable_json_pretty};
 
 const DEFAULT_SEED: u64 = 20_260_503;
@@ -103,6 +104,9 @@ fn run_cmd(root: &Path, argv: &[String], timeout: Duration) -> Result<CommandOut
     let mut child = Command::new(program)
         .args(args)
         .current_dir(root)
+        // Generated cases have unique source identities, so the ordinary
+        // package cache only duplicates the explicit audit artifacts.
+        .env("CELLSCRIPT_INCREMENTAL_CACHE_MAX_ENTRIES", "0")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1249,8 +1253,14 @@ pub fn run(root: &Path, mode: &str, seed: u64, budget: Option<usize>, case_name:
     let cellc = cellc_bin(root)?;
     let timestamp_format = format_description::parse("[year][month][day]-[hour][minute][second]")?;
     let timestamp = OffsetDateTime::now_utc().format(&timestamp_format)?;
-    let run_dir = root.join("target/syntax-combo-audit").join(format!("{timestamp}-{mode}-{seed}"));
+    let report_root = root.join("target/syntax-combo-audit");
+    let run_dir = report_root.join(format!("{timestamp}-{mode}-{seed}"));
     fs::create_dir_all(&run_dir)?;
+    let retention_marker = format!("-{mode}-");
+    let pruned = prune_run_directories(&report_root, &run_dir, &retention_marker)?;
+    if !pruned.is_empty() {
+        println!("syntax-combo-audit retention: pruned {} old {mode} run(s)", pruned.len());
+    }
     let mut cases = load_cases(root, &manifest, &matrix, mode, budget, seed)?;
     if mode == "repro" {
         let selected = case_name.context("repro mode requires --case <name-or-id>")?;
@@ -1305,7 +1315,26 @@ pub fn run(root: &Path, mode: &str, seed: u64, budget: Option<usize>, case_name:
         report["failures_count"] = Value::from(failures.len());
         report["failures"] = Value::Array(failures.iter().take(10).cloned().collect());
     }
+    let retain_intermediates = !failures.is_empty() || mode == "repro" || keep_gate_workdirs()?;
+    report["artifact_retention"] = json!({
+        "policy": "failures-and-explicit-repro-only",
+        "full_intermediates_retained": retain_intermediates,
+        "durable_outputs": ["report.json", "report.jsonl"],
+        "override": "CELLSCRIPT_KEEP_GATE_WORKDIRS=1",
+    });
     write_reports(&run_dir, &report, &failures)?;
+    if !retain_intermediates {
+        for child in ["cases", "parse_reject", "fmt", "asm", "meta", "shrink"] {
+            remove_directory_if_present(&run_dir.join(child))?;
+        }
+    }
+    write_latest_index(
+        &report_root.join(format!("latest-{mode}.json")),
+        &run_dir.join("report.json"),
+        "syntax-combo-audit",
+        mode,
+        report.get("status").and_then(Value::as_str).unwrap_or("failed"),
+    )?;
     println!(
         "syntax-combo-audit: {} seed={seed} mode={mode} generated={} accepted={accepted} rejected={rejected} failures={}",
         report.get("status").and_then(Value::as_str).unwrap_or("failed"),

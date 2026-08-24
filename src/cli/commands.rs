@@ -812,6 +812,30 @@ fn run_entry_outcome(metadata: &CompileMetadata) -> Option<RunEntryOutcome> {
         .or_else(|| metadata.locks.first().map(|lock| RunEntryOutcome { kind: "lock".to_string(), name: lock.name.clone() }))
 }
 
+fn collect_workspace_incremental_caches(root: &Path, caches: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        if name == ".cell" {
+            let cache = path.join("build/cache");
+            if cache.is_dir() {
+                caches.push(cache);
+            }
+            continue;
+        }
+        if matches!(name.to_str(), Some(".git" | "target" | "node_modules")) {
+            continue;
+        }
+        collect_workspace_incremental_caches(&path, caches)?;
+    }
+    Ok(())
+}
+
 impl CommandExecutor {
     #[cfg(not(feature = "vm-runner"))]
     fn experimental_command(name: &str, detail: &str) -> Result<()> {
@@ -1700,16 +1724,22 @@ impl CommandExecutor {
     }
 
     fn clean(args: CleanArgs) -> Result<()> {
-        let mut paths = vec!["target", ".cell/cache"];
+        let mut paths = vec![PathBuf::from("target"), PathBuf::from(".cell/cache")];
         if args.cache {
-            paths.push(".cell/build/cache");
+            collect_workspace_incremental_caches(Path::new("."), &mut paths)?;
         }
+        paths.sort();
+        paths.dedup();
         let mut removed_paths = Vec::new();
 
         for path in paths {
-            if std::path::Path::new(path).exists() {
-                std::fs::remove_dir_all(path)?;
-                removed_paths.push(path.to_string());
+            if path.exists() {
+                let metadata = std::fs::symlink_metadata(&path)?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(CompileError::without_span(format!("refusing to clean non-directory path '{}'", path.display())));
+                }
+                std::fs::remove_dir_all(&path)?;
+                removed_paths.push(path.to_string_lossy().into_owned());
             }
         }
 
@@ -14091,7 +14121,12 @@ impl CliParser {
                 ClapCommand::new("clean")
                     .about("Remove build artifacts")
 
-                    .arg(Arg::new("cache").long("cache").action(ArgAction::SetTrue).help("Also remove incremental compilation cache (.cell/build/cache)")),
+                    .arg(
+                        Arg::new("cache")
+                            .long("cache")
+                            .action(ArgAction::SetTrue)
+                            .help("Also remove incremental compilation caches below the current workspace"),
+                    ),
             )
             .subcommand(
                 ClapCommand::new("remove")

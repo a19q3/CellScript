@@ -16,6 +16,7 @@ mod ckb_acceptance_live;
 mod ckb_adapter_live;
 mod ckb_devnet;
 mod crypto;
+mod evidence_retention;
 mod executable_surface;
 mod external_attestation;
 mod external_handoff;

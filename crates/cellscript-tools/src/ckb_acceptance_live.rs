@@ -13,11 +13,25 @@ use crate::ckb_devnet::{
     always_success_dep, decode_hex, deploy_code, funding_cells, out_point, resolve_ckb_bin, sha256_hex, CkbDevnet,
     ALWAYS_SUCCESS_CODE_HASH,
 };
+use crate::evidence_retention::{keep_gate_workdirs, remove_directory_if_present};
 use crate::production_evidence::{ACTION_RUNS, EXPECTED_END_TO_END_STATEFUL_SCENARIOS, EXPECTED_EXAMPLES, LOCKS};
 
 const RECIPES: &str = include_str!("../fixtures/ckb_acceptance/transactions-v0.23.json");
 const PINNED_CKB_CXXFLAGS: &str = "-include cstdint";
 const PINNED_CKB_CXX_COMPATIBILITY: &str = "ckb-librocksdb-sys-8.5.4-explicit-cstdint-v1";
+
+struct TransientBuildDirectory {
+    path: PathBuf,
+    remove_on_drop: bool,
+}
+
+impl Drop for TransientBuildDirectory {
+    fn drop(&mut self) {
+        if self.remove_on_drop {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
 
 fn production_ckb_build_command(ckb_repo: &Path, target: &Path) -> Command {
     let mut command = Command::new("cargo");
@@ -59,6 +73,7 @@ fn build_ckb(root: &Path, ckb_repo: &Path, ckb_bin: Option<&Path>, mode: &str, r
         bail!("production acceptance does not accept --ckb-bin; the pinned source must be rebuilt");
     }
     let target = run_dir.join(".ckb-build-target");
+    let _target_cleanup = TransientBuildDirectory { path: target.clone(), remove_on_drop: !keep_gate_workdirs()? };
     let output = production_ckb_build_command(ckb_repo, &target).output()?;
     if !output.status.success() {
         bail!(
@@ -771,6 +786,9 @@ pub(crate) fn run(
     ckb_acceptance::write_report(&evidence.report_path, &evidence.report)?;
     if !keep_node {
         replayer.devnet.stop();
+        if !keep_gate_workdirs()? {
+            remove_directory_if_present(&replayer.devnet.ckb_dir.join("data"))?;
+        }
     }
     Ok(())
 }
@@ -782,6 +800,18 @@ mod tests {
     use ckb_types::{packed::WitnessArgs, prelude::*};
 
     use super::*;
+
+    #[test]
+    fn transient_ckb_build_directory_is_removed_on_scope_exit() {
+        let path = std::env::temp_dir().join(format!("cellscript-ckb-build-cleanup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("build-output"), b"transient").unwrap();
+        {
+            let _cleanup = TransientBuildDirectory { path: path.clone(), remove_on_drop: true };
+        }
+        assert!(!path.exists());
+    }
 
     #[test]
     fn production_ckb_build_injects_the_pinned_cstdint_compatibility_flag() {

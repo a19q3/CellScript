@@ -654,8 +654,13 @@ CKB cycle/capacity estimates.
 | Module | What it does |
 |---|---|
 | **Package workflow** (`package/`) | `Cell.toml` parsing, standard SemVer, path/git/registry source resolution, manifest-bound `Cell.lock` v3 graphs, aliases, features/dev modes, genesis-bound environments, and bounded update-time resolvers; `cellc init`/`add`/`remove`/`lock`/`install`/`update`/`info`. Builds consume exact immutable Git/Registry pins and verified source hashes without mutable discovery; the Registry profile catalog keeps non-CellScript artifacts non-resolving. |
-| **Incremental compiler** (`incremental/`) | Dependency-graph-aware build cache — skips recompilation when inputs are unchanged. |
+| **Incremental compiler** (`incremental/`) | Dependency-graph-aware build cache — skips recompilation when inputs are unchanged and retains the 32 most recently used identities per cache root. |
 | **Build integration** (`lib.rs`) | Resolves `Cell.toml` → `CellBuildConfig`, merges CLI + manifest options, selects entry scope, runs policy gates, writes artifacts + metadata. |
+
+Set `CELLSCRIPT_INCREMENTAL_CACHE_MAX_ENTRIES` to an integer from `0` through
+`4096` to override the per-root cache bound; `0` disables persistent cache use.
+`cellc clean --cache` removes every `.cell/build/cache` below the current
+workspace while skipping Git metadata, `target`, and `node_modules` trees.
 
 ### CKB Target Profile
 
@@ -933,6 +938,7 @@ the manual, CI, recovery, and external-wallet path.
 | `cellc <input>` | Compile a `.cell` file, package directory, or `Cell.toml` |
 | `cellc build` | Compile the package, write artifacts + metadata |
 | `cellc check` | Type-check and lower without writing artifacts |
+| `cellc clean --cache` | Remove build artifacts and every nested workspace incremental cache |
 | `cellc metadata` | Emit lowering, runtime, scheduler, source, and schema metadata |
 | `cellc constraints` | Emit profile-aware production constraints |
 | `cellc abi` | Explain `_cellscript_entry` witness ABI layout for an action or lock |

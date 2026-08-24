@@ -456,8 +456,28 @@ The gates write machine-readable reports under `target/`:
 - `target/cellscript-backend-shape/`
 - `target/cellscript-schema-manifest/`
 
-For release evidence, keep the JSON report paths in the release checklist rather
-than copying long logs into review threads.
+These directories are local working storage, not the durable release archive.
+Managed syntax, strict-backend, and CKB-acceptance streams retain the latest
+three runs of each mode by default and publish a small `latest-<mode>.json`
+index containing the full report path, SHA-256, size, and status. Set
+`CELLSCRIPT_EVIDENCE_KEEP_RUNS=all` when an external archiver needs every local
+run, or set it to an integer from 1 through 128 to choose another bound.
+
+Successful syntax-combination runs retain `report.json` and `report.jsonl` but
+remove deterministic case sources, formatter copies, assembly, metadata, and
+their redundant incremental cache. Failed runs and explicit `repro` runs keep
+those intermediates. `CELLSCRIPT_KEEP_GATE_WORKDIRS=1` preserves them during a
+debugging session. CKB production acceptance keeps the full report, verified
+artifacts, sidecars, generated builder contracts, archived pinned CKB binary,
+configuration, and logs, but removes the fresh Cargo build target and the
+stopped node database. Byte-identical acceptance files within and across
+retained runs are hardlinked after their SHA-256 identities match; report paths
+and bytes do not change.
+
+For release evidence, archive the reported files outside `target/` and keep
+their JSON paths in the release checklist rather than copying long logs into
+review threads. The four-file verified-artifact bundle and evidence validation
+semantics are unchanged by local retention.
 
 ## CellScript Build Report
 

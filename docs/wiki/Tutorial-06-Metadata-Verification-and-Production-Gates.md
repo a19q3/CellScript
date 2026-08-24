@@ -465,6 +465,15 @@ parser, formatter, type checking, lowering, metadata, codegen, and negative
 obsolete-syntax oracles with compact reports under
 `target/syntax-combo-audit/`.
 
+On success, the generated cases and their metadata/assembly are reproducible
+from the recorded mode, seed, matrix, and checked-in seeds, so the runner keeps
+only `report.json` and `report.jsonl`. Failed and explicit `repro` runs keep the
+complete intermediate tree. Each mode has a small `latest-<mode>.json` index,
+and local managed history defaults to the most recent three runs. Use
+`CELLSCRIPT_KEEP_GATE_WORKDIRS=1` for a successful debugging run that needs all
+intermediates, or `CELLSCRIPT_EVIDENCE_KEEP_RUNS=all` when another process will
+archive every run.
+
 For CellScript releases, `quick` is part of the pre-push gate and `ci` runs
 before builder-backed CKB acceptance. A direct CKB acceptance run does not
 replace this preflight because it only proves selected concrete transactions.
