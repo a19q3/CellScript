@@ -387,6 +387,7 @@ fn molecule_dynamic_entry_bytes(amount: u128, note: &[u8], total_override: Optio
     bytes
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_u128_dynamic_schema_bitwise(
     elf: &[u8],
     left: u128,
