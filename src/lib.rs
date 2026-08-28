@@ -215,11 +215,11 @@ fn strict_capability_name(capability: ast::Capability) -> &'static str {
 
 const DEFAULT_TARGET: &str = "riscv64-asm";
 const DEFAULT_TARGET_PROFILE: &str = "ckb";
-const ARTIFACT_CACHE_VERSION: &str = "project-source-set-v14-typed-semantics-v2";
-pub const METADATA_SCHEMA_VERSION: u32 = 61;
+const ARTIFACT_CACHE_VERSION: &str = "project-source-set-v15-typed-semantics-v3";
+pub const METADATA_SCHEMA_VERSION: u32 = 62;
 pub const SOURCE_METADATA_SCHEMA_VERSION: u32 = 2;
 pub const ARTIFACT_METADATA_SCHEMA_VERSION: u32 = 1;
-pub const CONSTRAINTS_METADATA_SCHEMA_VERSION: u32 = 2;
+pub const CONSTRAINTS_METADATA_SCHEMA_VERSION: u32 = 3;
 /// Maximum UTF-8 source bytes accepted by a single compiler input.
 ///
 /// This is a process-safety boundary shared by native, LSP, and WASM callers.
@@ -1822,28 +1822,37 @@ fn validate_collection_instantiation_metadata(metadata: &CompileMetadata) -> Res
             }
             match collection.ownership.as_str() {
                 "linear-cell-set" => {
+                    let pending = collection.status == "runtime-helper-required"
+                        && collection.evidence_tier == EvidenceTier::RuntimeHelperRequired;
+                    let checked = collection.status == "checked-runtime"
+                        && collection.evidence_tier == EvidenceTier::CheckedRuntime
+                        && collection.helpers.iter().any(|helper| helper == ir::BOUNDED_TYPE_GROUP_INPUTS_V1);
                     if collection.source != "input"
-                        || collection.status != "runtime-helper-required"
-                        || collection.evidence_tier != EvidenceTier::RuntimeHelperRequired
+                        || !(pending || checked)
                         || collection.output_cardinality_max.is_some()
                         || collection.capacity_builder_evidence_required
                         || !collection.helpers.iter().any(|helper| helper == "consume_each")
                     {
                         return Err(CompileError::without_span(format!(
-                            "{prefix} bounded Cell set must use input source, consume_each runtime-helper evidence, and no output builder obligation"
+                            "{prefix} bounded Cell set must use input source, consume_each evidence, a recognised runtime contract when checked, and no output builder obligation"
                         )));
                     }
                 }
                 "bounded-output-plan" => {
+                    let pending = collection.status == "builder-evidence-required"
+                        && collection.evidence_tier == EvidenceTier::BuilderEvidenceRequired
+                        && collection.capacity_builder_evidence_required;
+                    let checked = collection.status == "checked-runtime"
+                        && collection.evidence_tier == EvidenceTier::CheckedRuntime
+                        && !collection.capacity_builder_evidence_required
+                        && collection.helpers.iter().any(|helper| helper == ir::BOUNDED_OUTPUT_PLAN_V1);
                     if collection.source != "witness"
-                        || collection.status != "builder-evidence-required"
-                        || collection.evidence_tier != EvidenceTier::BuilderEvidenceRequired
+                        || !(pending || checked)
                         || collection.output_cardinality_max != Some(collection.max_elements)
-                        || !collection.capacity_builder_evidence_required
                         || !collection.helpers.iter().any(|helper| helper == "create_each")
                     {
                         return Err(CompileError::without_span(format!(
-                            "{prefix} bounded output plan must use witness source and carry output-cardinality/capacity builder evidence"
+                            "{prefix} bounded output plan must use witness source and carry either builder evidence or the recognised checked runtime contract"
                         )));
                     }
                 }
@@ -2225,7 +2234,23 @@ fn entry_abi_constraints(entry_kind: &str, entry_name: &str, params: &[ParamMeta
         let mut unsupported_reason = None;
         let pointer_length_pair;
 
-        if is_bounded_collection_metadata_type(&param.ty) {
+        if is_bounded_collection_metadata_type(&param.ty)
+            && param.bounded_runtime_contract.as_deref() == Some(ir::BOUNDED_TYPE_GROUP_INPUTS_V1)
+            && param.source == "input"
+        {
+            abi_kind = ir::BOUNDED_TYPE_GROUP_INPUTS_V1.to_string();
+            abi_slots = 2;
+            witness_bytes = 0;
+            pointer_length_pair = true;
+        } else if is_bounded_collection_metadata_type(&param.ty)
+            && param.bounded_runtime_contract.as_deref() == Some(ir::BOUNDED_OUTPUT_PLAN_V1)
+            && param.source == "witness"
+        {
+            abi_kind = ir::BOUNDED_OUTPUT_PLAN_V1.to_string();
+            abi_slots = 2;
+            witness_bytes = 4;
+            pointer_length_pair = true;
+        } else if is_bounded_collection_metadata_type(&param.ty) {
             supported = false;
             unsupported_reason = Some(format!("bounded collection parameter '{}' has no canonical executable entry ABI", param.ty));
             unsupported_reasons.push(format!(
@@ -4764,6 +4789,51 @@ pub enum EntryWitnessArg {
     Bytes(Vec<u8>),
 }
 
+/// Encode the inner `bounded-output-plan-v1` payload carried as one
+/// `BoundedList<Plan, N>` entry-witness argument. The body is a version marker
+/// followed by the canonical Molecule FixVec count and fixed-width elements.
+pub fn encode_bounded_output_plan_v1(elements: &[Vec<u8>], element_width: usize, max_elements: usize) -> Result<Vec<u8>> {
+    if element_width == 0 || element_width > 512 {
+        return Err(CompileError::without_span("bounded output plan element width must be in 1..=512 bytes"));
+    }
+    if max_elements == 0 || max_elements > 1024 || elements.len() > max_elements {
+        return Err(CompileError::without_span(format!(
+            "bounded output plan has {} elements but the declared maximum is {}",
+            elements.len(),
+            max_elements
+        )));
+    }
+    if let Some((index, element)) = elements.iter().enumerate().find(|(_, element)| element.len() != element_width) {
+        return Err(CompileError::without_span(format!(
+            "bounded output plan element {} has {} bytes; expected exactly {}",
+            index,
+            element.len(),
+            element_width
+        )));
+    }
+    let payload_len = elements
+        .len()
+        .checked_mul(element_width)
+        .and_then(|bytes| bytes.checked_add(12))
+        .ok_or_else(|| CompileError::without_span("bounded output plan length exceeds addressable memory"))?;
+    if payload_len > ir::BOUNDED_OUTPUT_PLAN_MAX_BYTES {
+        return Err(CompileError::without_span(format!(
+            "bounded output plan needs {} bytes but the entry ABI permits at most {}",
+            payload_len,
+            ir::BOUNDED_OUTPUT_PLAN_MAX_BYTES
+        )));
+    }
+    let count = u32::try_from(elements.len())
+        .map_err(|_| CompileError::without_span("bounded output plan element count exceeds Molecule FixVec u32"))?;
+    let mut payload = Vec::with_capacity(payload_len);
+    payload.extend_from_slice(ir::BOUNDED_OUTPUT_PLAN_MAGIC_V1);
+    payload.extend_from_slice(&count.to_le_bytes());
+    for element in elements {
+        payload.extend_from_slice(element);
+    }
+    Ok(payload)
+}
+
 /// Encode positional witness bytes for CellScript's generated entry wrapper.
 ///
 /// The result is suitable for transaction witnesses consumed by `_cellscript_entry`.
@@ -5124,6 +5194,8 @@ pub struct ParamMetadata {
     pub type_hash_pointer_abi: bool,
     pub type_hash_length_abi: bool,
     pub type_hash_len: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bounded_runtime_contract: Option<String>,
 }
 
 fn default_param_source() -> String {
@@ -8524,6 +8596,30 @@ fn collect_instruction_scope(instruction: &ir::IrInstruction, used_types: &mut B
             collect_ir_type_named_types(&dest.ty, used_types);
             collect_operand_named_types(collection, used_types);
         }
+        ir::IrInstruction::BoundedCellLoad { dest, found, index, element_type, .. } => {
+            collect_ir_type_named_types(&dest.ty, used_types);
+            collect_ir_type_named_types(&found.ty, used_types);
+            collect_operand_named_types(index, used_types);
+            used_types.insert(element_type.clone());
+        }
+        ir::IrInstruction::BoundedPlanLoad { dest, found, plan, index, element_type, .. } => {
+            collect_ir_type_named_types(&dest.ty, used_types);
+            collect_ir_type_named_types(&found.ty, used_types);
+            collect_operand_named_types(plan, used_types);
+            collect_operand_named_types(index, used_types);
+            used_types.insert(element_type.clone());
+        }
+        ir::IrInstruction::BoundedOutputVerify { index, pattern, .. } => {
+            collect_operand_named_types(index, used_types);
+            used_types.insert(pattern.ty.clone());
+            for (_, operand) in &pattern.fields {
+                collect_operand_named_types(operand, used_types);
+            }
+            if let Some(lock) = &pattern.lock {
+                collect_operand_named_types(lock, used_types);
+            }
+        }
+        ir::IrInstruction::BoundedOutputEnd { index } => collect_operand_named_types(index, used_types),
         ir::IrInstruction::Call { dest, func, args } => {
             if let Some(dest) = dest {
                 collect_ir_type_named_types(&dest.ty, used_types);
@@ -9620,31 +9716,42 @@ fn body_collection_instantiation_metadata(
     let mut bounded = body
         .bounded_collection_ops
         .iter()
-        .map(|op| CollectionInstantiationMetadata {
-            scope_kind: scope_kind.to_string(),
-            scope_name: scope_name.to_string(),
-            collection_ty: op.collection_type.clone(),
-            element_ty: op.element_type.clone(),
-            element_width_bytes: metadata_inline_type_fixed_width(&op.element_type, type_layouts).unwrap_or(0),
-            backing: format!("bounded-source:{}", param_source_metadata(op.source)),
-            max_elements: op.max_elements,
-            status: if op.operation == "create_each" {
-                "builder-evidence-required".to_string()
-            } else {
-                "runtime-helper-required".to_string()
-            },
-            source: param_source_metadata(op.source).to_string(),
-            ownership: if op.operation == "consume_each" { "linear-cell-set".to_string() } else { "bounded-output-plan".to_string() },
-            actual_scanned_cardinality: None,
-            vacuous_possible: true,
-            output_cardinality_max: (op.operation == "create_each").then_some(op.max_elements),
-            capacity_builder_evidence_required: op.operation == "create_each",
-            evidence_tier: if op.operation == "create_each" {
-                EvidenceTier::BuilderEvidenceRequired
-            } else {
-                EvidenceTier::RuntimeHelperRequired
-            },
-            helpers: vec![op.operation.clone()],
+        .map(|op| {
+            let checked_runtime = op.runtime_contract.is_some();
+            CollectionInstantiationMetadata {
+                scope_kind: scope_kind.to_string(),
+                scope_name: scope_name.to_string(),
+                collection_ty: op.collection_type.clone(),
+                element_ty: op.element_type.clone(),
+                element_width_bytes: metadata_inline_type_fixed_width(&op.element_type, type_layouts).unwrap_or(0),
+                backing: format!("bounded-source:{}", param_source_metadata(op.source)),
+                max_elements: op.max_elements,
+                status: if checked_runtime {
+                    "checked-runtime".to_string()
+                } else if op.operation == "create_each" {
+                    "builder-evidence-required".to_string()
+                } else {
+                    "runtime-helper-required".to_string()
+                },
+                source: param_source_metadata(op.source).to_string(),
+                ownership: if op.operation == "consume_each" {
+                    "linear-cell-set".to_string()
+                } else {
+                    "bounded-output-plan".to_string()
+                },
+                actual_scanned_cardinality: None,
+                vacuous_possible: true,
+                output_cardinality_max: (op.operation == "create_each").then_some(op.max_elements),
+                capacity_builder_evidence_required: op.operation == "create_each" && !checked_runtime,
+                evidence_tier: if checked_runtime {
+                    EvidenceTier::CheckedRuntime
+                } else if op.operation == "create_each" {
+                    EvidenceTier::BuilderEvidenceRequired
+                } else {
+                    EvidenceTier::RuntimeHelperRequired
+                },
+                helpers: op.runtime_contract.iter().cloned().chain(std::iter::once(op.operation.clone())).collect(),
+            }
         })
         .collect::<Vec<_>>();
     let param_schema_vars =
@@ -14585,6 +14692,9 @@ fn body_fail_closed_runtime_features(
 ) -> Vec<String> {
     let mut features = BTreeSet::new();
     for operation in &body.bounded_collection_ops {
+        if operation.runtime_contract.is_some() {
+            continue;
+        }
         features.insert(
             if operation.operation == "create_each" { "bounded-create-each-runtime" } else { "bounded-consume-each-runtime" }
                 .to_string(),
@@ -16194,6 +16304,24 @@ fn body_ckb_runtime_features(
     for block in &body.blocks {
         for instruction in &block.instructions {
             match instruction {
+                ir::IrInstruction::BoundedCellLoad { .. } => {
+                    features.insert("ckb-bounded-type-group-inputs-v1".to_string());
+                    features.insert("ckb-source-view".to_string());
+                    features.insert("ckb-cell-data-decode".to_string());
+                    features.insert("ckb-script-identity-requirements".to_string());
+                }
+                ir::IrInstruction::BoundedPlanLoad { .. } => {
+                    features.insert("ckb-bounded-output-plan-v1".to_string());
+                    features.insert("ckb-witness-args-input-type".to_string());
+                    features.insert("ckb-molecule-fixvec-decode".to_string());
+                }
+                ir::IrInstruction::BoundedOutputVerify { .. } | ir::IrInstruction::BoundedOutputEnd { .. } => {
+                    features.insert("ckb-bounded-output-plan-v1".to_string());
+                    features.insert("ckb-source-view".to_string());
+                    features.insert("ckb-cell-data-decode".to_string());
+                    features.insert("ckb-script-identity-requirements".to_string());
+                    features.insert("ckb-output-capacity-floor".to_string());
+                }
                 ir::IrInstruction::Call { func, .. } if func == "__env_current_timepoint" => {
                     features.insert("load-header-timepoint".to_string());
                 }
@@ -16622,6 +16750,12 @@ fn schema_pointer_var_ids(body: &ir::IrBody, params: &[ir::IrParam]) -> BTreeSet
             if let ir::IrInstruction::ReadRef { dest, .. } = instruction {
                 vars.insert(dest.id);
             }
+            if let ir::IrInstruction::BoundedCellLoad { dest, .. } = instruction {
+                vars.insert(dest.id);
+            }
+            if let ir::IrInstruction::BoundedPlanLoad { dest, .. } = instruction {
+                vars.insert(dest.id);
+            }
             if let Some(var_id) = consumed_schema_var_id(instruction) {
                 vars.insert(var_id);
             }
@@ -16700,6 +16834,62 @@ fn body_ckb_runtime_accesses(
     }
     for block in &body.blocks {
         for instruction in &block.instructions {
+            if let ir::IrInstruction::BoundedCellLoad { element_type, .. } = instruction {
+                for (operation, syscall) in [
+                    ("bounded-type-group-input-data", "LOAD_CELL_DATA"),
+                    ("bounded-type-group-input-type-hash", "LOAD_CELL_BY_FIELD"),
+                    ("bounded-type-group-input-lock-hash", "LOAD_CELL_BY_FIELD"),
+                ] {
+                    accesses.push(CkbRuntimeAccessMetadata {
+                        operation: operation.to_string(),
+                        syscall: syscall.to_string(),
+                        source: "GroupInput".to_string(),
+                        index: 0,
+                        binding: element_type.clone(),
+                    });
+                }
+                accesses.push(CkbRuntimeAccessMetadata {
+                    operation: "bounded-current-script-hash".to_string(),
+                    syscall: "LOAD_SCRIPT_HASH".to_string(),
+                    source: "CurrentScript".to_string(),
+                    index: 0,
+                    binding: element_type.clone(),
+                });
+            }
+            if let ir::IrInstruction::BoundedPlanLoad { element_type, .. } = instruction {
+                accesses.push(CkbRuntimeAccessMetadata {
+                    operation: "bounded-output-plan-decode".to_string(),
+                    syscall: "LOAD_WITNESS".to_string(),
+                    source: "Witness".to_string(),
+                    index: 0,
+                    binding: element_type.clone(),
+                });
+            }
+            if let ir::IrInstruction::BoundedOutputVerify { pattern, .. } = instruction {
+                for (operation, syscall) in [
+                    ("bounded-group-output-data", "LOAD_CELL_DATA"),
+                    ("bounded-group-output-lock-hash", "LOAD_CELL_BY_FIELD"),
+                    ("bounded-group-output-capacity", "LOAD_CELL_BY_FIELD"),
+                    ("bounded-current-script-hash", "LOAD_SCRIPT_HASH"),
+                ] {
+                    accesses.push(CkbRuntimeAccessMetadata {
+                        operation: operation.to_string(),
+                        syscall: syscall.to_string(),
+                        source: if syscall == "LOAD_SCRIPT_HASH" { "CurrentScript" } else { "GroupOutput" }.to_string(),
+                        index: 0,
+                        binding: pattern.ty.clone(),
+                    });
+                }
+            }
+            if let ir::IrInstruction::BoundedOutputEnd { .. } = instruction {
+                accesses.push(CkbRuntimeAccessMetadata {
+                    operation: "bounded-group-output-count-end".to_string(),
+                    syscall: "LOAD_CELL_BY_FIELD".to_string(),
+                    source: "GroupOutput".to_string(),
+                    index: 0,
+                    binding: "create_each".to_string(),
+                });
+            }
             if matches!(instruction, ir::IrInstruction::Call { func, .. } if func == "__ckb_input_since") {
                 accesses.push(CkbRuntimeAccessMetadata {
                     operation: "input-since".to_string(),
@@ -18578,7 +18768,17 @@ fn param_metadata_for_body(
     enum_layouts: &HashMap<String, ir::IrEnumLayout>,
 ) -> Vec<ParamMetadata> {
     let type_hash_param_ids = param_type_hash_param_ids(body);
-    params.iter().map(|param| param_metadata(param, &type_hash_param_ids, cell_type_kinds, enum_layouts)).collect()
+    params
+        .iter()
+        .map(|param| {
+            let bounded_runtime_contract = body
+                .bounded_collection_ops
+                .iter()
+                .find(|operation| operation.collection_binding == param.name)
+                .and_then(|operation| operation.runtime_contract.clone());
+            param_metadata(param, &type_hash_param_ids, cell_type_kinds, enum_layouts, bounded_runtime_contract)
+        })
+        .collect()
 }
 
 fn param_type_hash_param_ids(body: &ir::IrBody) -> BTreeSet<usize> {
@@ -18600,6 +18800,7 @@ fn param_metadata(
     type_hash_param_ids: &BTreeSet<usize>,
     cell_type_kinds: &HashMap<String, ir::IrTypeKind>,
     enum_layouts: &HashMap<String, ir::IrEnumLayout>,
+    bounded_runtime_contract: Option<String>,
 ) -> ParamMetadata {
     let named_type = named_type_name(&param.ty);
     let enum_fixed_len =
@@ -18612,6 +18813,7 @@ fn param_metadata(
     });
     let type_hash_abi = schema_pointer_abi && type_hash_param_ids.contains(&param.binding.id);
     let cell_bound_abi = param.is_ref
+        || bounded_runtime_contract.as_deref() == Some(ir::BOUNDED_TYPE_GROUP_INPUTS_V1)
         || matches!(
             named_type_name(&param.ty).and_then(|name| cell_type_kinds.get(name)),
             Some(ir::IrTypeKind::Resource | ir::IrTypeKind::Shared | ir::IrTypeKind::Receipt)
@@ -18634,6 +18836,7 @@ fn param_metadata(
         type_hash_pointer_abi: type_hash_abi,
         type_hash_length_abi: type_hash_abi,
         type_hash_len: type_hash_abi.then_some(32),
+        bounded_runtime_contract,
     }
 }
 
@@ -19141,10 +19344,10 @@ mod tests {
     use super::{
         compile, compile_file, compile_file_with_entry_action, compile_file_with_entry_lock, compile_fungible_type_group_entry,
         compile_path, compile_with_executable_surface_policy, decode_scheduler_witness_hex, default_output_path_for_input,
-        encode_entry_witness_args_for_params, incremental_cache_key, load_modules_for_input, prune_incremental_cache_entries,
-        resolve_input_path, source_unit_from_bytes, validate_primitive_strict_017_metadata, ActionMetadata, ArtifactFormat,
-        CkbRuntimeAccessMetadata, CompileOptions, EntryWitnessArg, ExecutableSurfacePolicy, ENTRY_WITNESS_ABI_MAGIC,
-        SCHEDULER_WITNESS_ABI_MOLECULE,
+        encode_bounded_output_plan_v1, encode_entry_witness_args_for_params, incremental_cache_key, load_modules_for_input,
+        prune_incremental_cache_entries, resolve_input_path, source_unit_from_bytes, validate_primitive_strict_017_metadata,
+        ActionMetadata, ArtifactFormat, CkbRuntimeAccessMetadata, CompileOptions, EntryWitnessArg, ExecutableSurfacePolicy,
+        ENTRY_WITNESS_ABI_MAGIC, SCHEDULER_WITNESS_ABI_MOLECULE,
     };
     use crate::{ir, lexer, parser};
     use camino::{Utf8Path, Utf8PathBuf};
@@ -34085,7 +34288,9 @@ action batch(input inputs: BoundedCellSet<Token, 16>, witness plans: BoundedList
         assert_eq!(consumed.source, "input");
         assert_eq!(consumed.max_elements, 16);
         assert!(consumed.vacuous_possible);
-        assert_eq!(consumed.evidence_tier, crate::EvidenceTier::RuntimeHelperRequired);
+        assert_eq!(consumed.status, "checked-runtime");
+        assert_eq!(consumed.evidence_tier, crate::EvidenceTier::CheckedRuntime);
+        assert!(consumed.helpers.contains(&crate::ir::BOUNDED_TYPE_GROUP_INPUTS_V1.to_string()));
 
         let created = result
             .metadata
@@ -34107,13 +34312,13 @@ action batch(input inputs: BoundedCellSet<Token, 16>, witness plans: BoundedList
             .iter()
             .find(|plan| plan.category == "bounded-cell-collection" && plan.feature.starts_with("consume_each:"))
             .expect("bounded consume ProofPlan");
-        assert_eq!(consume_plan.evidence_tier, crate::EvidenceTier::RuntimeHelperRequired);
+        assert_eq!(consume_plan.evidence_tier, crate::EvidenceTier::CheckedRuntime);
         assert!(consume_plan.coverage.contains(&"maximum_cardinality:16".to_string()));
         assert!(consume_plan.coverage.contains(&"vacuous:true-when-cardinality-zero".to_string()));
-        assert!(consume_plan.coverage.contains(&"actual_scanned_cardinality:not-observed-no-runtime-lowering".to_string()));
-        assert!(consume_plan.coverage.iter().any(|item| item == "predicate-retained-not-executed:token.amount > 0"));
-        assert!(consume_plan.input_output_relation_checks.is_empty());
-        assert!(!consume_plan.on_chain_checked);
+        assert!(consume_plan.coverage.contains(&"actual_scanned_cardinality:runtime-observed".to_string()));
+        assert!(consume_plan.coverage.iter().any(|item| item == "predicate-executed-once-per-element:token.amount > 0"));
+        assert_eq!(consume_plan.input_output_relation_checks, ["group_input_count<=16"]);
+        assert!(consume_plan.on_chain_checked);
 
         let create_plan = result
             .metadata
@@ -34131,16 +34336,127 @@ action batch(input inputs: BoundedCellSet<Token, 16>, witness plans: BoundedList
         assert!(!create_plan.on_chain_checked);
 
         let action = result.metadata.actions.iter().find(|action| action.name == "batch").expect("batch action metadata");
-        assert!(action.fail_closed_runtime_features.contains(&"bounded-consume-each-runtime".to_string()));
+        assert!(!action.fail_closed_runtime_features.contains(&"bounded-consume-each-runtime".to_string()));
         assert!(action.fail_closed_runtime_features.contains(&"bounded-create-each-runtime".to_string()));
         let entry = result.metadata.constraints.entry_abi.iter().find(|entry| entry.entry_name == "batch").expect("batch entry ABI");
         assert!(entry.unsupported);
-        assert!(entry.params.iter().all(|param| !param.supported && param.abi_kind == "unsupported"));
+        assert!(entry.params[0].supported);
+        assert_eq!(entry.params[0].abi_kind, crate::ir::BOUNDED_TYPE_GROUP_INPUTS_V1);
+        assert!(!entry.params[1].supported);
+        assert_eq!(entry.params[1].abi_kind, "unsupported");
 
         let asm = String::from_utf8(result.artifact_bytes).unwrap();
-        assert!(asm.contains(crate::ir::BOUNDED_CONSUME_EACH_FAIL_CLOSED_HELPER));
+        assert!(asm.contains(crate::ir::BOUNDED_TYPE_GROUP_INPUTS_V1));
+        assert!(!asm.contains(crate::ir::BOUNDED_CONSUME_EACH_FAIL_CLOSED_HELPER));
         assert!(asm.contains(crate::ir::BOUNDED_CREATE_EACH_FAIL_CLOSED_HELPER));
         assert!(asm.contains("cellscript runtime error 24 collection-runtime-unsupported"));
+    }
+
+    #[test]
+    fn bounded_cell_consume_each_has_a_checked_type_group_runtime_contract() {
+        let source = r#"
+module bounded::consume_runtime
+
+resource Token has store, consume { amount: u64 }
+
+action verify(input inputs: BoundedCellSet<Token, 2>, witness minimum: u64) -> u64 {
+    verification
+        consume_each token in inputs {
+            require token.amount >= minimum
+        }
+        return 0
+}
+"#;
+        let result = compile_with_executable_surface_policy(
+            source,
+            CompileOptions { target_profile: Some("ckb".to_string()), ..CompileOptions::default() },
+            ExecutableSurfacePolicy::DenyFailClosed,
+        )
+        .unwrap();
+
+        let action = result.metadata.actions.iter().find(|action| action.name == "verify").unwrap();
+        assert!(action.fail_closed_runtime_features.is_empty());
+        assert!(action.ckb_runtime_features.contains(&"ckb-bounded-type-group-inputs-v1".to_string()));
+        assert!(action
+            .ckb_runtime_accesses
+            .iter()
+            .any(|access| access.operation == "bounded-type-group-input-data" && access.source == "GroupInput"));
+        let plan =
+            action.proof_plan.iter().find(|plan| plan.feature.starts_with("consume_each:")).expect("bounded consume proof plan");
+        assert_eq!(plan.evidence_tier, crate::EvidenceTier::CheckedRuntime);
+        assert!(plan.on_chain_checked);
+        assert_eq!(plan.codegen_coverage_status, "covered");
+        assert!(plan.coverage.contains(&"predicate-executed-once-per-element:token.amount >= minimum".to_string()));
+
+        let entry = result.metadata.constraints.entry_abi.iter().find(|entry| entry.entry_name == "verify").expect("verify entry ABI");
+        assert!(!entry.unsupported);
+        assert_eq!(entry.params[0].abi_kind, crate::ir::BOUNDED_TYPE_GROUP_INPUTS_V1);
+        assert_eq!(entry.params[0].witness_bytes, 0);
+
+        let asm = String::from_utf8(result.artifact_bytes).unwrap();
+        assert!(asm.contains("source=GroupInput element=Token max=2 width=8"));
+        assert!(!asm.contains(crate::ir::BOUNDED_CONSUME_EACH_FAIL_CLOSED_HELPER));
+    }
+
+    #[test]
+    fn bounded_create_each_has_a_checked_output_plan_runtime_contract() {
+        let source = r#"
+module bounded::create_runtime
+
+struct Plan {
+    owner: Address
+    amount: u64
+}
+
+resource Token has store, create
+with_capacity_floor(10000000000)
+{
+    amount: u64
+}
+
+action mint(witness plans: BoundedList<Plan, 2>) -> u64 {
+    verification
+        create_each plan in plans {
+            require plan.amount > 0
+            create Token { amount: plan.amount } with_lock(plan.owner)
+        }
+        return 0
+}
+"#;
+        let result = compile_with_executable_surface_policy(
+            source,
+            CompileOptions { target_profile: Some("ckb".to_string()), ..CompileOptions::default() },
+            ExecutableSurfacePolicy::DenyFailClosed,
+        )
+        .unwrap();
+        let action = result.metadata.actions.iter().find(|action| action.name == "mint").unwrap();
+        assert!(action.fail_closed_runtime_features.is_empty());
+        assert!(action.ckb_runtime_features.contains(&"ckb-bounded-output-plan-v1".to_string()));
+        let plan = action.proof_plan.iter().find(|plan| plan.feature.starts_with("create_each:")).expect("bounded create proof plan");
+        assert_eq!(plan.evidence_tier, crate::EvidenceTier::CheckedRuntime);
+        assert!(plan.on_chain_checked);
+        assert_eq!(plan.input_output_relation_checks, ["plan_count=group_output_count<=2"]);
+        assert!(plan.builder_assumptions.is_empty());
+
+        let entry = result.metadata.constraints.entry_abi.iter().find(|entry| entry.entry_name == "mint").expect("mint entry ABI");
+        assert!(!entry.unsupported);
+        assert_eq!(entry.params[0].abi_kind, crate::ir::BOUNDED_OUTPUT_PLAN_V1);
+        assert_eq!(entry.params[0].witness_bytes, 4);
+
+        let mut element = [0_u8; 40].to_vec();
+        element[32..40].copy_from_slice(&7_u64.to_le_bytes());
+        let encoded_plan = encode_bounded_output_plan_v1(&[element], 40, 2).unwrap();
+        assert_eq!(&encoded_plan[..8], crate::ir::BOUNDED_OUTPUT_PLAN_MAGIC_V1);
+        assert_eq!(&encoded_plan[8..12], &1_u32.to_le_bytes());
+        let action_metadata = result.metadata.actions.iter().find(|action| action.name == "mint").unwrap();
+        let outer = action_metadata.entry_witness_args(&[EntryWitnessArg::Bytes(encoded_plan.clone())]).unwrap();
+        assert_eq!(&outer[..8], ENTRY_WITNESS_ABI_MAGIC);
+        assert_eq!(&outer[8..12], &(encoded_plan.len() as u32).to_le_bytes());
+
+        let asm = String::from_utf8(result.artifact_bytes).unwrap();
+        assert!(asm.contains("codec=MoleculeFixVec magic=CSBPLv1 element=Plan max=2 width=40"));
+        assert!(asm.contains("require GroupOutput count equals plan count"));
+        assert!(!asm.contains(crate::ir::BOUNDED_CREATE_EACH_FAIL_CLOSED_HELPER));
     }
 
     #[test]
@@ -34149,9 +34465,13 @@ action batch(input inputs: BoundedCellSet<Token, 16>, witness plans: BoundedList
 module bounded::fail_closed
 
 struct Plan { amount: u64 }
-resource Token has store, create, consume { amount: u64 }
+resource DynamicToken has store, consume {
+    amount: u64
+    memo: String
+}
+resource Token has store, create { amount: u64 }
 
-action batch(input inputs: BoundedCellSet<Token, 2>, witness plans: BoundedList<Plan, 2>) -> u64 {
+action batch(input inputs: BoundedCellSet<DynamicToken, 2>, witness plans: BoundedList<Plan, 2>) -> u64 {
     verification
         consume_each token in inputs {
             require false
@@ -34194,7 +34514,7 @@ action batch(input inputs: BoundedCellSet<Token, 2>, witness plans: BoundedList<
         )
         .unwrap_err();
         assert_eq!(error.code.as_deref(), Some("E2105"));
-        assert!(error.message.contains("consume_each:inputs:BoundedCellSet<Token, 2>"));
+        assert!(error.message.contains("consume_each:inputs:BoundedCellSet<DynamicToken, 2>"));
         assert!(error.message.contains("action:batch#bounded-collection:0"));
         assert!(error.message.contains("gap:runtime-helper-required"));
         assert!(error.message.contains("Remediation:"));

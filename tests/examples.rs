@@ -2,7 +2,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cellscript::{
     codegen::{analyze_backend_shape, BackendShapeMetrics},
     compile_file, compile_file_with_entry_action, compile_file_with_entry_lock, compile_metadata_with_diagnostics, compile_path,
-    ArtifactFormat, CompileMetadata, CompileOptions, CompileResult, ProofPlanMetadata,
+    compile_path_with_executable_surface_policy, ArtifactFormat, CompileEntryScope, CompileMetadata, CompileOptions, CompileResult,
+    EntryWitnessArg, ExecutableSurfacePolicy, ProofPlanMetadata,
 };
 use std::collections::BTreeSet;
 
@@ -404,18 +405,30 @@ fn write_wrapped_doc_snippet(temp_root: &Utf8Path, name: &str, source: &str) -> 
 fn checked_in_example_cell_files() -> Vec<Utf8PathBuf> {
     let examples_root = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
     let mut files = Vec::new();
-    for root in [&examples_root, &examples_root.join("language")] {
-        let entries = std::fs::read_dir(root).unwrap_or_else(|err| panic!("failed to read {root}: {err}"));
-        for entry in entries {
-            let path = Utf8PathBuf::from_path_buf(entry.expect("example directory entry should be readable").path())
-                .expect("example path should be valid UTF-8");
-            if path.is_file() && path.extension() == Some("cell") {
-                files.push(path);
-            }
+    let entries = std::fs::read_dir(&examples_root).unwrap_or_else(|err| panic!("failed to read {examples_root}: {err}"));
+    for entry in entries {
+        let path = Utf8PathBuf::from_path_buf(entry.expect("example directory entry should be readable").path())
+            .expect("example path should be valid UTF-8");
+        if path.is_file() && path.extension() == Some("cell") {
+            files.push(path);
         }
     }
+    collect_language_example_cell_files(&examples_root.join("language"), &mut files);
     files.sort();
     files
+}
+
+fn collect_language_example_cell_files(root: &Utf8Path, output: &mut Vec<Utf8PathBuf>) {
+    let entries = std::fs::read_dir(root).unwrap_or_else(|err| panic!("failed to read {root}: {err}"));
+    for entry in entries {
+        let path = Utf8PathBuf::from_path_buf(entry.expect("language example directory entry should be readable").path())
+            .expect("language example path should be valid UTF-8");
+        if path.is_dir() {
+            collect_language_example_cell_files(&path, output);
+        } else if path.is_file() && path.extension() == Some("cell") {
+            output.push(path);
+        }
+    }
 }
 
 #[test]
@@ -451,12 +464,75 @@ fn all_checked_in_cell_examples_compile() {
     let files = checked_in_example_cell_files();
     assert_eq!(
         files.len(),
-        BUNDLED_EXAMPLES.len() + 1 + 15,
+        BUNDLED_EXAMPLES.len() + 1 + 19,
         "expected bundled examples, top-level registry.cell, and language examples"
     );
 
     for path in files {
         compile_file(&path, CompileOptions::default()).unwrap_or_else(|err| panic!("{path} should compile: {}", err.message));
+    }
+}
+
+#[test]
+fn dynamic_batch_examples_are_production_closed_runtime_contracts() {
+    let cases = [
+        ("batches/batch_claim.cell", "claim_many", 64_usize, 64_usize),
+        ("batches/atomic_order_settlement.cell", "settle_orders", 16, 16),
+        ("batches/cell_merge.cell", "merge_cells", 128, 1),
+        ("batches/bridge_rollup_batch.cell", "execute_bridge_batch", 64, 64),
+    ];
+
+    for (file, action_name, input_max, output_max) in cases {
+        let path = language_example_path(file);
+        let result = compile_path_with_executable_surface_policy(
+            &path,
+            CompileOptions {
+                target: Some("riscv64-elf".to_string()),
+                target_profile: Some("ckb".to_string()),
+                ..CompileOptions::default()
+            },
+            Some(CompileEntryScope::Action(action_name.to_string())),
+            ExecutableSurfacePolicy::DenyFailClosed,
+        )
+        .unwrap_or_else(|err| panic!("{path} must pass the production executable-surface policy: {}", err.message));
+
+        let action = result.metadata.actions.iter().find(|action| action.name == action_name).expect("scoped batch action");
+        assert!(action.fail_closed_runtime_features.is_empty(), "{file} unexpectedly retained fail-closed features");
+        let collections = &result.metadata.runtime.collection_instantiations;
+        assert!(collections.iter().any(|item| {
+            item.ownership == "linear-cell-set"
+                && item.max_elements == input_max
+                && item.helpers.iter().any(|helper| helper == cellscript::ir::BOUNDED_TYPE_GROUP_INPUTS_V1)
+        }));
+        let output_collection = collections.iter().find(|item| {
+            item.ownership == "bounded-output-plan"
+                && item.max_elements == output_max
+                && item.helpers.iter().any(|helper| helper == cellscript::ir::BOUNDED_OUTPUT_PLAN_V1)
+        });
+        assert!(output_collection.is_some());
+        let output_collection = output_collection.expect("checked above");
+        let plan = cellscript::encode_bounded_output_plan_v1(
+            &[vec![0; output_collection.element_width_bytes]],
+            output_collection.element_width_bytes,
+            output_collection.max_elements,
+        )
+        .expect("example plan shape must be encodable");
+        let entry_payload = action
+            .entry_witness_args(&[EntryWitnessArg::Bytes(plan)])
+            .expect("the Cell-bound input set must not consume a positional witness argument");
+        assert_eq!(&entry_payload[..8], b"CSARGv1\0");
+        assert!(
+            action
+                .proof_plan
+                .iter()
+                .filter(|plan| plan.feature.starts_with("consume_each:") || plan.feature.starts_with("create_each:"))
+                .all(|plan| {
+                    plan.on_chain_checked
+                        && plan.evidence_tier == cellscript::EvidenceTier::CheckedRuntime
+                        && plan.coverage.iter().any(|item| item.starts_with("outer-numeric-accumulator-updated-once-per-element:"))
+                }),
+            "{file} must not describe checked batch behavior as builder-only evidence"
+        );
     }
 }
 
@@ -884,8 +960,8 @@ fn action<'a>(metadata: &'a cellscript::CompileMetadata, name: &str) -> &'a cell
 
 #[test]
 fn registry_example_uses_bounded_local_vec_helpers_without_collection_debt() {
-    let result =
-        compile_file(language_example_path("registry.cell"), CompileOptions::default()).expect("registry example should compile");
+    let result = compile_file(language_example_path("collections/registry.cell"), CompileOptions::default())
+        .expect("registry example should compile");
     let asm = String::from_utf8(result.artifact_bytes.clone()).expect("registry asm should be utf8");
 
     for marker in [
@@ -963,7 +1039,7 @@ fn registry_example_uses_bounded_local_vec_helpers_without_collection_debt() {
 #[test]
 fn registry_example_with_insert_contains_compiles_to_elf() {
     let result = compile_file(
-        language_example_path("registry.cell"),
+        language_example_path("collections/registry.cell"),
         CompileOptions { target: Some("riscv64-elf".to_string()), ..CompileOptions::default() },
     )
     .expect("registry example should compile to ELF through the internal assembler");
@@ -973,8 +1049,8 @@ fn registry_example_with_insert_contains_compiles_to_elf() {
 
 #[test]
 fn order_book_language_example_uses_local_vec_helpers_without_collection_debt() {
-    let result =
-        compile_file(language_example_path("order_book.cell"), CompileOptions::default()).expect("order book example should compile");
+    let result = compile_file(language_example_path("collections/order_book.cell"), CompileOptions::default())
+        .expect("order book example should compile");
     let asm = String::from_utf8(result.artifact_bytes.clone()).expect("order book asm should be utf8");
 
     for marker in [
@@ -1035,7 +1111,7 @@ fn order_book_language_example_uses_local_vec_helpers_without_collection_debt() 
     }
 
     let elf = compile_file(
-        language_example_path("order_book.cell"),
+        language_example_path("collections/order_book.cell"),
         CompileOptions { target: Some("riscv64-elf".to_string()), ..CompileOptions::default() },
     )
     .expect("order book example should compile to ELF through the internal assembler");
@@ -1044,7 +1120,8 @@ fn order_book_language_example_uses_local_vec_helpers_without_collection_debt() 
 
 #[test]
 fn stdlib_language_example_compiles_with_all_patterns() {
-    let result = compile_file(language_example_path("stdlib.cell"), CompileOptions::default()).expect("stdlib example should compile");
+    let result =
+        compile_file(language_example_path("core/stdlib.cell"), CompileOptions::default()).expect("stdlib example should compile");
     assert!(!result.artifact_bytes.is_empty(), "stdlib artifact should be non-empty");
     let asm = String::from_utf8(result.artifact_bytes.clone()).expect("stdlib asm should be utf8");
 
@@ -1208,7 +1285,7 @@ fn stdlib_language_example_compiles_with_all_patterns() {
     );
 
     let elf = compile_file(
-        language_example_path("stdlib.cell"),
+        language_example_path("core/stdlib.cell"),
         CompileOptions { target: Some("riscv64-elf".to_string()), ..CompileOptions::default() },
     )
     .expect("stdlib example should compile to ELF through the internal assembler");
@@ -2443,7 +2520,7 @@ fn assert_proof_plan_invariant_record(
 #[test]
 fn v0_15_scoped_invariant_example_compiles_and_produces_proof_plan() {
     let result = compile_file(
-        language_example_path("v0_15_scoped_invariant.cell"),
+        language_example_path("verification/scoped_invariant.cell"),
         CompileOptions { primitive_compat: Some("0.15".to_string()), ..CompileOptions::default() },
     )
     .expect("v0_15_scoped_invariant should compile under --primitive-strict=0.15");
@@ -2528,7 +2605,7 @@ fn v0_15_scoped_invariant_example_compiles_and_produces_proof_plan() {
 #[test]
 fn v0_15_identity_lifecycle_example_compiles_and_produces_proof_plan() {
     let result = compile_file(
-        language_example_path("v0_15_identity_lifecycle.cell"),
+        language_example_path("ownership/identity_lifecycle.cell"),
         CompileOptions { primitive_compat: Some("0.15".to_string()), ..CompileOptions::default() },
     )
     .expect("v0_15_identity_lifecycle should compile under --primitive-strict=0.15");

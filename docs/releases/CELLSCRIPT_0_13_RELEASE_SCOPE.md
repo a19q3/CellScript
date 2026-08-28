@@ -91,7 +91,7 @@ Implemented:
 - contextual `Vec<T>` literals;
 - top-level `examples/*.cell` as the single checked-in bundled business source;
 - production acceptance that compiles those canonical examples directly;
-- `examples/language/registry.cell` for collection helper coverage;
+- `examples/language/collections/registry.cell` for collection helper coverage;
 - LSP and VS Code grammar/snippet updates.
 
 Design boundary:
@@ -135,9 +135,8 @@ Removed boundary:
 - protocol-specific claim/signature behavior is not keyed off action names or
   compiler-internal string hooks.
 
-Automated audit:
+Automated verification:
 
-- [Syntax-combination audit methodology](../CELLSCRIPT_SYNTAX_COMBO_AUDIT_METHODOLOGY.md)
 - `./scripts/cellscript_gate.sh dev`
 - `./scripts/cellscript_gate.sh ci`
 - `./scripts/cellscript_syntax_combo_audit.sh quick|ci` for focused component debugging

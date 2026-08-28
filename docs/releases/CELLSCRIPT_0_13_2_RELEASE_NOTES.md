@@ -83,12 +83,12 @@ New in 0.13:
   `swap`, and `clear`.
 - Negative type-check coverage for unsupported helper/type combinations.
 - Stable fail-closed metadata names for unsupported collection paths.
-- `examples/language/registry.cell` documents supported local `Vec<Address>` /
+- `examples/language/collections/registry.cell` documents supported local `Vec<Address>` /
   `Vec<Hash>` helper usage without implying full `HashMap<K, V>` support.
   `examples/registry.cell` keeps that collection surface available from the
   top-level examples directory. These are compiler/tooling language examples,
   not part of the seven-example CKB production action acceptance matrix.
-- `examples/language/order_book.cell` is a non-production language example for
+- `examples/language/collections/order_book.cell` is a non-production language example for
   local stack-backed order vectors. It compiles through the bounded `Vec<T>`
   helper surface, but it does not persist orders as Cells, prove map membership,
   settle assets, or enforce exchange-level authorization.

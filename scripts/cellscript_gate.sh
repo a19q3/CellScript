@@ -59,7 +59,7 @@ cargo_fmt_workspace() {
 
 check_canonical_cellscript_format() {
     run cargo run --quiet --locked -p cellscript --bin cellc -- \
-        fmt --check "$ROOT_DIR/examples/language/canonical_style.cell"
+        fmt --check "$ROOT_DIR/examples/language/core/canonical_style.cell"
 }
 
 check_example_u64_boundaries() {
@@ -118,14 +118,11 @@ check_trailing_whitespace() {
         "docs/releases/CELLSCRIPT_0_13_2_RELEASE_NOTES.md"
         "docs/releases/CELLSCRIPT_0_13_2_ACCEPTANCE_COMMUNITY_POST.md"
         "docs/releases/CELLSCRIPT_0_14_RELEASE_NOTES.md"
-        "docs/archive/0.13/CELLSCRIPT_0_13_1_PLAN.md"
-        "docs/archive/0.13/CELLSCRIPT_SIGNATURE_DIRECTION_EXECUTION_PLAN.md"
         "docs/CELLSCRIPT_CKB_DEPLOYMENT_MANIFEST.md"
         "docs/CELLSCRIPT_CAPACITY_AND_BUILDER_CONTRACT.md"
         "docs/CELLSCRIPT_ENTRY_WITNESS_ABI.md"
         "docs/CELLSCRIPT_COLLECTIONS_SUPPORT_MATRIX.md"
         "docs/CELLSCRIPT_GATE_POLICY.md"
-        "docs/CELLSCRIPT_SYNTAX_COMBO_AUDIT_METHODOLOGY.md"
         "docs/wiki/Home.md"
         "docs/wiki/Tutorial-05-CKB-Target-Profiles.md"
         "docs/wiki/Tutorial-06-Metadata-Verification-and-Production-Gates.md"

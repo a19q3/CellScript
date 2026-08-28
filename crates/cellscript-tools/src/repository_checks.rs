@@ -9,6 +9,8 @@ use anyhow::{bail, Context, Result};
 use percent_encoding::percent_decode_str;
 use regex::Regex;
 
+const LANGUAGE_EXAMPLE_CATEGORIES: &[&str] = &["batches", "ckb", "collections", "core", "ownership", "verification"];
+
 fn tracked_paths(root: &Path) -> Result<Vec<PathBuf>> {
     let output = Command::new("git")
         .args(["ls-files", "--recurse-submodules", "-z"])
@@ -48,11 +50,60 @@ fn active_tooling_source(path: &Path) -> bool {
     })
 }
 
+fn versioned_cell_filename(path: &Path, version_token: &Regex) -> bool {
+    path.extension().and_then(|extension| extension.to_str()) == Some("cell")
+        && path.file_stem().and_then(|stem| stem.to_str()).is_some_and(|stem| version_token.is_match(stem))
+}
+
+fn invalid_language_example_category(path: &Path) -> bool {
+    if path.extension().and_then(|extension| extension.to_str()) != Some("cell") {
+        return false;
+    }
+    let Ok(relative) = path.strip_prefix("examples/language") else {
+        return false;
+    };
+    let mut components = relative.components();
+    let Some(std::path::Component::Normal(category)) = components.next() else {
+        return true;
+    };
+    !category.to_str().is_some_and(|category| LANGUAGE_EXAMPLE_CATEGORIES.contains(&category)) || components.next().is_none()
+}
+
+fn untracked_cell_paths(root: &Path) -> Result<Vec<PathBuf>> {
+    let output = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard", "-z", "--", "*.cell"])
+        .current_dir(root)
+        .output()
+        .context("failed to enumerate untracked CellScript sources")?;
+    if !output.status.success() {
+        bail!("git ls-files for untracked CellScript sources failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+    }
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| std::str::from_utf8(path).map(PathBuf::from).context("CellScript source path is not valid UTF-8"))
+        .collect()
+}
+
 pub fn check_source_policy(root: &Path) -> Result<()> {
     let retired_runtime_name = ["py", "thon"].concat();
+    let version_token =
+        Regex::new(r"(?i)(?:^|[._-])(?:v(?:ersion)?[._-]?)?\d+[._-]\d+(?:[._-]\d+)?(?:$|[._-])|(?:^|[._-])v\d+(?:$|[._-])")?;
     let mut forbidden = Vec::new();
     let mut runtime_residue = Vec::new();
-    for relative in tracked_paths(root)? {
+    let tracked = tracked_paths(root)?;
+    let mut cell_sources = tracked
+        .iter()
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("cell"))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    cell_sources.extend(untracked_cell_paths(root)?);
+    let versioned_cell_sources =
+        cell_sources.iter().filter(|path| versioned_cell_filename(path, &version_token)).cloned().collect::<BTreeSet<_>>();
+    let invalid_language_examples =
+        cell_sources.iter().filter(|path| invalid_language_example_category(path)).cloned().collect::<BTreeSet<_>>();
+    for relative in tracked {
         if forbidden_source_artifact(&relative) {
             forbidden.push(relative.clone());
         }
@@ -65,7 +116,8 @@ pub fn check_source_policy(root: &Path) -> Result<()> {
             }
         }
     }
-    if forbidden.is_empty() && runtime_residue.is_empty() {
+    if forbidden.is_empty() && runtime_residue.is_empty() && versioned_cell_sources.is_empty() && invalid_language_examples.is_empty()
+    {
         return Ok(());
     }
     eprintln!("Repository source-language policy failed:");
@@ -74,6 +126,16 @@ pub fn check_source_policy(root: &Path) -> Result<()> {
     }
     for path in runtime_residue {
         eprintln!("  retired runtime residue in active tooling source: {}", path.display());
+    }
+    for path in versioned_cell_sources {
+        eprintln!("  version number is forbidden in .cell filenames; classify by semantics instead: {}", path.display());
+    }
+    for path in invalid_language_examples {
+        eprintln!(
+            "  language example must use one of the semantic categories {}: {}",
+            LANGUAGE_EXAMPLE_CATEGORIES.join(", "),
+            path.display()
+        );
     }
     bail!("repository source-language policy failed")
 }
@@ -203,7 +265,7 @@ pub fn check_doc_status(root: &Path) -> Result<()> {
     check_document_contract(
         root,
         "docs/skills/cellscript-metadata-audit/SKILL.md",
-        &[schema_number.as_str(), "0.25 development line", "generic_instantiations"],
+        &[schema_number.as_str(), "0.26 development line", "generic_instantiations"],
         &["current 0.24 development line", "metadata schema 57"],
         &mut failures,
     )?;
@@ -418,5 +480,29 @@ mod tests {
         assert!(active_tooling_source(Path::new(".github/workflows/ci.yml")));
         assert!(active_tooling_source(Path::new("website/package.json")));
         assert!(!active_tooling_source(Path::new("docs/archive/history.md")));
+    }
+
+    #[test]
+    fn cellscript_source_filenames_are_semantic_not_versioned() {
+        let version_token =
+            Regex::new(r"(?i)(?:^|[._-])(?:v(?:ersion)?[._-]?)?\d+[._-]\d+(?:[._-]\d+)?(?:$|[._-])|(?:^|[._-])v\d+(?:$|[._-])")
+                .expect("version filename regex");
+        for path in ["examples/v0_26_batch.cell", "examples/contract-v1.cell", "examples/token_0.26.0.cell"] {
+            assert!(versioned_cell_filename(Path::new(path), &version_token), "{path}");
+        }
+        for path in ["examples/batches/batch_claim.cell", "examples/orders_16.cell", "examples/sha256_check.cell"] {
+            assert!(!versioned_cell_filename(Path::new(path), &version_token), "{path}");
+        }
+    }
+
+    #[test]
+    fn language_examples_require_a_known_semantic_category() {
+        for path in ["examples/language/batch.cell", "examples/language/releases/claim.cell"] {
+            assert!(invalid_language_example_category(Path::new(path)), "{path}");
+        }
+        for path in ["examples/language/batches/claim.cell", "examples/language/ckb/witness.cell"] {
+            assert!(!invalid_language_example_category(Path::new(path)), "{path}");
+        }
+        assert!(!invalid_language_example_category(Path::new("examples/token.cell")));
     }
 }

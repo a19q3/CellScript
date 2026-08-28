@@ -1,4 +1,4 @@
-module cellscript::language::v0_22_transaction_views
+module cellscript::language::verification::transaction_views
 
 resource AuditedCell has store {
     amount: u64,

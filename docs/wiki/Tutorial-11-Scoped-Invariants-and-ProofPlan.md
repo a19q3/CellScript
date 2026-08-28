@@ -82,7 +82,7 @@ The aggregate primitives are:
 | `assert_distinct(view.field, scope = ...)` | Declare uniqueness over a view. |
 | `assert_singleton(Type.field, scope = ...)` | Declare singleton-style membership. |
 
-Example from `examples/language/v0_15_scoped_invariant.cell`:
+Example from `examples/language/verification/scoped_invariant.cell`:
 
 ```cellscript
 invariant nft_no_duplicates {
@@ -141,11 +141,13 @@ Bounded collection iteration is related but not interchangeable. A
 [Resources and Cell Effects](Tutorial-03-Resources-and-Cell-Effects.md) for the
 batch movement rules.
 
-Both bounded lifecycle operations are metadata-only in the current executable
-profile. Their checked bodies are retained in IR, but codegen emits runtime
-error 24 and production stops with E2105. Do not read the static maximum `N` as
-an observed cardinality, or builder evidence as an on-chain correspondence
-check.
+In 0.26, fixed-width `consume_each` and `create_each` shapes can be
+`checked-runtime`. Their ProofPlan records name
+`bounded-type-group-inputs-v1` or `bounded-output-plan-v1`, record runtime
+cardinality and exact group count relations, and set `on_chain_checked = true`.
+Unsupported shapes remain metadata-visible but fail closed with runtime error
+24 and E2105. Do not read the static maximum `N` as observed cardinality unless
+the selected record has the checked runtime contract.
 
 ## Simple Invariant Assertions
 
@@ -173,7 +175,7 @@ Run:
 
 ```bash
 cargo run --locked --bin cellc -- explain proof \
-  examples/language/v0_15_scoped_invariant.cell \
+  examples/language/verification/scoped_invariant.cell \
   --target riscv64-elf \
   --target-profile ckb
 ```
@@ -181,7 +183,7 @@ cargo run --locked --bin cellc -- explain proof \
 The first lines summarize the audit surface:
 
 ```text
-Covenant ProofPlan for module `cellscript::language::v0_15_scoped_invariant`
+Covenant ProofPlan for module `cellscript::language::verification::scoped_invariant`
   Summary:
     records: 16
     on_chain_checked: 6
@@ -419,7 +421,7 @@ For tooling, use:
 
 ```bash
 cargo run --locked --bin cellc -- explain proof \
-  examples/language/v0_15_scoped_invariant.cell \
+  examples/language/verification/scoped_invariant.cell \
   --target riscv64-elf \
   --target-profile ckb \
   --json > /tmp/proof-plan.json

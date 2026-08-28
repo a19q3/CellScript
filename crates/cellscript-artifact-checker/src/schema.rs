@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-pub const LOWERING_RECORD_SCHEMA: &str = "cellscript-verified-lowering-record-v3";
-pub const TYPED_SEMANTICS_SCHEMA: &str = "cellscript-typed-semantics-v2";
+pub const LOWERING_RECORD_SCHEMA: &str = "cellscript-verified-lowering-record-v4";
+pub const TYPED_SEMANTICS_SCHEMA: &str = "cellscript-typed-semantics-v3";
 pub const SOURCE_MAP_SCHEMA: &str = "cellscript-source-artifact-map-v1";
 pub const CHECKER_POLICY_SCHEMA: &str = "cellscript-artifact-checker-policy-v1";
 pub const CHECKER_REPORT_SCHEMA: &str = "cellscript-artifact-checker-report-v1";
-pub const LOWERING_RECORD_VERSION: u32 = 3;
-pub const TYPED_SEMANTICS_VERSION: u32 = 2;
+pub const LOWERING_RECORD_VERSION: u32 = 4;
+pub const TYPED_SEMANTICS_VERSION: u32 = 3;
 pub const SOURCE_MAP_VERSION: u32 = 1;
 pub const CHECKER_VERSION: &str = env!("CARGO_PKG_VERSION");
 

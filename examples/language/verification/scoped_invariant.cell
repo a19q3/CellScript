@@ -1,4 +1,4 @@
-module cellscript::language::v0_15_scoped_invariant
+module cellscript::language::verification::scoped_invariant
 
 // v0.15 scoped invariant primitives: demonstrates all five aggregate
 // invariant kinds, explicit_entry/type_group triggers, and three scope types.

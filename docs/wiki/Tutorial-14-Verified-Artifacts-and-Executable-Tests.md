@@ -6,7 +6,7 @@ backend. Together they make more compiler claims independently inspectable
 without calling local execution chain evidence.
 
 The 0.25 line extends the same four-file bundle with
-`cellscript-typed-semantics-v2` inside lowering record v3. The checker now
+`cellscript-typed-semantics-v3` inside lowering record v4. The checker now
 independently validates the IR-shaped typed record, recomputes its layout,
 identity, operation, dataflow, ownership, and borrow invariants, and checks its
 connection to entry ABI and final machine blocks; failures use stable `V2419`

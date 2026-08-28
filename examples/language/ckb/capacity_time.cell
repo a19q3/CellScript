@@ -1,4 +1,4 @@
-module cellscript::language::v0_14_capacity_time
+module cellscript::language::ckb::capacity_time
 
 resource TimedToken has store, create
 with_capacity_floor(6100000000)

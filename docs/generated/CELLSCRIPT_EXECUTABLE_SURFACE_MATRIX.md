@@ -1,6 +1,6 @@
 # CellScript Executable Surface Matrix
 
-**Status**: generated from the compiler-owned 0.25 executable-surface registry
+**Status**: generated from the compiler-owned 0.26 executable-surface registry
 
 This file is generated. Run `cellscript-tools check-executable-surface --write` after changing the registry.
 
@@ -58,6 +58,10 @@ Production compilation means `--production` or `--deny-fail-closed`; both stop b
 | `ir:collection-reverse` | instruction | shape-gated | accepted only when the shape classifier reports no fail-closed feature | Bounded stack collection with fixed-width elements. | `collection-reverse, cell-backed-collection-reverse` |
 | `ir:collection-truncate` | instruction | shape-gated | accepted only when the shape classifier reports no fail-closed feature | Bounded stack collection with checked target length. | `collection-truncate, cell-backed-collection-truncate` |
 | `ir:collection-swap` | instruction | shape-gated | accepted only when the shape classifier reports no fail-closed feature | Bounded stack collection with checked indexes. | `collection-swap, cell-backed-collection-swap` |
+| `ir:bounded-cell-load` | instruction | bounded | accepted only when the shape classifier reports no fail-closed feature | Exact current Type Script group input scan with runtime cardinality, identity, role, and fixed-width decode checks. | `none` |
+| `ir:bounded-plan-load` | instruction | bounded | accepted only when the shape classifier reports no fail-closed feature | Canonical bounded-output-plan-v1 Molecule FixVec decoding with exact length and runtime cardinality checks. | `none` |
+| `ir:bounded-output-verify` | instruction | bounded | accepted only when the shape classifier reports no fail-closed feature | Plan-relative GroupOutput data, lock, Type Script role, and declared capacity-floor verification. | `none` |
+| `ir:bounded-output-end` | instruction | bounded | accepted only when the shape classifier reports no fail-closed feature | Exact plan-count to current Type Script GroupOutput-count correspondence. | `none` |
 | `ir:call` | instruction | bounded | accepted only when the shape classifier reports no fail-closed feature | Resolved typed callable with a closed ABI and effect summary. | `none` |
 | `ir:read-ref` | instruction | bounded | accepted | Explicit Input or CellDep read-only Cell view. | `none` |
 | `ir:move` | instruction | complete | accepted | Typed local move; ownership validity is checked before lowering. | `none` |
@@ -76,5 +80,5 @@ Production compilation means `--production` or `--deny-fail-closed`; both stop b
 | `ir:cell-metadata-equality` | instruction | complete | accepted | Lock-hash or capacity equality over validated Cell views. | `none` |
 | `artifact:create-output-verification` | artifact-policy | shape-gated | accepted only when the shape classifier reports no fail-closed feature | All constructed output fields and output lock must be materializable by the verifier. | `output-verification-incomplete, output-lock-verification-incomplete` |
 | `artifact:cell-backed-collection-return` | artifact-policy | reserved | rejected by production policy | Returning a hidden Cell-backed collection has no linear ownership ABI. | `cell-backed-collection-return` |
-| `artifact:bounded-consume-each-runtime` | artifact-policy | reserved | rejected by production policy | BoundedCellSet source selection, element decoding, and per-element predicate execution are not yet an executable contract. | `bounded-consume-each-runtime` |
-| `artifact:bounded-create-each-runtime` | artifact-policy | reserved | rejected by production policy | BoundedList witness codec, output correspondence, ordering, identity, and capacity enforcement are not yet an executable contract. | `bounded-create-each-runtime` |
+| `artifact:bounded-consume-each-runtime` | artifact-policy | bounded | accepted only when the shape classifier reports no fail-closed feature | The bounded-type-group-inputs-v1 fixed-width shape is executable; all other BoundedCellSet sources and element shapes remain fail-closed. | `bounded-consume-each-runtime` |
+| `artifact:bounded-create-each-runtime` | artifact-policy | bounded | accepted only when the shape classifier reports no fail-closed feature | The bounded-output-plan-v1 fixed-width shape is executable when the output has a complete create template, explicit lock, no custom identity, and a declared capacity floor; all other shapes remain fail-closed. | `bounded-create-each-runtime` |

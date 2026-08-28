@@ -16,6 +16,354 @@ pub(super) struct CellFieldHashCheck<'a> {
 }
 
 impl CodeGenerator {
+    pub(super) fn emit_bounded_cell_load(
+        &mut self,
+        dest: &IrVar,
+        found: &IrVar,
+        index: &IrOperand,
+        max_elements: usize,
+        element_type: &str,
+        element_width: usize,
+    ) {
+        let Some(size_offset) = self.cell_buffer_size_offsets.get(&dest.id).copied() else {
+            self.emit_fail(CellScriptRuntimeError::CellLoadFailed);
+            return;
+        };
+        let Some(buffer_offset) = self.cell_buffer_offsets.get(&dest.id).copied() else {
+            self.emit_fail(CellScriptRuntimeError::CellLoadFailed);
+            return;
+        };
+        if element_width == 0 || element_width > RUNTIME_CELL_BUFFER_SIZE {
+            self.emit_fail(CellScriptRuntimeError::ExactSizeMismatch);
+            return;
+        }
+
+        let loaded = self.fresh_label("bounded_cell_loaded");
+        let out_of_bound = self.fresh_label("bounded_cell_out_of_bound");
+        let count_ok = self.fresh_label("bounded_cell_count_ok");
+        let type_word_ok = (0..4).map(|_| self.fresh_label("bounded_cell_type_word_ok")).collect::<Vec<_>>();
+        let lock_is_distinct = self.fresh_label("bounded_cell_lock_is_distinct");
+        let done = self.fresh_label("bounded_cell_load_done");
+
+        self.emit(format!(
+            "# cellscript bounded runtime: contract={} source=GroupInput element={} max={} width={}",
+            crate::ir::BOUNDED_TYPE_GROUP_INPUTS_V1,
+            element_type,
+            max_elements,
+            element_width
+        ));
+        self.emit_operand_to_register("t3", index);
+        self.emit_load_cell_data_syscall_to_offsets_dynamic_index(
+            "bounded_consume_each",
+            CKB_SOURCE_GROUP_INPUT,
+            "t3",
+            size_offset,
+            buffer_offset,
+            RUNTIME_CELL_BUFFER_SIZE,
+        );
+        self.emit(format!("beqz a0, {}", loaded));
+        self.emit(format!("li t0, {}", CKB_INDEX_OUT_OF_BOUND));
+        self.emit("sub t1, a0, t0");
+        self.emit(format!("beqz t1, {}", out_of_bound));
+        self.emit_fail(CellScriptRuntimeError::CellLoadFailed);
+
+        self.emit_label(&loaded);
+        self.emit_operand_to_register("t3", index);
+        self.emit(format!("li t0, {}", max_elements));
+        self.emit("sltu t1, t3, t0");
+        self.emit(format!("bnez t1, {}", count_ok));
+        self.emit_fail(CellScriptRuntimeError::CollectionBoundsInvalid);
+        self.emit_label(&count_ok);
+        self.emit_loaded_schema_exact_size_check(size_offset, element_width, element_type);
+
+        let current_hash_size_offset = self.runtime_scratch2_size_offset();
+        let current_hash_buffer_offset = self.runtime_scratch2_buffer_offset();
+        self.emit("li t0, 32");
+        self.emit_stack_store("t0", current_hash_size_offset);
+        self.emit_sp_addi("a0", current_hash_buffer_offset);
+        self.emit_sp_addi("a1", current_hash_size_offset);
+        self.emit("li a2, 0");
+        self.emit(format!("li a7, {}", self.runtime_abi().load_script_hash));
+        self.emit("ecall");
+        self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
+        self.emit_loaded_schema_exact_size_check(current_hash_size_offset, 32, "current script hash");
+
+        let role_size_offset = self.runtime_scratch_size_offset();
+        let role_buffer_offset = self.runtime_scratch_buffer_offset();
+        self.emit_operand_to_register("t3", index);
+        self.emit_load_cell_by_field_syscall_to_offsets_dynamic_index(
+            "bounded_consume_each_type_hash",
+            CKB_SOURCE_GROUP_INPUT,
+            "t3",
+            CKB_CELL_FIELD_TYPE_HASH,
+            role_size_offset,
+            role_buffer_offset,
+            32,
+        );
+        self.emit_return_on_syscall_error(CellScriptRuntimeError::ScriptRoleMismatch);
+        self.emit_loaded_schema_exact_size_check(role_size_offset, 32, "bounded input type hash");
+        for (word, ok) in type_word_ok.iter().enumerate() {
+            self.emit_stack_load("t0", role_buffer_offset + word * 8);
+            self.emit_stack_load("t1", current_hash_buffer_offset + word * 8);
+            self.emit("sub t2, t0, t1");
+            self.emit(format!("beqz t2, {}", ok));
+            self.emit_fail(CellScriptRuntimeError::TypeHashMismatch);
+            self.emit_label(ok);
+        }
+
+        self.emit_operand_to_register("t3", index);
+        self.emit_load_cell_by_field_syscall_to_offsets_dynamic_index(
+            "bounded_consume_each_lock_hash",
+            CKB_SOURCE_GROUP_INPUT,
+            "t3",
+            CKB_CELL_FIELD_LOCK_HASH,
+            role_size_offset,
+            role_buffer_offset,
+            32,
+        );
+        self.emit_return_on_syscall_error(CellScriptRuntimeError::ScriptRoleMismatch);
+        self.emit_loaded_schema_exact_size_check(role_size_offset, 32, "bounded input lock hash");
+        self.emit_stack_load("t0", role_buffer_offset);
+        self.emit_stack_load("t1", current_hash_buffer_offset);
+        self.emit("sub t2, t0, t1");
+        for word in 1..4 {
+            self.emit_stack_load("t0", role_buffer_offset + word * 8);
+            self.emit_stack_load("t1", current_hash_buffer_offset + word * 8);
+            self.emit("sub t0, t0, t1");
+            self.emit("or t2, t2, t0");
+        }
+        self.emit(format!("bnez t2, {}", lock_is_distinct));
+        self.emit_fail(CellScriptRuntimeError::ScriptRoleMismatch);
+        self.emit_label(&lock_is_distinct);
+
+        self.emit_sp_addi("t0", buffer_offset);
+        self.emit_stack_store("t0", dest.id * 8);
+        self.emit("li t0, 1");
+        self.emit_stack_store("t0", found.id * 8);
+        self.emit(format!("j {}", done));
+
+        self.emit_label(&out_of_bound);
+        self.emit_stack_store("zero", dest.id * 8);
+        self.emit_stack_store("zero", found.id * 8);
+        self.emit_label(&done);
+    }
+
+    pub(super) fn emit_bounded_plan_load(
+        &mut self,
+        dest: &IrVar,
+        found: &IrVar,
+        plan: &IrOperand,
+        index: &IrOperand,
+        max_elements: usize,
+        element_type: &str,
+        element_width: usize,
+    ) {
+        let IrOperand::Var(plan_var) = plan else {
+            self.emit_fail(CellScriptRuntimeError::EntryWitnessAbiInvalid);
+            return;
+        };
+        let Some(plan_size_offset) = self.schema_pointer_size_offsets.get(&plan_var.id).copied() else {
+            self.emit_fail(CellScriptRuntimeError::EntryWitnessAbiInvalid);
+            return;
+        };
+        let Some(element_size_offset) = self.schema_pointer_size_offsets.get(&dest.id).copied() else {
+            self.emit_fail(CellScriptRuntimeError::EntryWitnessAbiInvalid);
+            return;
+        };
+        let magic_ok =
+            (0..crate::ir::BOUNDED_OUTPUT_PLAN_MAGIC_V1.len()).map(|_| self.fresh_label("bounded_plan_magic_ok")).collect::<Vec<_>>();
+        let header_ok = self.fresh_label("bounded_plan_header_ok");
+        let count_ok = self.fresh_label("bounded_plan_count_ok");
+        let length_ok = self.fresh_label("bounded_plan_length_ok");
+        let found_label = self.fresh_label("bounded_plan_element_found");
+        let done = self.fresh_label("bounded_plan_load_done");
+
+        self.emit(format!(
+            "# cellscript bounded runtime: contract={} codec=MoleculeFixVec magic=CSBPLv1 element={} max={} width={}",
+            crate::ir::BOUNDED_OUTPUT_PLAN_V1,
+            element_type,
+            max_elements,
+            element_width
+        ));
+        self.emit_stack_load("t4", plan_var.id * 8);
+        self.emit_stack_load("t5", plan_size_offset);
+        self.emit(format!("li t0, {}", 12));
+        self.emit("sltu t2, t5, t0");
+        self.emit(format!("beqz t2, {}", header_ok));
+        self.emit_fail(CellScriptRuntimeError::EntryWitnessAbiInvalid);
+        self.emit_label(&header_ok);
+        for (byte_index, (byte, ok)) in crate::ir::BOUNDED_OUTPUT_PLAN_MAGIC_V1.iter().zip(&magic_ok).enumerate() {
+            self.emit(format!("lbu t0, {}(t4)", byte_index));
+            self.emit(format!("li t1, {}", byte));
+            self.emit("sub t2, t0, t1");
+            self.emit(format!("beqz t2, {}", ok));
+            self.emit_fail(CellScriptRuntimeError::EntryWitnessAbiInvalid);
+            self.emit_label(ok);
+        }
+        self.emit("li t3, 0");
+        for byte_index in 0..4 {
+            self.emit(format!("lbu t0, {}(t4)", 8 + byte_index));
+            if byte_index != 0 {
+                self.emit(format!("slli t0, t0, {}", byte_index * 8));
+            }
+            self.emit("or t3, t3, t0");
+        }
+        self.emit(format!("li t0, {}", max_elements));
+        self.emit("sltu t2, t0, t3");
+        self.emit(format!("beqz t2, {}", count_ok));
+        self.emit_fail(CellScriptRuntimeError::CollectionBoundsInvalid);
+        self.emit_label(&count_ok);
+        self.emit(format!("li t0, {}", element_width));
+        self.emit("mul t1, t3, t0");
+        self.emit("addi t1, t1, 12");
+        self.emit("sub t2, t5, t1");
+        self.emit(format!("beqz t2, {}", length_ok));
+        self.emit_fail(CellScriptRuntimeError::EntryWitnessAbiInvalid);
+        self.emit_label(&length_ok);
+
+        self.emit_operand_to_register("t0", index);
+        self.emit("sltu t2, t0, t3");
+        self.emit(format!("bnez t2, {}", found_label));
+        self.emit_stack_store("zero", dest.id * 8);
+        self.emit_stack_store("zero", element_size_offset);
+        self.emit_stack_store("zero", found.id * 8);
+        self.emit(format!("j {}", done));
+
+        self.emit_label(&found_label);
+        self.emit(format!("li t1, {}", element_width));
+        self.emit("mul t2, t0, t1");
+        self.emit("addi t2, t2, 12");
+        self.emit_stack_load("t4", plan_var.id * 8);
+        self.emit("add t4, t4, t2");
+        self.emit_stack_store("t4", dest.id * 8);
+        self.emit(format!("li t1, {}", element_width));
+        self.emit_stack_store("t1", element_size_offset);
+        self.emit("li t1, 1");
+        self.emit_stack_store("t1", found.id * 8);
+        self.emit_label(&done);
+    }
+
+    pub(super) fn emit_bounded_output_verify(&mut self, index: &IrOperand, pattern: &CreatePattern, capacity_floor_shannons: u64) {
+        let data_size_offset = self.runtime_scratch_size_offset();
+        let data_buffer_offset = self.runtime_scratch_buffer_offset();
+        self.emit(format!(
+            "# cellscript bounded runtime: contract={} source=GroupOutput output={} capacity_floor={}",
+            crate::ir::BOUNDED_OUTPUT_PLAN_V1,
+            pattern.ty,
+            capacity_floor_shannons
+        ));
+        self.emit_operand_to_register("t3", index);
+        self.emit_load_cell_data_syscall_to_offsets_dynamic_index(
+            "bounded_create_each_output",
+            CKB_SOURCE_GROUP_OUTPUT,
+            "t3",
+            data_size_offset,
+            data_buffer_offset,
+            RUNTIME_SCRATCH_BUFFER_SIZE,
+        );
+        self.emit_return_on_syscall_error(CellScriptRuntimeError::CollectionBoundsInvalid);
+        if self.can_verify_create_output_fields(pattern) {
+            self.emit_create_output_checks_at(pattern, data_size_offset, data_buffer_offset);
+        } else {
+            self.emit_fail(CellScriptRuntimeError::AssertionFailed);
+            return;
+        }
+
+        let current_hash_size_offset = self.runtime_scratch2_size_offset();
+        let current_hash_buffer_offset = self.runtime_scratch2_buffer_offset();
+        self.emit("li t0, 32");
+        self.emit_stack_store("t0", current_hash_size_offset);
+        self.emit_sp_addi("a0", current_hash_buffer_offset);
+        self.emit_sp_addi("a1", current_hash_size_offset);
+        self.emit("li a2, 0");
+        self.emit(format!("li a7, {}", self.runtime_abi().load_script_hash));
+        self.emit("ecall");
+        self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
+        self.emit_loaded_schema_exact_size_check(current_hash_size_offset, 32, "current script hash");
+
+        self.emit_operand_to_register("t3", index);
+        self.emit_load_cell_by_field_syscall_to_offsets_dynamic_index(
+            "bounded_create_each_lock_hash",
+            CKB_SOURCE_GROUP_OUTPUT,
+            "t3",
+            CKB_CELL_FIELD_LOCK_HASH,
+            data_size_offset,
+            data_buffer_offset,
+            32,
+        );
+        self.emit_return_on_syscall_error(CellScriptRuntimeError::LockHashPreservationMismatch);
+        self.emit_loaded_schema_exact_size_check(data_size_offset, 32, "bounded output lock hash");
+        self.emit_stack_load("t0", data_buffer_offset);
+        self.emit_stack_load("t1", current_hash_buffer_offset);
+        self.emit("sub t2, t0, t1");
+        for word in 1..4 {
+            self.emit_stack_load("t0", data_buffer_offset + word * 8);
+            self.emit_stack_load("t1", current_hash_buffer_offset + word * 8);
+            self.emit("sub t0, t0, t1");
+            self.emit("or t2, t2, t0");
+        }
+        let type_only = self.fresh_label("bounded_output_type_only");
+        self.emit(format!("bnez t2, {}", type_only));
+        self.emit_fail(CellScriptRuntimeError::ScriptRoleMismatch);
+        self.emit_label(&type_only);
+        let Some(lock) = &pattern.lock else {
+            self.emit_fail(CellScriptRuntimeError::LockHashPreservationMismatch);
+            return;
+        };
+        let Some(lock_source) = self.expected_fixed_byte_source(lock, 32) else {
+            self.emit_fail(CellScriptRuntimeError::LockHashPreservationMismatch);
+            return;
+        };
+        self.emit_loaded_fixed_bytes_against_source(
+            data_buffer_offset,
+            0,
+            &lock_source,
+            32,
+            CellScriptRuntimeError::LockHashPreservationMismatch,
+        );
+
+        self.emit_operand_to_register("t3", index);
+        self.emit_load_cell_by_field_syscall_to_offsets_dynamic_index(
+            "bounded_create_each_capacity",
+            CKB_SOURCE_GROUP_OUTPUT,
+            "t3",
+            CKB_CELL_FIELD_CAPACITY,
+            data_size_offset,
+            data_buffer_offset,
+            8,
+        );
+        self.emit_return_on_syscall_error(CellScriptRuntimeError::CapacityPreservationMismatch);
+        self.emit_loaded_schema_exact_size_check(data_size_offset, 8, "bounded output capacity");
+        self.emit_stack_load("t0", data_buffer_offset);
+        self.emit(format!("li t1, {}", capacity_floor_shannons));
+        let capacity_ok = self.fresh_label("bounded_output_capacity_ok");
+        self.emit(format!("bgeu t0, t1, {}", capacity_ok));
+        self.emit_fail(CellScriptRuntimeError::CapacityPreservationMismatch);
+        self.emit_label(&capacity_ok);
+    }
+
+    pub(super) fn emit_bounded_output_end(&mut self, index: &IrOperand) {
+        let size_offset = self.runtime_scratch_size_offset();
+        let buffer_offset = self.runtime_scratch_buffer_offset();
+        let exact = self.fresh_label("bounded_output_count_exact");
+        self.emit("# cellscript bounded runtime: require GroupOutput count equals plan count");
+        self.emit_operand_to_register("t3", index);
+        self.emit_load_cell_by_field_syscall_to_offsets_dynamic_index(
+            "bounded_create_each_output_end",
+            CKB_SOURCE_GROUP_OUTPUT,
+            "t3",
+            CKB_CELL_FIELD_CAPACITY,
+            size_offset,
+            buffer_offset,
+            8,
+        );
+        self.emit(format!("li t0, {}", CKB_INDEX_OUT_OF_BOUND));
+        self.emit("sub t1, a0, t0");
+        self.emit(format!("beqz t1, {}", exact));
+        self.emit_fail(CellScriptRuntimeError::CollectionBoundsInvalid);
+        self.emit_label(&exact);
+    }
+
     pub(super) fn emit_mutate_replacement_field_hash_check(
         &mut self,
         pattern: &MutatePattern,

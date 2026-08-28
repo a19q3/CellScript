@@ -1,4 +1,4 @@
-module cellscript::language::v0_14_multi_step_pipeline
+module cellscript::language::ckb::multi_step_pipeline
 
 action pipe_to_delegate(value: u64) -> u64 {
     verification

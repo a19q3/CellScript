@@ -23,7 +23,9 @@ use secp256k1::{PublicKey, SecretKey};
 #[allow(dead_code)]
 mod ckb_script_runner;
 
-use ckb_script_runner::{build_simple_fixture, compile_cellscript_source_to_elf, execute_cellscript_script};
+use ckb_script_runner::{
+    build_simple_fixture, compile_cellscript_source_to_elf, deterministic_always_success_lock_hash, execute_cellscript_script,
+};
 
 const PARAMETERIZED_ENTRY: &str = r#"
 module entry_witness_abi
@@ -71,12 +73,29 @@ module bounded_collection_fail_closed_entry
 
 resource Token has store, consume {
     amount: u64
+    memo: String
 }
 
 action verify(input inputs: BoundedCellSet<Token, 2>) -> u64 {
     verification
         consume_each token in inputs {
             require false
+            require token.amount > 0
+        }
+        return 0
+}
+"#;
+
+const BOUNDED_CONSUME_RUNTIME_ENTRY: &str = r#"
+module bounded_consume_runtime_entry
+
+resource Token has store, consume {
+    amount: u64
+}
+
+action verify(input inputs: BoundedCellSet<Token, 2>) -> u64 {
+    verification
+        consume_each token in inputs {
             require token.amount > 0
         }
         return 0
@@ -103,6 +122,35 @@ action verify(witness plans: BoundedList<Plan, 2>) -> u64 {
         return 0
 }
 "#;
+
+const BOUNDED_CREATE_RUNTIME_ENTRY: &str = r#"
+module bounded_create_runtime_entry
+
+struct Plan {
+    owner: Address
+    amount: u64
+}
+
+resource Token has store, create
+with_capacity_floor(10000000000)
+{
+    amount: u64
+}
+
+action verify(witness plans: BoundedList<Plan, 2>) -> u64 {
+    verification
+        create_each plan in plans {
+            require plan.amount > 0
+            create Token { amount: plan.amount } with_lock(plan.owner)
+        }
+        return 0
+}
+"#;
+
+const BATCH_CLAIM_EXAMPLE: &str = include_str!("../examples/language/batches/batch_claim.cell");
+const ATOMIC_ORDER_SETTLEMENT_EXAMPLE: &str = include_str!("../examples/language/batches/atomic_order_settlement.cell");
+const CELL_MERGE_EXAMPLE: &str = include_str!("../examples/language/batches/cell_merge.cell");
+const BRIDGE_ROLLUP_BATCH_EXAMPLE: &str = include_str!("../examples/language/batches/bridge_rollup_batch.cell");
 
 const U128_DIV_REM_ENTRY: &str = r#"
 module entry_witness_u128_div_rem
@@ -495,6 +543,105 @@ fn execute_on_output_only_group(witness: Bytes) -> ckb_script_runner::CkbScriptE
     execute_cellscript_script(&elf, &fixture)
 }
 
+fn execute_bounded_consume(amounts: &[u64], malformed_data: Option<Bytes>) -> ckb_script_runner::CkbScriptExecutionResult {
+    let elf = compile_cellscript_source_to_elf(BOUNDED_CONSUME_RUNTIME_ENTRY, "verify", None);
+    let input_count = amounts.len().max(1);
+    let mut fixture = build_simple_fixture(Bytes::default(), input_count, 1);
+    fixture.current_type_script_input_indices = (0..amounts.len()).collect();
+    for (index, amount) in amounts.iter().enumerate() {
+        fixture.inputs[index].data = Bytes::copy_from_slice(&amount.to_le_bytes());
+    }
+    if let Some(data) = malformed_data {
+        fixture.inputs[0].data = data;
+    }
+    execute_cellscript_script(&elf, &fixture)
+}
+
+fn bounded_create_plan_payload(amounts: &[u64], owner: [u8; 32]) -> Bytes {
+    let elements = amounts
+        .iter()
+        .map(|amount| {
+            let mut element = owner.to_vec();
+            element.extend_from_slice(&amount.to_le_bytes());
+            element
+        })
+        .collect::<Vec<_>>();
+    let plan = cellscript::encode_bounded_output_plan_v1(&elements, 40, 2).expect("encode bounded output plan");
+    let mut payload = b"CSARGv1\0".to_vec();
+    payload.extend_from_slice(&(plan.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&plan);
+    Bytes::from(payload)
+}
+
+fn execute_bounded_create(
+    amounts: &[u64],
+    output_amounts: &[u64],
+    output_capacity: u64,
+    owner: [u8; 32],
+) -> ckb_script_runner::CkbScriptExecutionResult {
+    let payload = bounded_create_plan_payload(amounts, owner);
+    execute_bounded_create_payload(payload, output_amounts, output_capacity)
+}
+
+fn execute_bounded_create_payload(
+    payload: Bytes,
+    output_amounts: &[u64],
+    output_capacity: u64,
+) -> ckb_script_runner::CkbScriptExecutionResult {
+    let elf = compile_cellscript_source_to_elf(BOUNDED_CREATE_RUNTIME_ENTRY, "verify", None);
+    let witness = canonical_multisig_v2_witness(payload);
+    let mut fixture = build_simple_fixture(Bytes::default(), 1, output_amounts.len());
+    fixture.current_type_script_input_indices = if output_amounts.is_empty() { vec![0] } else { Vec::new() };
+    fixture.witnesses = vec![witness.as_bytes()];
+    for (output, amount) in fixture.outputs.iter_mut().zip(output_amounts) {
+        output.capacity = output_capacity;
+        output.data = Bytes::copy_from_slice(&amount.to_le_bytes());
+    }
+    execute_cellscript_script(&elf, &fixture)
+}
+
+fn bounded_batch_payload(elements: &[Vec<u8>], element_width: usize, max_elements: usize) -> Bytes {
+    let plan = cellscript::encode_bounded_output_plan_v1(elements, element_width, max_elements).expect("encode example plan");
+    let mut payload = b"CSARGv1\0".to_vec();
+    payload.extend_from_slice(&(plan.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&plan);
+    Bytes::from(payload)
+}
+
+fn execute_bounded_batch_example(
+    elf: &[u8],
+    input_data: &[Vec<u8>],
+    plan_elements: &[Vec<u8>],
+    plan_width: usize,
+    max_plan_elements: usize,
+    output_data: &[Vec<u8>],
+) -> ckb_script_runner::CkbScriptExecutionResult {
+    let witness = canonical_multisig_v2_witness(bounded_batch_payload(plan_elements, plan_width, max_plan_elements));
+    let mut fixture = build_simple_fixture(Bytes::default(), input_data.len(), output_data.len());
+    fixture.current_type_script_input_indices = (0..input_data.len()).collect();
+    fixture.witnesses =
+        std::iter::once(witness.as_bytes()).chain(std::iter::repeat_n(Bytes::default(), input_data.len().saturating_sub(1))).collect();
+    for (cell, data) in fixture.inputs.iter_mut().zip(input_data) {
+        cell.data = Bytes::copy_from_slice(data);
+    }
+    for (cell, data) in fixture.outputs.iter_mut().zip(output_data) {
+        cell.data = Bytes::copy_from_slice(data);
+    }
+    execute_cellscript_script(elf, &fixture)
+}
+
+fn address_and_u64(owner: [u8; 32], value: u64) -> Vec<u8> {
+    let mut bytes = owner.to_vec();
+    bytes.extend_from_slice(&value.to_le_bytes());
+    bytes
+}
+
+fn u64_pair(first: u64, second: u64) -> Vec<u8> {
+    let mut bytes = first.to_le_bytes().to_vec();
+    bytes.extend_from_slice(&second.to_le_bytes());
+    bytes
+}
+
 #[test]
 fn signed_multisig_v2_lock_and_cellscript_type_execute_in_ckb_vm() -> Result<(), ScriptSignError> {
     let key_a = SecretKey::from_slice(&[0x11; 32]).expect("valid signer A key");
@@ -763,6 +910,171 @@ fn bounded_collection_entries_fail_closed_with_stable_runtime_code_in_ckb_vm() {
             result.captured_debug
         );
     }
+}
+
+#[test]
+fn bounded_consume_scans_the_exact_type_group_with_runtime_cardinality_in_ckb_vm() {
+    for amounts in [&[][..], &[1][..], &[1, 2][..]] {
+        let result = execute_bounded_consume(amounts, None);
+        assert_eq!(result.exit_code, 0, "0..=N canonical GroupInput cells must pass: {amounts:?}: {:?}", result.captured_debug);
+    }
+
+    let too_many = execute_bounded_consume(&[1, 2, 3], None);
+    assert_eq!(too_many.exit_code, 21, "a successful GroupInput load at index N must reject N+1 cells: {:?}", too_many.captured_debug);
+}
+
+#[test]
+fn bounded_consume_rejects_bad_element_data_and_predicates_in_ckb_vm() {
+    let malformed = execute_bounded_consume(&[1], Some(Bytes::from_static(&[1, 0, 0, 0])));
+    assert_eq!(malformed.exit_code, 4, "fixed-width decode must be exact: {:?}", malformed.captured_debug);
+
+    let predicate_failure = execute_bounded_consume(&[1, 0], None);
+    assert_eq!(
+        predicate_failure.exit_code, 5,
+        "the predicate must execute for every decoded group element: {:?}",
+        predicate_failure.captured_debug
+    );
+}
+
+#[test]
+fn bounded_create_binds_the_versioned_plan_to_canonical_group_outputs_in_ckb_vm() {
+    let owner = deterministic_always_success_lock_hash();
+    for amounts in [&[][..], &[1][..], &[1, 2][..]] {
+        let result = execute_bounded_create(amounts, amounts, 100_000_000_000, owner);
+        assert_eq!(result.exit_code, 0, "plan and GroupOutput views must correspond exactly: {:?}", result.captured_debug);
+    }
+
+    let missing = execute_bounded_create(&[1, 2], &[1], 100_000_000_000, owner);
+    assert_eq!(missing.exit_code, 21, "missing GroupOutput must be a count mismatch: {:?}", missing.captured_debug);
+
+    let extra = execute_bounded_create(&[1], &[1, 2], 100_000_000_000, owner);
+    assert_eq!(extra.exit_code, 21, "extra GroupOutput must be a count mismatch: {:?}", extra.captured_debug);
+}
+
+#[test]
+fn bounded_create_rejects_output_data_lock_capacity_and_predicate_mismatches_in_ckb_vm() {
+    let owner = deterministic_always_success_lock_hash();
+    let bad_data = execute_bounded_create(&[1], &[2], 100_000_000_000, owner);
+    assert_eq!(bad_data.exit_code, 3, "output data mismatch must fail closed: {:?}", bad_data.captured_debug);
+
+    let bad_lock = execute_bounded_create(&[1], &[1], 100_000_000_000, [0; 32]);
+    assert_eq!(bad_lock.exit_code, 12, "output lock mismatch must use the stable lock code: {:?}", bad_lock.captured_debug);
+
+    let low_capacity = execute_bounded_create(&[1], &[1], 9_999_999_999, owner);
+    assert_eq!(
+        low_capacity.exit_code, 26,
+        "declared output capacity floor must be checked on chain: {:?}",
+        low_capacity.captured_debug
+    );
+
+    let predicate = execute_bounded_create(&[0], &[0], 100_000_000_000, owner);
+    assert_eq!(predicate.exit_code, 5, "plan predicate must execute exactly once per element: {:?}", predicate.captured_debug);
+}
+
+#[test]
+fn bounded_create_rejects_noncanonical_or_over_bound_plan_codecs_in_ckb_vm() {
+    let owner = deterministic_always_success_lock_hash();
+    let mut bad_magic = bounded_create_plan_payload(&[1], owner).to_vec();
+    bad_magic[12] ^= 1;
+    let result = execute_bounded_create_payload(Bytes::from(bad_magic), &[1], 100_000_000_000);
+    assert_eq!(result.exit_code, 25, "plan version/magic mismatch must use the entry ABI code: {:?}", result.captured_debug);
+
+    let mut over_bound_inner = b"CSBPLv1\0".to_vec();
+    over_bound_inner.extend_from_slice(&3_u32.to_le_bytes());
+    for amount in [1_u64, 2, 3] {
+        over_bound_inner.extend_from_slice(&owner);
+        over_bound_inner.extend_from_slice(&amount.to_le_bytes());
+    }
+    let mut over_bound = b"CSARGv1\0".to_vec();
+    over_bound.extend_from_slice(&(over_bound_inner.len() as u32).to_le_bytes());
+    over_bound.extend_from_slice(&over_bound_inner);
+    let result = execute_bounded_create_payload(Bytes::from(over_bound), &[1, 2], 100_000_000_000);
+    assert_eq!(result.exit_code, 21, "plan count above N must use the collection bound code: {:?}", result.captured_debug);
+
+    let mut trailing_inner = cellscript::encode_bounded_output_plan_v1(
+        &[{
+            let mut element = owner.to_vec();
+            element.extend_from_slice(&1_u64.to_le_bytes());
+            element
+        }],
+        40,
+        2,
+    )
+    .unwrap();
+    trailing_inner.push(0);
+    let mut trailing = b"CSARGv1\0".to_vec();
+    trailing.extend_from_slice(&(trailing_inner.len() as u32).to_le_bytes());
+    trailing.extend_from_slice(&trailing_inner);
+    let result = execute_bounded_create_payload(Bytes::from(trailing), &[1], 100_000_000_000);
+    assert_eq!(result.exit_code, 25, "trailing plan bytes must be rejected: {:?}", result.captured_debug);
+}
+
+#[test]
+fn dynamic_batch_examples_execute_and_reject_scenario_specific_attacks_in_ckb_vm() {
+    let owner = deterministic_always_success_lock_hash();
+
+    let claim_elf = compile_cellscript_source_to_elf(BATCH_CLAIM_EXAMPLE, "claim_many", None);
+    let claim_inputs = [address_and_u64(owner, 4), address_and_u64(owner, 6)];
+    let claim_plans = [address_and_u64(owner, 4), address_and_u64(owner, 6)];
+    let claim_outputs = [4_u64.to_le_bytes().to_vec(), 6_u64.to_le_bytes().to_vec()];
+    let claim = execute_bounded_batch_example(&claim_elf, &claim_inputs, &claim_plans, 40, 64, &claim_outputs);
+    assert_eq!(claim.exit_code, 0, "variable-cardinality claim example must execute: {:?}", claim.captured_debug);
+    let wrong_claim_plans = [address_and_u64(owner, 4), address_and_u64(owner, 7)];
+    let wrong_claim_outputs = [4_u64.to_le_bytes().to_vec(), 7_u64.to_le_bytes().to_vec()];
+    let claim_mismatch = execute_bounded_batch_example(&claim_elf, &claim_inputs, &wrong_claim_plans, 40, 64, &wrong_claim_outputs);
+    assert_eq!(claim_mismatch.exit_code, 5, "claim input/output aggregate mismatch must reject atomically");
+
+    let order_elf = compile_cellscript_source_to_elf(ATOMIC_ORDER_SETTLEMENT_EXAMPLE, "settle_orders", None);
+    let order_data = |side: u64, amount: u64| {
+        let mut data = 1_u64.to_le_bytes().to_vec();
+        data.extend_from_slice(&owner);
+        data.extend_from_slice(&side.to_le_bytes());
+        data.extend_from_slice(&amount.to_le_bytes());
+        data
+    };
+    let settlement_plan = |amount: u64| {
+        let mut data = owner.to_vec();
+        data.extend_from_slice(&1_u64.to_le_bytes());
+        data.extend_from_slice(&amount.to_le_bytes());
+        data
+    };
+    let order_inputs = [order_data(0, 3), order_data(1, 5)];
+    let settlement_plans = [settlement_plan(3), settlement_plan(5)];
+    let settlement_outputs = [u64_pair(1, 3), u64_pair(1, 5)];
+    let settlement = execute_bounded_batch_example(&order_elf, &order_inputs, &settlement_plans, 48, 16, &settlement_outputs);
+    assert_eq!(settlement.exit_code, 0, "1..=16 atomic settlement example must execute: {:?}", settlement.captured_debug);
+    let seventeen_orders = (0..17).map(|index| order_data(index % 2, 1)).collect::<Vec<_>>();
+    let sixteen_plans = (0..16).map(|_| settlement_plan(1)).collect::<Vec<_>>();
+    let sixteen_outputs = (0..16).map(|_| u64_pair(1, 1)).collect::<Vec<_>>();
+    let order_overflow = execute_bounded_batch_example(&order_elf, &seventeen_orders, &sixteen_plans, 48, 16, &sixteen_outputs);
+    assert_eq!(order_overflow.exit_code, 21, "the seventeenth order must fail the on-chain cardinality bound");
+
+    let merge_elf = compile_cellscript_source_to_elf(CELL_MERGE_EXAMPLE, "merge_cells", None);
+    let fragment_inputs = [4_u64.to_le_bytes().to_vec(), 6_u64.to_le_bytes().to_vec()];
+    let merge_plan = [address_and_u64(owner, 10)];
+    let merge_output = [10_u64.to_le_bytes().to_vec()];
+    let merge = execute_bounded_batch_example(&merge_elf, &fragment_inputs, &merge_plan, 40, 1, &merge_output);
+    assert_eq!(merge.exit_code, 0, "fragment merge example must execute: {:?}", merge.captured_debug);
+    let wrong_merge_plan = [address_and_u64(owner, 11)];
+    let wrong_merge_output = [11_u64.to_le_bytes().to_vec()];
+    let merge_inflation = execute_bounded_batch_example(&merge_elf, &fragment_inputs, &wrong_merge_plan, 40, 1, &wrong_merge_output);
+    assert_eq!(merge_inflation.exit_code, 5, "merge inflation must fail before accepting the output");
+
+    let bridge_elf = compile_cellscript_source_to_elf(BRIDGE_ROLLUP_BATCH_EXAMPLE, "execute_bridge_batch", None);
+    let bridge_record = |amount: u64, nonce: u64| {
+        let mut data = owner.to_vec();
+        data.extend_from_slice(&amount.to_le_bytes());
+        data.extend_from_slice(&nonce.to_le_bytes());
+        data
+    };
+    let bridge_inputs = [bridge_record(7, 1), bridge_record(9, 2)];
+    let bridge_plans = [bridge_record(7, 1), bridge_record(9, 2)];
+    let bridge_outputs = [u64_pair(7, 1), u64_pair(9, 2)];
+    let bridge = execute_bounded_batch_example(&bridge_elf, &bridge_inputs, &bridge_plans, 48, 64, &bridge_outputs);
+    assert_eq!(bridge.exit_code, 0, "canonical bridge/rollup batch must execute: {:?}", bridge.captured_debug);
+    let replayed_inputs = [bridge_record(7, 1), bridge_record(9, 3)];
+    let replay = execute_bounded_batch_example(&bridge_elf, &replayed_inputs, &bridge_plans, 48, 64, &bridge_outputs);
+    assert_eq!(replay.exit_code, 5, "non-consecutive bridge nonce must reject the whole batch");
 }
 
 #[test]

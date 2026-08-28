@@ -338,7 +338,7 @@ invariants, destruction policies, parameter sources, or registry namespaces.
 It did close two checked-in consistency gaps:
 
 - type declarations now use the formatter's canonical comma-terminated field
-  form in `examples/language/canonical_style.cell`; the parser still accepts
+  form in `examples/language/core/canonical_style.cell`; the parser still accepts
   comma-free fields as compatibility input;
 - syntax-combination quick, CI, and deep modes require both canonical and
   compatibility field seeds;

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.26.0 - Unreleased
+
+- Implement the first bounded consensus-runtime contracts. Fixed-width
+  `BoundedCellSet<Resource, N>` now scans the exact current Type Script
+  `GroupInput`, checks role, exact data size, runtime cardinality including an
+  `N + 1` probe, and executes predicates once per element. Fixed-width
+  `BoundedList<Plan, N>` now uses the versioned `CSBPLv1\0` Molecule FixVec
+  witness plan and verifies one canonical `GroupOutput` per element, including
+  complete data, exact lock, declared capacity floor, predicate execution, and
+  final count. Bounded bodies admit only pure predicates, one create template,
+  and numeric outer `+=` accumulators. Dynamic layouts, other sources, custom
+  identities, incomplete templates, and implicit lock/capacity policy remain
+  fail-closed.
+
+- Add production-policy and real CKB-VM coverage for zero/one/N/N+1 inputs,
+  malformed codecs and cell data, predicate failures, output
+  count/order/data/lock/capacity mismatches, and typed/machine artifact
+  mutations. Add checked `.cell` examples for variable-cardinality claims,
+  1–16 order settlement, fragmented Cell merging, and bridge/rollup batches.
+  Advance compile metadata to schema 62, constraints metadata to schema 3,
+  verified lowering records to v4, and typed semantics to v3.
+
 ## 0.25.0 - Unreleased
 
 - Rebase the 0.25 development line on the complete 0.24 trust boundary,
@@ -995,7 +1017,7 @@
   invalid `extend_from_slice` element types, and unrefined `Vec::new()` slice
   extension cases fail at compile time instead of drifting into hidden runtime
   paths.
-- Add `examples/language/order_book.cell` as a non-production language example
+- Add `examples/language/collections/order_book.cell` as a non-production language example
   for local stack-backed order vectors.
 - Add the CKB release-gate wrapper script and document the difference between
   quick compile-only evidence and full production acceptance.

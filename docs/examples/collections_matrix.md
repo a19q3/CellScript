@@ -14,10 +14,11 @@ Recommended authoring rule:
 - treat nested dynamic containers as schema/ABI boundary shapes unless
   metadata, constraints, and verifier evidence prove a concrete production
   helper
-- use explicit fixed-arity Cell parameters and lifecycle operations for
-  deployable ownership; a source-aware `BoundedCellSet<T, N>` is currently an
-  audit-only contract and production-rejected, while `Vec<Cell>` is rejected
-  because it hides transaction source and ownership
+- use the 0.26 fixed-width `BoundedCellSet<T, N>` and
+  `BoundedList<P, N>` contracts when exact Type Script group scanning and
+  plan-to-output correspondence fit the application; use fixed arity for every
+  other Cell ownership shape, while `Vec<Cell>` remains rejected because it
+  hides transaction source and ownership
 
 Current stack-backed local `Vec<T>` support is deliberately bounded compiler
 lowering for verifier-local fixed-width values. It is not a production

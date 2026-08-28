@@ -120,13 +120,16 @@ support.
 
 ## 7. Keep Unsupported Runtime Semantics Out Of Production
 
-Generics do not make a Cell-backed collection executable. The frontend can
-type-check and audit bounded `consume_each` and `create_each` declarations, but
-0.25 does not yet define enough consensus detail to scan and decode every
-selected input or to bind every witness plan to exactly one output safely.
+Generics alone do not make a Cell-backed collection executable. 0.26 promotes
+only the fixed-width, source-qualified shapes whose runtime contracts are
+explicit: `BoundedCellSet<T, N>` scans the current Type Script `GroupInput`,
+and `BoundedList<P, N>` decodes `bounded-output-plan-v1` and verifies the same
+relative `GroupOutput` data, lock, capacity, and exact count. The typed
+semantics v3 record carries the dedicated load/verify/end operations so the
+standalone checker can bind them to machine blocks.
 
-The typed IR therefore retains the body and create template but lowers the
-operation to an explicit fail-closed boundary. A non-production CKB artifact
-returns runtime error 24. `--production` and `--deny-fail-closed` stop with
-E2105 before ASM or ELF is written. Treat that rejection as an honest feature
-boundary, not as evidence that the collection ran.
+Dynamic or recursive element layouts, other sources, custom identities,
+incomplete output templates, missing locks or capacity floors, and arbitrary
+body mutation still lower to the explicit fail-closed boundary. Permissive
+artifacts return runtime error 24; `--production` and `--deny-fail-closed`
+stop with E2105 before ASM or ELF is written.

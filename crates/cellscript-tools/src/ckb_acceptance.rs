@@ -482,18 +482,35 @@ fn validate_example_layout(root: &Path) -> Result<()> {
     if production != EXPECTED_EXAMPLES.iter().map(|value| (*value).to_owned()).collect() {
         bail!("canonical bundled example set changed: {production:?}");
     }
-    let language = fs::read_dir(examples.join("language"))?
-        .filter_map(std::result::Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "cell"))
-        .filter_map(|path| path.file_name().and_then(|name| name.to_str()).map(str::to_owned))
-        .collect::<BTreeSet<_>>();
+    let language_root = examples.join("language");
+    let mut language = BTreeSet::new();
+    collect_language_examples(&language_root, &language_root, &mut language)?;
     if language != EXPECTED_LANGUAGE_EXAMPLES.iter().map(|value| (*value).to_owned()).collect() {
         bail!("language example set changed: {language:?}");
     }
     for stale in ["business", "acceptance"] {
         if examples.join(stale).exists() {
             bail!("stale checked-in example mirror exists: examples/{stale}");
+        }
+    }
+    Ok(())
+}
+
+fn collect_language_examples(root: &Path, directory: &Path, output: &mut BTreeSet<String>) -> Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let path = entry.path();
+        if file_type.is_symlink() {
+            bail!("language example layout must not contain symlinks: {}", path.display());
+        }
+        if file_type.is_dir() {
+            collect_language_examples(root, &path, output)?;
+        } else if file_type.is_file() && path.extension().is_some_and(|extension| extension == "cell") {
+            let relative = path.strip_prefix(root).context("language example escaped its root")?;
+            let relative =
+                relative.to_str().context("language example path is not valid UTF-8")?.replace(std::path::MAIN_SEPARATOR, "/");
+            output.insert(relative);
         }
     }
     Ok(())
@@ -643,6 +660,12 @@ mod tests {
     fn production_matrix_counts_are_stable() {
         assert_eq!(ACTION_RUNS.iter().map(|(_, _, actions)| actions.len()).sum::<usize>(), 43);
         assert_eq!(LOCKS.iter().map(|(_, locks)| locks.len()).sum::<usize>(), 17);
+    }
+
+    #[test]
+    fn language_example_layout_is_semantically_classified() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        validate_example_layout(&root).expect("language example inventory must match its semantic directories");
     }
 
     #[test]

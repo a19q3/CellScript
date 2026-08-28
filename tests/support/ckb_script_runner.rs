@@ -313,6 +313,18 @@ pub fn compile_cellscript_source_to_elf(source: &str, entry_action: &str, primit
     cellscript::strip_vm_abi_trailer(&result.artifact_bytes).to_vec()
 }
 
+/// Return the lock hash used by `execute_cellscript_script` for its deterministic
+/// always-success lock deployment. This lets witness plans bind an exact output
+/// lock without weakening the script-side lock policy.
+#[allow(dead_code)]
+pub fn deterministic_always_success_lock_hash() -> [u8; 32] {
+    let mut context = Context::new_with_deterministic_rng();
+    let always_success_elf = compile_cellscript_source_to_elf(ALWAYS_SUCCESS_PROGRAM, "always_success", None);
+    let out_point = context.deploy_cell(Bytes::copy_from_slice(&always_success_elf));
+    let lock = context.build_script(&out_point, Bytes::default()).expect("build deterministic always-success lock script");
+    lock.calc_script_hash().unpack()
+}
+
 /// Execute a CellScript-compiled ELF against a CKB VM fixture.
 ///
 /// This deploys the ELF, creates the transaction from the fixture,

@@ -160,8 +160,8 @@ lock owner(wallet: protected Wallet, owner: lock_args Address, claimed_owner: wi
         require witness_lock == digest
 }
 "#,
-        include_str!("../examples/language/canonical_style.cell"),
-        include_str!("../examples/language/v0_14_multi_step_pipeline.cell"),
+        include_str!("../examples/language/core/canonical_style.cell"),
+        include_str!("../examples/language/ckb/multi_step_pipeline.cell"),
     ];
 
     let mut rng = Rng64::new(fuzz_seed(0xC311_5C21_0014_F00D));
@@ -183,7 +183,7 @@ fn fuzzy_lsp_incremental_edits_never_panic() {
     let uri = "file:///fuzzy.cell".to_string();
     let mut server = LspServer::new();
     let mut rng = Rng64::new(fuzz_seed(0x15F_0014_C0DE));
-    let mut content = include_str!("../examples/language/canonical_style.cell").to_string();
+    let mut content = include_str!("../examples/language/core/canonical_style.cell").to_string();
     server.open_document(uri.clone(), content.clone());
 
     for index in 0..120 {
@@ -310,7 +310,7 @@ fn random_fixed_32(rng: &mut Rng64) -> [u8; 32] {
 #[test]
 fn fuzzy_metadata_tampering_never_panics() {
     let result = compile(
-        include_str!("../examples/language/v0_14_ckb_type_id_create.cell"),
+        include_str!("../examples/language/ckb/type_id_create.cell"),
         CompileOptions { target_profile: Some("ckb".to_string()), ..CompileOptions::default() },
     )
     .unwrap();
@@ -424,6 +424,7 @@ fn fuzzy_oversized_static_widths_are_controlled_errors() {
         type_hash_pointer_abi: false,
         type_hash_length_abi: false,
         type_hash_len: None,
+        bounded_runtime_contract: None,
     };
 
     let outcome = catch_unwind(AssertUnwindSafe(|| encode_entry_witness_args_for_params(&[oversized], &[])));

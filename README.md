@@ -427,14 +427,17 @@ action burn(token: Token) {
 | `examples/amm_pool.cell` | TypeHash-bound shared pool state and swap/liquidity effects |
 | `examples/launch.cell` | Mint-authority bootstrap and launch/pool composition patterns |
 
-Non-production language examples live under `examples/language/`. They compile
-and exercise compiler/tooling surfaces, but they are not part of the seven-file
-CKB production acceptance matrix. `registry.cell` covers bounded local
+Non-production language examples are classified by behavior under
+[`examples/language/`](examples/language/README.md). They compile and exercise
+compiler/tooling surfaces, but they are not part of the seven-file CKB
+production acceptance matrix. `collections/registry.cell` covers bounded local
 `Vec<Address>` / `Vec<Hash>` helpers; `examples/registry.cell` keeps that
-surface available from the top-level examples directory. `examples/language/order_book.cell` is a
-local stack-backed order-vector sketch and does not claim persistent order-book
-semantics. The v0.14 language examples cover CKB source/witness, capacity/time,
-TYPE_ID, Spawn/IPC, and dynamic BLAKE2b surfaces as compiler/tooling examples.
+surface available from the top-level examples directory.
+`examples/language/collections/order_book.cell` is a local stack-backed
+order-vector sketch and does not claim persistent order-book semantics. The
+`ckb/` examples cover source/witness, capacity/time, TYPE_ID, Spawn/IPC, and
+dynamic BLAKE2b surfaces. `.cell` filenames describe semantics and never encode
+a release version.
 
 ## Comparison
 
@@ -497,7 +500,6 @@ or CellFabric intent engine.
 - [BIP340 verifier CellDep ABI](docs/CELLSCRIPT_SIGNATURE_VERIFIER_ABI.md)
 - [Collections support matrix](docs/CELLSCRIPT_COLLECTIONS_SUPPORT_MATRIX.md)
 - [Output bindings](docs/CELLSCRIPT_OUTPUT_BINDINGS.md)
-- [Historical signature-direction execution plan](docs/archive/0.13/CELLSCRIPT_SIGNATURE_DIRECTION_EXECUTION_PLAN.md)
 - [CKB target profile tutorial](docs/wiki/Tutorial-05-CKB-Target-Profiles.md)
 - [CKB deployment manifest](docs/CELLSCRIPT_CKB_DEPLOYMENT_MANIFEST.md)
 - [Spore and RGB++ interoperability boundaries](docs/wiki/Spore-and-RGBPP-Interop-Boundaries.md)
@@ -622,7 +624,7 @@ CKB cycle/capacity estimates.
 | Module | What it does |
 |---|---|
 | **Stdlib** (`stdlib/`) | Built-in functions and compiler-recognized patterns that lower to explicit verifier effects: lifecycle helpers such as `std::lifecycle::transfer`, `std::receipt::claim`, and `std::lifecycle::settle`; cell metadata helpers such as `std::cell::preserve_type`, `std::cell::preserve_lock`, and `std::cell::preserve_capacity`; plus ckb-vm syscall/runtime helpers. Module-injected, not linked separately. |
-| **Collections** (`stdlib/collections.rs`) | Compiler-recognized stack-backed `Vec<T: FixedWidth>` lowering remains supported for verifier-local values, including `new`, `with_capacity`, `capacity`, `push`, `extend_from_slice`, `len`, `is_empty`, indexing, `first`, `last`, `contains`, `set`, `remove`, `pop`, `insert`, `reverse`, `truncate`, `swap`, and `clear`. Generated allocation-backed collection symbols are fail-closed and are not a production allocator ABI. Cell-backed collection ownership remains unsupported. |
+| **Collections** (`stdlib/collections.rs`) | Compiler-recognized stack-backed `Vec<T: FixedWidth>` lowering supports verifier-local values. The 0.26 bounded Cell runtime additionally supports fixed-width `BoundedCellSet<T, N>` over the exact current Type Script `GroupInput` and `BoundedList<P, N>` through the versioned plan-to-`GroupOutput` verifier; see the [support matrix](docs/CELLSCRIPT_COLLECTIONS_SUPPORT_MATRIX.md). Dynamic element layouts, other Cell sources, and generated allocation-backed helpers remain fail-closed. |
 
 ### Tooling Surface
 
@@ -726,7 +728,7 @@ policy defaults:
 [package]
 edition = "2026"
 name = "token"
-version = "0.25.0"
+version = "0.26.0"
 entry = "src/main.cell"
 source_roots = ["src"]
 

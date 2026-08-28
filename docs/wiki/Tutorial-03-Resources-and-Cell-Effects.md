@@ -66,11 +66,11 @@ validated as a named successor output, or handled by an explicit stdlib
 lifecycle pattern. Silent loss is rejected because silent loss would make Cell
 movement unclear.
 
-## Finite Batch Contracts (Metadata-Only Boundary)
+## Finite Batch Contracts (0.26 Checked Runtime)
 
-Source-aware bounded collections can describe how one action intends to account
-for a finite set of Cells or witness plans. In the current CKB executable
-profile, the following is auditable metadata, not deployable code:
+Source-aware bounded collections can verify a finite set of same-Type-Script
+group Cells and a canonical output plan. In this abbreviated example, `Token`
+must also declare a non-zero `with_capacity_floor(...)` policy:
 
 ```cellscript
 action batch(
@@ -84,27 +84,26 @@ action batch(
 
         create_each payout in payouts {
             require payout.amount > 0
-            create Token { owner: payout.owner, amount: payout.amount }
+            create Token { owner: payout.owner, amount: payout.amount } with_lock(payout.owner)
         }
 
         return 0
 }
 ```
 
-`BoundedCellSet<T, N>` is input-qualified and statically linearly owned: the
-binding must be discharged by one `consume_each`. `BoundedList<T, N>` is
-fixed-width; `create_each` records a maximum output cardinality and
-capacity-builder obligation. The bound makes review and ProofPlan complexity
-finite. It does not prove a runtime count, a Cell selection, or that a builder
-supplied matching outputs and enough capacity.
+`BoundedCellSet<T, N>` is input-qualified and linearly discharged once. The
+runtime scans exact `GroupInput` order and enforces the actual count against
+`N`. `BoundedList<T, N>` uses `bounded-output-plan-v1`; each decoded plan
+element verifies the same relative `GroupOutput`, including data, lock, and
+capacity, followed by an exact final count probe. Mutable numeric accumulators
+declared outside either body may be updated with `+=` to express count and
+amount conservation.
 
-Generic `Vec<Resource>` and unbounded iteration remain rejected. Inspect
-`runtime.collection_instantiations` and the matching ProofPlan records for
-audit, but do not treat the batch path as executable. Production returns E2105
-before codegen; non-production CKB artifacts return runtime error 24. Use
-explicit fixed-arity Cell inputs/outputs and ordinary lifecycle operations for
-deployable code until source selection, codecs, correspondence, identity, and
-capacity rules are implemented.
+Generic `Vec<Resource>` and unbounded iteration remain rejected. Dynamic or
+recursive elements, custom output identity, incomplete create templates,
+missing locks/capacity floors, and non-group sources remain fail-closed with
+E2105 in production. See the four `examples/language/batches/*.cell` contracts
+for claim, order settlement, Cell merge, and bridge/rollup patterns.
 
 ## Borrowed Read Views
 

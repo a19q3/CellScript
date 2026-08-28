@@ -381,8 +381,8 @@ Start with the smallest example that teaches the idea you need:
 | Claim receipts | `examples/vesting.cell` |
 | Shared liquidity state | `examples/amm_pool.cell` |
 | Composition patterns | `examples/launch.cell` |
-| Local bounded vectors | `examples/language/registry.cell` |
-| Local order-vector helpers | `examples/language/order_book.cell` |
+| Local bounded vectors | `examples/language/collections/registry.cell` |
+| Local order-vector helpers | `examples/language/collections/order_book.cell` |
 
 Read one example for one idea. The examples are easier to learn from when you do
 not treat them as one large feature checklist.

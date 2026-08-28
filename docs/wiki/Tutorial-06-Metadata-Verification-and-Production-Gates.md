@@ -198,7 +198,7 @@ records the exact `identity(...)` condition declared by the same resource.
 No proof may source authority from a container or another Cell type.
 
 Top-level `enum_layouts` for concrete payload ADTs first appeared in schema 53
-and remain in current metadata schema 61. Audit the
+and remain in current metadata schema 62. Audit the
 `packed-tagged-union-v1` layout, one-byte tag, sequential variant tags, packed
 field offsets, encoded size, ownership, storage, and ABI together. A
 `linear-cell-handle` field is exactly eight bytes and forces
@@ -216,26 +216,28 @@ and count overflow policy. A `runtime-helper-required` record is a known helper
 contract, not proof that the selected artifact emitted or executed that helper.
 
 `runtime.collection_instantiations` also distinguishes local stack collections
-from source-aware bounded Cell collections. For `BoundedCellSet<T, N>`, verify
-`source = input`, `ownership = linear-cell-set`, the finite `max_elements`, and
-the `consume_each` runtime-helper gap. For `BoundedList<P, N>` driving
-`create_each`, verify `source = witness`, `output_cardinality_max = N`, and
-`capacity_builder_evidence_required = true`. Its ProofPlan evidence is
-`builder-evidence-required`; it is not proof that a transaction builder supplied
-the matching outputs or sufficient capacity. Actual cardinality must read
-`not-observed-no-runtime-lowering`, not `runtime-recorded`.
+from source-aware bounded Cell collections. For a checked
+`BoundedCellSet<T, N>`, verify `source = input`,
+`ownership = linear-cell-set`, `status = checked-runtime`, finite
+`max_elements`, and helper `bounded-type-group-inputs-v1`. The matching
+ProofPlan must say `actual_scanned_cardinality:runtime-observed`,
+`group_input_count<=N`, and `on_chain_checked = true`.
 
-Neither form is deployable in the current CKB profile. The IR retains the
-checked body for audit and emits a fail-closed operation; CKB-VM returns runtime
-error 24. Production compilation stops at E2105 before codegen. Treat any
-selected consensus ProofPlan whose `codegen_coverage_status` begins with
-`gap:` as a blocker, including runtime-helper, builder-evidence, and
-metadata-only records. Until the source/codec/correspondence contract is
-implemented, write explicit fixed-arity inputs, outputs, predicates, and
-lifecycle operations instead.
+For a checked `BoundedList<P, N>` driving `create_each`, verify
+`source = witness`, `ownership = bounded-output-plan`, helper
+`bounded-output-plan-v1`, `output_cardinality_max = N`, and
+`capacity_builder_evidence_required = false`. Its ProofPlan must bind exact
+plan/output count, fixed-width codec, canonical `GroupOutput` order, output
+data, lock, and capacity floor. A `builder-evidence-required` record instead
+means the selected create shape did not qualify for the 0.26 runtime contract.
+
+Treat every selected consensus ProofPlan whose `codegen_coverage_status`
+begins with `gap:` as a production blocker. Unsupported bounded shapes still
+emit runtime error 24 in permissive artifacts and stop at E2105 under the
+production policy; a static `N` alone is never evidence that a scan ran.
 
 The validity record first appeared in schema 55 during the 0.22 line and is
-retained by current metadata schema 61 as `types[].validity_predicates`. Review each predicate's
+retained by current metadata schema 62 as `types[].validity_predicates`. Review each predicate's
 `expression`, `dependencies`, `evidence_tier`,
 `runtime_checked_on_create`, `create_paths_selected`,
 `create_paths_checked`, `update_paths_selected`, `create_path_status`,
@@ -512,7 +514,7 @@ IR/codegen/RISC-V changes. `release` is the production CKB evidence gate.
 evidence. See `docs/CELLSCRIPT_GATE_POLICY.md` for the exact command contract.
 
 In `dev` and `ci`, the wrapper also checks that
-`examples/language/canonical_style.cell` is already formatter-clean and that
+`examples/language/core/canonical_style.cell` is already formatter-clean and that
 the checked atomic-swap, NFT, timelock, and multi-phase-DAO example pairs use
 named `U64_MAX` boundary expressions. CI's CKB-VM integration tests encode
 CellScript entry payloads in canonical `WitnessArgs.input_type`; a raw

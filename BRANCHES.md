@@ -1,8 +1,19 @@
 # Branch Context
 
+## nightly-0.26
+
+`nightly-0.26` is the active consensus-runtime development line for bounded
+Cell-group consumption and bounded output-plan correspondence. The first
+supported shape is deliberately limited to exact Type Script groups with a
+compile-time cardinality bound, canonical Molecule decoding, deterministic
+group-relative order, and independently checked machine evidence. Treat the
+line as non-production until the positive CKB-VM/stateful fixtures, mutation
+checks, resource measurements, independent security review, and the `dev`,
+`ci`, and `backend` gates agree.
+
 ## nightly-0.25
 
-`nightly-0.25` is the active language-completeness development line. It adds
+`nightly-0.25` is the language-completeness predecessor. It adds
 bounded value generics, explicit visibility and package interfaces, exhaustive
 IR-surface classification, and the typed-semantics v2 / lowering-record v3
 boundary. Treat it as merge-ready only when compiler, independent checker,

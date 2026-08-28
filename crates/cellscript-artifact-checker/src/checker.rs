@@ -970,6 +970,95 @@ fn validate_typed_operation(
                 return fail();
             }
         }
+        "bounded-cell-load" => {
+            let TypedSemanticOperationDetail::Collection { declared_type } = &operation.detail else { return fail() };
+            let element_type = destination_type(0).unwrap_or_default();
+            let declared_contract = declared_type
+                .strip_prefix("BoundedCellSet<")
+                .and_then(|value| value.strip_suffix('>'))
+                .and_then(|value| value.rsplit_once(','))
+                .is_some_and(|(element, maximum)| {
+                    element.trim() == element_type
+                        && maximum.trim().parse::<usize>().is_ok_and(|maximum| (1..=1024).contains(&maximum))
+                });
+            let fixed_resource = types
+                .get(element_type)
+                .is_some_and(|ty| ty.kind == "resource" && ty.encoded_size.is_some_and(|width| (1..=512).contains(&width)));
+            if !shape(2, 1)
+                || destination_type(1) != Some("bool")
+                || !is_integer_type(operand_type(0).unwrap_or_default())
+                || !declared_contract
+                || !fixed_resource
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "bounded-plan-load" => {
+            let TypedSemanticOperationDetail::Collection { declared_type } = &operation.detail else { return fail() };
+            let element_type = destination_type(0).unwrap_or_default();
+            let declared_contract = declared_type
+                .strip_prefix("BoundedList<")
+                .and_then(|value| value.strip_suffix('>'))
+                .and_then(|value| value.rsplit_once(','))
+                .is_some_and(|(element, maximum)| {
+                    element.trim() == element_type
+                        && maximum.trim().parse::<usize>().is_ok_and(|maximum| (1..=1024).contains(&maximum))
+                });
+            let plan_operand_matches =
+                operation.operands.first().map(|operand| operand.ty.as_str()).is_some_and(|ty| ty == declared_type);
+            let fixed_struct =
+                types.get(element_type).is_some_and(|ty| ty.kind == "struct" && ty.encoded_size.is_some_and(|width| width > 0));
+            if !shape(2, 2)
+                || destination_type(1) != Some("bool")
+                || !plan_operand_matches
+                || !is_integer_type(operand_type(1).unwrap_or_default())
+                || !declared_contract
+                || !fixed_struct
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "bounded-output-verify" => {
+            let TypedSemanticOperationDetail::Create { pattern } = &operation.detail else { return fail() };
+            let Some(layout) = types.get(pattern.ty.as_str()).filter(|layout| layout.kind == "resource") else { return fail() };
+            if !operation.destinations.is_empty()
+                || operation.operands.is_empty()
+                || !is_integer_type(operand_type(0).unwrap_or_default())
+                || pattern.operation != "bounded-create"
+                || pattern.binding.is_empty()
+                || pattern.identity != "none"
+                || !pattern.has_lock
+                || pattern.field_names.len() + 2 != operation.operands.len()
+                || operation.call.is_some()
+            {
+                return fail();
+            }
+            let mut names = BTreeSet::new();
+            for (field_index, field_name) in pattern.field_names.iter().enumerate() {
+                let Some(field) = layout.fields.iter().find(|field| field.name == *field_name) else { return fail() };
+                if !names.insert(field_name.as_str())
+                    || canonical_abi_type(&operation.operands[field_index + 1].ty) != canonical_abi_type(&field.ty)
+                {
+                    return fail();
+                }
+            }
+            if names.len() != layout.fields.len()
+                || !layout.fields.iter().all(|field| names.contains(field.name.as_str()))
+                || !matches!(
+                    canonical_abi_type(&operation.operands.last().expect("non-empty operands").ty).as_str(),
+                    "address" | "hash"
+                )
+            {
+                return fail();
+            }
+        }
+        "bounded-output-end" => {
+            if !shape(0, 1) || !none_detail || !is_integer_type(operand_type(0).unwrap_or_default()) || operation.call.is_some() {
+                return fail();
+            }
+        }
         "call" => {
             if !none_detail {
                 return fail();

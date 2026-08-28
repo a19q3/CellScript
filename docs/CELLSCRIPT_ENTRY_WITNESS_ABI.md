@@ -143,6 +143,25 @@ Schema-backed and fixed-byte pointer/length pairs must not cross the `a0..a7`
 boundary. If placement would split the pair across registers and stack, the
 compiler marks the entry unsupported and the production gate must fail.
 
+## Bounded Cell Parameters
+
+A checked `input BoundedCellSet<T, N>` is runtime-bound to the current Type
+Script `GroupInput`. It reserves a pointer/length ABI pair but consumes no
+positional witness argument. A checked `witness BoundedList<P, N>` is one
+schema-backed dynamic argument whose inner bytes use:
+
+```text
+"CSBPLv1\0" || u32_count_le || fixed_width_plan_elements
+```
+
+The compiler publishes `bounded-type-group-inputs-v1` or
+`bounded-output-plan-v1` in `bounded_runtime_contract` and `abi_kind`.
+`encode_bounded_output_plan_v1` validates element width, count, and the
+4084-byte inner limit. Pass its result as one `EntryWitnessArg::Bytes` to the
+action metadata's `entry_witness_args`; that helper omits the runtime-bound
+input set and emits the `CSARGv1\0` length-prefixed plan argument. The CKB
+adapter then places the result in `WitnessArgs.input_type` before signing.
+
 ## Inspection Commands
 
 Use:

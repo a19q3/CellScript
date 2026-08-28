@@ -20,8 +20,8 @@ not be collapsed into one generic "collections are supported" claim.
 | `HashMap<u64, u64>` | Limited | Limited | No production helper surface | Unsupported/fail-closed for production contracts |
 | `HashMap<Hash, Token>` | No | No | No | Unsupported; must fail closed |
 | `HashSet<T>` | Limited | Limited | No production helper surface | Unsupported/fail-closed for production contracts |
-| `BoundedCellSet<Resource, N>` + `consume_each` | Frontend and metadata only | Explicit fail-closed IR; checked predicates retained | No source scan/decoder | Production-rejected with E2105; non-production artifacts return error 24 |
-| `BoundedList<Plan, N>` + `create_each` | Frontend and metadata only | Explicit fail-closed IR; predicates and create template retained | No witness codec/output verifier | Production-rejected with E2105; non-production artifacts return error 24 |
+| Fixed-width `BoundedCellSet<Resource, N>` + `consume_each` | `input` source; `1 <= N <= 1024` | Checked loop, predicates, and numeric outer `+=` accumulators | `bounded-type-group-inputs-v1` scans exact `GroupInput` order, decodes exact data, and checks runtime count | Supported for fixed-width resource data of 1–512 bytes; other sources and dynamic layouts fail closed |
+| Fixed-width `BoundedList<Plan, N>` + `create_each` | `witness` source; versioned plan bytes | Checked loop, predicates, numeric outer `+=` accumulators, and one complete create template | `bounded-output-plan-v1` decodes the plan and verifies the same relative `GroupOutput`, output lock, data, capacity floor, and final count | Supported only when `12 + N * plan_width <= 4084`, the output is fixed-width with no custom identity, and lock/capacity policy is explicit; other shapes fail closed |
 | Generic Cell-backed resource collections | No executable ownership model | No | No | Unsupported |
 
 ## Stack-Backed Local Vec Rule
@@ -47,8 +47,8 @@ fail-closed stubs unless a concrete checked runtime ABI exists. Do not document
 or use those symbols as production allocation-backed `Vec`, `HashMap`, or
 `HashSet` helpers.
 
-`examples/registry.cell`, `examples/language/registry.cell`, and
-`examples/language/order_book.cell` are
+`examples/registry.cell`, `examples/language/collections/registry.cell`, and
+`examples/language/collections/order_book.cell` are
 compiler/tooling examples for this local helper surface. They are not part of
 the bundled CKB production action acceptance matrix.
 
@@ -75,32 +75,42 @@ production blocker, including `gap:runtime-helper-required`,
 can supply evidence for construction, but that evidence cannot authorize a
 consensus operation the emitted Script does not check.
 
-## Bounded Lifecycle Boundary
+## Bounded Lifecycle Runtime Boundary
 
-The bound `N` is currently a static type and complexity declaration. It is not
-evidence that a runtime scan observed at most `N` items. Metadata therefore
-records the maximum but leaves actual cardinality unobserved.
+0.26 implements two deliberately narrow consensus contracts. A supported
+`consume_each` scans the current Type Script's canonical `GroupInput` view. It
+accepts only exact fixed-width data, checks that every selected Cell is acting
+in the Type Script role, executes the body once per element, treats only
+`CKB_INDEX_OUT_OF_BOUND` as the end of the group, and probes index `N` so an
+`N + 1` member cannot be hidden. Zero elements are vacuous only when the Script
+is invoked by an output-side group member.
 
-Positive `consume_each` execution needs a specified transaction versus
-script-group source, a resource Type Script identity, canonical cell-data
-decoding, actual-count enforcement, and per-element predicate plus consumption
-semantics. Positive `create_each` execution additionally needs a canonical
-witness list codec, output ordering and one-to-one plan/output correspondence,
-fresh Cell identity, and occupied-capacity rules. Until those contracts exist,
-use explicit fixed-arity input/output bindings and ordinary lowered
-`require`/`consume`/`create` operations.
+A supported `create_each` reads a `bounded-output-plan-v1` payload from the
+entry witness. The payload is the eight-byte `CSBPLv1\0` magic, a little-endian
+Molecule FixVec count, and fixed-width plan elements. Plan element `i` must
+match relative `GroupOutput[i]`; the generated verifier checks the complete
+Cell data template, exact output lock, declared non-zero capacity floor, and
+that no additional group output exists. The outer entry payload remains
+`CSARGv1\0` plus the ordinary four-byte dynamic argument length.
+
+Both bodies may use pure `require` predicates and mutable numeric variables
+declared outside the body through `+=`. That restricted accumulator surface is
+what makes count conservation, amount conservation, and many-to-one merge
+checks expressible without admitting arbitrary loop side effects.
+
+The positive contract does not cover dynamic or recursive element layouts,
+transaction-wide scans, Lock Script groups, custom output identities, omitted
+locks, implicit capacity policy, or arbitrary mutation inside a bounded body.
+Those shapes keep the 0.25 fail-closed behavior: production stops with E2105
+and permissive artifacts return runtime error 24.
 
 ## Authoring Guidance
 
 Use dynamic vectors for data that is still a single cell field, such as signer
 lists, proposal payload bytes, NFT attributes, or launch distributions.
 
-Do not deploy ownership of multiple independent linear cells through a generic
-vector, map, `BoundedCellSet`, or `BoundedList`. Use explicit fixed-arity action
-parameters, named output bindings, and lowered `consume`/`destroy`/`create`
-operations until the bounded runtime contract is implemented.
-
-The missing verifier pieces are explicit cell consumption, typed collection
-destructuring, and membership proofs tied to Molecule schema manifests. Until
-those pieces exist, generic cell-backed collections stay outside the production
-surface.
+Use `BoundedCellSet`/`BoundedList` only for the checked shape above. The four
+0.26 language examples cover variable-cardinality claims, 1–16 order
+settlement, fragmented-Cell merging, and bridge/rollup batches. Generic
+Cell-backed vectors and maps, dynamic element data, and non-group membership
+proofs remain outside the production surface.

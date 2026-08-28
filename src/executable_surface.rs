@@ -268,6 +268,34 @@ pub static EXECUTABLE_SURFACE: &[ExecutableSurfaceEntry] = &[
         "Bounded stack collection with checked indexes.",
         ["collection-swap", "cell-backed-collection-swap"]
     ),
+    entry!(
+        "ir:bounded-cell-load",
+        "instruction",
+        "bounded",
+        ACCEPT_WHEN_CLOSED,
+        "Exact current Type Script group input scan with runtime cardinality, identity, role, and fixed-width decode checks."
+    ),
+    entry!(
+        "ir:bounded-plan-load",
+        "instruction",
+        "bounded",
+        ACCEPT_WHEN_CLOSED,
+        "Canonical bounded-output-plan-v1 Molecule FixVec decoding with exact length and runtime cardinality checks."
+    ),
+    entry!(
+        "ir:bounded-output-verify",
+        "instruction",
+        "bounded",
+        ACCEPT_WHEN_CLOSED,
+        "Plan-relative GroupOutput data, lock, Type Script role, and declared capacity-floor verification."
+    ),
+    entry!(
+        "ir:bounded-output-end",
+        "instruction",
+        "bounded",
+        ACCEPT_WHEN_CLOSED,
+        "Exact plan-count to current Type Script GroupOutput-count correspondence."
+    ),
     entry!("ir:call", "instruction", "bounded", ACCEPT_WHEN_CLOSED, "Resolved typed callable with a closed ABI and effect summary."),
     entry!("ir:read-ref", "instruction", "bounded", ACCEPT, "Explicit Input or CellDep read-only Cell view."),
     entry!("ir:move", "instruction", "complete", ACCEPT, "Typed local move; ownership validity is checked before lowering."),
@@ -358,17 +386,17 @@ pub static EXECUTABLE_SURFACE: &[ExecutableSurfaceEntry] = &[
     entry!(
         "artifact:bounded-consume-each-runtime",
         "artifact-policy",
-        "reserved",
-        "rejected by production policy",
-        "BoundedCellSet source selection, element decoding, and per-element predicate execution are not yet an executable contract.",
+        "bounded",
+        ACCEPT_WHEN_CLOSED,
+        "The bounded-type-group-inputs-v1 fixed-width shape is executable; all other BoundedCellSet sources and element shapes remain fail-closed.",
         ["bounded-consume-each-runtime"]
     ),
     entry!(
         "artifact:bounded-create-each-runtime",
         "artifact-policy",
-        "reserved",
-        "rejected by production policy",
-        "BoundedList witness codec, output correspondence, ordering, identity, and capacity enforcement are not yet an executable contract.",
+        "bounded",
+        ACCEPT_WHEN_CLOSED,
+        "The bounded-output-plan-v1 fixed-width shape is executable when the output has a complete create template, explicit lock, no custom identity, and a declared capacity floor; all other shapes remain fail-closed.",
         ["bounded-create-each-runtime"]
     ),
 ];
@@ -535,6 +563,10 @@ fn ir_instruction_surface_id(instruction: &IrInstruction) -> &'static str {
         IrInstruction::CollectionReverse { .. } => "ir:collection-reverse",
         IrInstruction::CollectionTruncate { .. } => "ir:collection-truncate",
         IrInstruction::CollectionSwap { .. } => "ir:collection-swap",
+        IrInstruction::BoundedCellLoad { .. } => "ir:bounded-cell-load",
+        IrInstruction::BoundedPlanLoad { .. } => "ir:bounded-plan-load",
+        IrInstruction::BoundedOutputVerify { .. } => "ir:bounded-output-verify",
+        IrInstruction::BoundedOutputEnd { .. } => "ir:bounded-output-end",
         IrInstruction::Call { .. } => "ir:call",
         IrInstruction::ReadRef { .. } => "ir:read-ref",
         IrInstruction::Move { .. } => "ir:move",
@@ -575,7 +607,7 @@ pub fn executable_surface_json() -> String {
 pub fn executable_surface_markdown() -> String {
     let mut rendered = String::from(
         "# CellScript Executable Surface Matrix\n\n\
-**Status**: generated from the compiler-owned 0.25 executable-surface registry\n\n\
+**Status**: generated from the compiler-owned 0.26 executable-surface registry\n\n\
 This file is generated. Run `cellscript-tools check-executable-surface --write` after changing the registry.\n\n\
 Production compilation means `--production` or `--deny-fail-closed`; both stop before codegen when a selected shape reports any listed fail-closed feature. Metadata-only compilation remains available for diagnostics and Playground inspection.\n\n\
 | ID | Layer | Status | Production policy | Conditions | Fail-closed features |\n\

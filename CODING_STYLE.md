@@ -28,6 +28,20 @@ project contract.
   short reason; crate-wide or module-wide clippy allowances are only for
   documented legacy or transition boundaries.
 
+## CellScript Example Organization
+
+- Organize `examples/language/` by semantic purpose: `core`, `ckb`,
+  `ownership`, `verification`, `collections`, or `batches`.
+- A `.cell` filename must describe behavior and must not contain a release or
+  version marker. The native source-policy gate checks tracked and untracked
+  CellScript sources and rejects forms such as `v0_26_batch.cell`,
+  `contract-v1.cell`, and `token_0.26.0.cell`.
+- Keep release history in `CHANGELOG.md` and release notes. Do not encode it in
+  source paths, module names, fixture identities, or user-facing example names.
+- When moving an example, update its module declaration, documentation links,
+  embedded fixtures, website references, and production-evidence inventory in
+  the same change.
+
 ## On-Chain Registry Script Rules
 
 `contracts/registry-type-script` is an independent `no_std` CKB Script crate.

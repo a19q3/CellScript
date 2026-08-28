@@ -1,6 +1,6 @@
-module cellscript::language::v0_14_ckb_type_id_create
+module cellscript::language::ckb::type_id_create
 
-#[type_id("cellscript::language::v0_14_ckb_type_id_create::IdentityToken:v1")]
+#[type_id("cellscript::language::ckb::type_id_create::IdentityToken:v1")]
 resource IdentityToken has store, create
 with_default_hash_type(Type)
 {

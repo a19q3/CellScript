@@ -451,7 +451,7 @@ action script_value() -> u64 {
     );
     assert!(script_tuple.check().is_ok());
 
-    let collection = Fixture::from_source(include_str!("../examples/language/order_book.cell"));
+    let collection = Fixture::from_source(include_str!("../examples/language/collections/order_book.cell"));
     assert!(collection.check().is_ok());
 
     let mut changed = collection;
@@ -470,6 +470,134 @@ action script_value() -> u64 {
     *declared_type = "Map".to_string();
     changed.rebind_typed_semantics();
     assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+}
+
+#[test]
+fn bounded_cell_runtime_contract_is_bound_to_typed_and_machine_evidence() {
+    let valid = Fixture::from_source(
+        r#"
+module checker::bounded_cells
+
+resource Token has store, consume { amount: u64 }
+
+action verify(input inputs: BoundedCellSet<Token, 2>) -> u64 {
+    verification
+        consume_each token in inputs {
+            require token.amount > 0
+        }
+        return 0
+}
+"#,
+    );
+    assert!(valid.check().is_ok());
+
+    let mut changed = valid.clone();
+    let declared_type = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .flat_map(|entry| &mut entry.blocks)
+        .flat_map(|block| &mut block.operations)
+        .find_map(|operation| match (&*operation.opcode, &mut operation.detail) {
+            ("bounded-cell-load", TypedSemanticOperationDetail::Collection { declared_type }) => Some(declared_type),
+            _ => None,
+        })
+        .expect("fixture must contain the bounded Cell load contract");
+    *declared_type = "BoundedCellSet<Token, 0>".to_string();
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid;
+    let (entry_id, typed_block_id) = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter()
+        .find_map(|entry| {
+            entry
+                .blocks
+                .iter()
+                .find(|block| block.operations.iter().any(|operation| operation.opcode == "bounded-cell-load"))
+                .map(|block| (entry.id.clone(), block.id))
+        })
+        .expect("fixture must bind the bounded Cell load to a typed block");
+    let binding = changed
+        .record
+        .entries
+        .iter_mut()
+        .find(|entry| entry.id == entry_id)
+        .and_then(|entry| entry.typed_blocks.iter_mut().find(|binding| binding.id == typed_block_id))
+        .expect("fixture must contain a machine binding for the bounded Cell load");
+    binding.machine_block_ids.pop().expect("bounded Cell load must map to machine code");
+    changed.rebind_sidecars();
+    assert_code(&changed, CheckerRejectionCode::V2420TypedMachineBindingInvalid);
+}
+
+#[test]
+fn bounded_output_plan_contract_is_bound_to_typed_and_machine_evidence() {
+    let valid = Fixture::from_source(
+        r#"
+module checker::bounded_outputs
+
+struct Plan { owner: Address, amount: u64 }
+resource Token has store, create
+with_capacity_floor(10000000000)
+{ amount: u64 }
+
+action verify(witness plans: BoundedList<Plan, 2>) -> u64 {
+    verification
+        create_each plan in plans {
+            require plan.amount > 0
+            create Token { amount: plan.amount } with_lock(plan.owner)
+        }
+        return 0
+}
+"#,
+    );
+    assert!(valid.check().is_ok());
+
+    let mut changed = valid.clone();
+    let declared_type = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter_mut()
+        .flat_map(|entry| &mut entry.blocks)
+        .flat_map(|block| &mut block.operations)
+        .find_map(|operation| match (&*operation.opcode, &mut operation.detail) {
+            ("bounded-plan-load", TypedSemanticOperationDetail::Collection { declared_type }) => Some(declared_type),
+            _ => None,
+        })
+        .expect("fixture must contain the bounded output plan decoder");
+    *declared_type = "BoundedList<Plan, 0>".to_string();
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid;
+    let (entry_id, typed_block_id) = changed
+        .record
+        .typed_semantics
+        .entries
+        .iter()
+        .find_map(|entry| {
+            entry
+                .blocks
+                .iter()
+                .find(|block| block.operations.iter().any(|operation| operation.opcode == "bounded-output-verify"))
+                .map(|block| (entry.id.clone(), block.id))
+        })
+        .expect("fixture must bind output verification to a typed block");
+    let binding = changed
+        .record
+        .entries
+        .iter_mut()
+        .find(|entry| entry.id == entry_id)
+        .and_then(|entry| entry.typed_blocks.iter_mut().find(|binding| binding.id == typed_block_id))
+        .expect("fixture must contain a machine binding for bounded output verification");
+    binding.machine_block_ids.clear();
+    changed.rebind_sidecars();
+    assert_code(&changed, CheckerRejectionCode::V2420TypedMachineBindingInvalid);
 }
 
 #[test]

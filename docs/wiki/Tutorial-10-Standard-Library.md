@@ -293,7 +293,7 @@ codegen, metadata, docs, and production evidence together.
 The compact language example lives at:
 
 ```text
-examples/language/stdlib.cell
+examples/language/core/stdlib.cell
 ```
 
 It demonstrates the stable stdlib patterns:

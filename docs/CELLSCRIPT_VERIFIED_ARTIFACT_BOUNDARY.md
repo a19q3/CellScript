@@ -1,9 +1,9 @@
 # CellScript Verified Artifact Boundary
 
-**Status**: typed boundary implemented on the 0.25 development line
+**Status**: typed boundary implemented on the 0.26 development line
 
-**Schemas**: `cellscript-verified-lowering-record-v3`,
-`cellscript-typed-semantics-v2`,
+**Schemas**: `cellscript-verified-lowering-record-v4`,
+`cellscript-typed-semantics-v3`,
 `cellscript-source-artifact-map-v1`, and
 `cellscript-artifact-checker-policy-v1`
 

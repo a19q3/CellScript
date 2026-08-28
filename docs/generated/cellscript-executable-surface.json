@@ -449,6 +449,38 @@
       "status": "shape-gated"
     },
     {
+      "conditions": "Exact current Type Script group input scan with runtime cardinality, identity, role, and fixed-width decode checks.",
+      "fail_closed_features": [],
+      "id": "ir:bounded-cell-load",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Canonical bounded-output-plan-v1 Molecule FixVec decoding with exact length and runtime cardinality checks.",
+      "fail_closed_features": [],
+      "id": "ir:bounded-plan-load",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Plan-relative GroupOutput data, lock, Type Script role, and declared capacity-floor verification.",
+      "fail_closed_features": [],
+      "id": "ir:bounded-output-verify",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
+      "conditions": "Exact plan-count to current Type Script GroupOutput-count correspondence.",
+      "fail_closed_features": [],
+      "id": "ir:bounded-output-end",
+      "layer": "instruction",
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
+    },
+    {
       "conditions": "Resolved typed callable with a closed ABI and effect summary.",
       "fail_closed_features": [],
       "id": "ir:call",
@@ -613,24 +645,24 @@
       "status": "reserved"
     },
     {
-      "conditions": "BoundedCellSet source selection, element decoding, and per-element predicate execution are not yet an executable contract.",
+      "conditions": "The bounded-type-group-inputs-v1 fixed-width shape is executable; all other BoundedCellSet sources and element shapes remain fail-closed.",
       "fail_closed_features": [
         "bounded-consume-each-runtime"
       ],
       "id": "artifact:bounded-consume-each-runtime",
       "layer": "artifact-policy",
-      "production_policy": "rejected by production policy",
-      "status": "reserved"
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
     },
     {
-      "conditions": "BoundedList witness codec, output correspondence, ordering, identity, and capacity enforcement are not yet an executable contract.",
+      "conditions": "The bounded-output-plan-v1 fixed-width shape is executable when the output has a complete create template, explicit lock, no custom identity, and a declared capacity floor; all other shapes remain fail-closed.",
       "fail_closed_features": [
         "bounded-create-each-runtime"
       ],
       "id": "artifact:bounded-create-each-runtime",
       "layer": "artifact-policy",
-      "production_policy": "rejected by production policy",
-      "status": "reserved"
+      "production_policy": "accepted only when the shape classifier reports no fail-closed feature",
+      "status": "bounded"
     }
   ],
   "schema": "cellscript-executable-surface-v1"

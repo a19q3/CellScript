@@ -372,6 +372,34 @@ impl CodeGenerator {
             }
         }
 
+        for block in &body.blocks {
+            for instruction in &block.instructions {
+                let IrInstruction::BoundedCellLoad { dest, .. } = instruction else {
+                    continue;
+                };
+                if self.cell_buffer_offsets.contains_key(&dest.id) {
+                    continue;
+                }
+                self.schema_pointer_size_offsets.insert(dest.id, next_cell_slot);
+                self.cell_buffer_size_offsets.insert(dest.id, next_cell_slot);
+                self.cell_buffer_offsets.insert(dest.id, next_cell_slot + 8);
+                next_cell_slot += RUNTIME_CELL_SLOT_SIZE;
+            }
+        }
+
+        for block in &body.blocks {
+            for instruction in &block.instructions {
+                let IrInstruction::BoundedPlanLoad { dest, .. } = instruction else {
+                    continue;
+                };
+                if self.schema_pointer_size_offsets.contains_key(&dest.id) {
+                    continue;
+                }
+                self.schema_pointer_size_offsets.insert(dest.id, next_cell_slot);
+                next_cell_slot += 8;
+            }
+        }
+
         let mut create_dest_outputs = HashMap::new();
         let mut next_create_output_index =
             body.create_set.iter().position(|pattern| pattern.operation == "create").unwrap_or(body.create_set.len());
@@ -568,6 +596,29 @@ impl CodeGenerator {
         self.emit(format!("# cellscript abi: LOAD_CELL_DATA reason={} source={} index={}", reason, ckb_source_name(source), index));
         self.emit_store_data_args_at(max_bytes, size_offset, buffer_offset);
         self.emit(format!("li a3, {}", index));
+        self.emit(format!("li a4, {}", source));
+        self.emit(format!("li a7, {}", self.runtime_abi().load_cell_data));
+        self.emit("ecall");
+        self.emit("# a0 = CKB syscall return code");
+    }
+
+    pub(super) fn emit_load_cell_data_syscall_to_offsets_dynamic_index(
+        &mut self,
+        reason: &str,
+        source: u64,
+        index_reg: &str,
+        size_offset: usize,
+        buffer_offset: usize,
+        max_bytes: usize,
+    ) {
+        self.emit(format!(
+            "# cellscript abi: LOAD_CELL_DATA reason={} source={} index={}",
+            reason,
+            ckb_source_name(source),
+            index_reg
+        ));
+        self.emit_store_data_args_at(max_bytes, size_offset, buffer_offset);
+        self.emit(format!("addi a3, {}, 0", index_reg));
         self.emit(format!("li a4, {}", source));
         self.emit(format!("li a7, {}", self.runtime_abi().load_cell_data));
         self.emit("ecall");
@@ -889,6 +940,27 @@ impl CodeGenerator {
                 self.record_var(dest, max_var_id);
                 self.record_operand(collection, max_var_id);
             }
+            IrInstruction::BoundedCellLoad { dest, found, index, .. } => {
+                self.record_var(dest, max_var_id);
+                self.record_var(found, max_var_id);
+                self.record_operand(index, max_var_id);
+            }
+            IrInstruction::BoundedPlanLoad { dest, found, plan, index, .. } => {
+                self.record_var(dest, max_var_id);
+                self.record_var(found, max_var_id);
+                self.record_operand(plan, max_var_id);
+                self.record_operand(index, max_var_id);
+            }
+            IrInstruction::BoundedOutputVerify { index, pattern, .. } => {
+                self.record_operand(index, max_var_id);
+                for (_, value) in &pattern.fields {
+                    self.record_operand(value, max_var_id);
+                }
+                if let Some(lock) = &pattern.lock {
+                    self.record_operand(lock, max_var_id);
+                }
+            }
+            IrInstruction::BoundedOutputEnd { index } => self.record_operand(index, max_var_id),
         }
     }
 
@@ -967,6 +1039,10 @@ impl CodeGenerator {
             | IrInstruction::CollectionSwap { .. }
             | IrInstruction::CollectionInsert { .. }
             | IrInstruction::CollectionSet { .. } => {}
+            IrInstruction::BoundedCellLoad { .. }
+            | IrInstruction::BoundedPlanLoad { .. }
+            | IrInstruction::BoundedOutputVerify { .. }
+            | IrInstruction::BoundedOutputEnd { .. } => {}
         }
     }
 
@@ -1027,7 +1103,11 @@ impl CodeGenerator {
             | IrInstruction::CollectionTruncate { .. }
             | IrInstruction::CollectionSwap { .. }
             | IrInstruction::CollectionInsert { .. }
-            | IrInstruction::CollectionSet { .. } => {}
+            | IrInstruction::CollectionSet { .. }
+            | IrInstruction::BoundedCellLoad { .. }
+            | IrInstruction::BoundedPlanLoad { .. }
+            | IrInstruction::BoundedOutputVerify { .. }
+            | IrInstruction::BoundedOutputEnd { .. } => {}
         }
     }
 

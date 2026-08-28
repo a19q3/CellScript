@@ -7,8 +7,7 @@ realistic landing; not part of 0.21.1 production boundary. Tracking issue:
 none yet (required before implementation adoption).
 
 This RFC builds on the v0.22 typed transaction-view handles described in the
-[0.22 release notes](releases/CELLSCRIPT_0_22_RELEASE_NOTES.md) and the
-`docs/CELLSCRIPT_CELL_MODEL_SYNTAX_AUDIT_2026_07_05.md` audit. It does **not**
+[0.22 release notes](releases/CELLSCRIPT_0_22_RELEASE_NOTES.md). It does **not**
 replace the typed-view work; it is the policy + identity layer that needs to
 land together with the view layer.
 
@@ -597,8 +596,6 @@ Success looks like all of the following, all enforceable in CI.
 - `docs/CELLSCRIPT_CKB_ADAPTER.md` — adapter resolution path
 - `docs/releases/CELLSCRIPT_0_22_RELEASE_NOTES.md` — typed transaction-view
   release boundary
-- `docs/CELLSCRIPT_CELL_MODEL_SYNTAX_AUDIT_2026_07_05.md` — source
-  view audit
 - `docs/CELLSCRIPT_GRAMMAR_GOVERNANCE_RFC.md` — grammar governance
   contract
 - `src/package/mod.rs:215-236` — `CkbCellDepConfig` definition

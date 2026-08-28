@@ -244,11 +244,37 @@ fn plan_for_bounded_collection(
         ParamSource::LockArgs => "lock_args",
     };
     let is_create = operation.operation == "create_each";
-    let helper = if is_create { "__cellscript_bounded_create_each" } else { "__cellscript_bounded_consume_each" };
-    let evidence_tier = if is_create { EvidenceTier::BuilderEvidenceRequired } else { EvidenceTier::RuntimeHelperRequired };
-    let status = if is_create { "builder-evidence-required" } else { "runtime-required" };
-    let codegen_coverage_status = if is_create { "gap:builder-evidence-required" } else { "gap:runtime-helper-required" };
+    let runtime_checked = operation.runtime_contract.is_some();
+    let helper = operation.runtime_contract.as_deref().unwrap_or(if is_create {
+        "__cellscript_bounded_create_each"
+    } else {
+        "__cellscript_bounded_consume_each"
+    });
+    let evidence_tier = if runtime_checked {
+        EvidenceTier::CheckedRuntime
+    } else if is_create {
+        EvidenceTier::BuilderEvidenceRequired
+    } else {
+        EvidenceTier::RuntimeHelperRequired
+    };
+    let status = if runtime_checked {
+        "checked-runtime"
+    } else if is_create {
+        "builder-evidence-required"
+    } else {
+        "runtime-required"
+    };
+    let codegen_coverage_status = if runtime_checked {
+        "covered"
+    } else if is_create {
+        "gap:builder-evidence-required"
+    } else {
+        "gap:runtime-helper-required"
+    };
     let mut reads = vec![source.to_string()];
+    if runtime_checked {
+        reads.extend([if is_create { "group_output" } else { "group_input" }.to_string(), "current_script".to_string()]);
+    }
     if is_create && source == "witness" {
         reads.push("witness".to_string());
     }
@@ -259,22 +285,64 @@ fn plan_for_bounded_collection(
         format!("element:{}", operation.element_type),
         format!("source:{source}"),
         format!("maximum_cardinality:{}", operation.max_elements),
-        "actual_scanned_cardinality:not-observed-no-runtime-lowering".to_string(),
+        if runtime_checked {
+            "actual_scanned_cardinality:runtime-observed".to_string()
+        } else {
+            "actual_scanned_cardinality:not-observed-no-runtime-lowering".to_string()
+        },
         "vacuous:true-when-cardinality-zero".to_string(),
         format!("runtime_helper:{helper}"),
     ];
-    coverage.extend(operation.predicates.iter().map(|predicate| format!("predicate-retained-not-executed:{predicate}")));
-    let mut builder_assumptions = vec![format!("declared(runtime-helper-required:{helper})")];
+    coverage.extend(operation.predicates.iter().map(|predicate| {
+        if runtime_checked {
+            format!("predicate-executed-once-per-element:{predicate}")
+        } else {
+            format!("predicate-retained-not-executed:{predicate}")
+        }
+    }));
+    coverage.extend(operation.accumulator_updates.iter().map(|update| {
+        if runtime_checked {
+            format!("outer-numeric-accumulator-updated-once-per-element:{update}")
+        } else {
+            format!("outer-numeric-accumulator-retained-not-executed:{update}")
+        }
+    }));
+    if runtime_checked && is_create {
+        coverage.extend([
+            "witness_codec:CSBPLv1-Molecule-FixVec".to_string(),
+            "source_selection:exact-current-type-group-outputs".to_string(),
+            "script_role:type-only".to_string(),
+            "script_identity:current-script-hash".to_string(),
+            "output_correspondence:plan-index-equals-group-output-index".to_string(),
+            "output_decode:fixed-width-exact-size".to_string(),
+            "lock_policy:exact-create-template-lock-hash".to_string(),
+            "capacity_policy:declared-type-floor-checked-on-chain".to_string(),
+            format!("plan_element_width_bytes:{}", operation.element_width.unwrap_or_default()),
+        ]);
+    } else if runtime_checked {
+        coverage.extend([
+            "source_selection:exact-current-type-group-inputs".to_string(),
+            "script_role:type-only".to_string(),
+            "script_identity:current-script-hash".to_string(),
+            "element_decode:fixed-width-exact-size".to_string(),
+            "lifecycle:every-selected-input-discharged".to_string(),
+            format!("element_width_bytes:{}", operation.element_width.unwrap_or_default()),
+        ]);
+    }
+    let mut builder_assumptions =
+        if runtime_checked { Vec::new() } else { vec![format!("declared(runtime-helper-required:{helper})")] };
     if is_create {
         coverage.extend([
             format!("output_cardinality_max:{}", operation.max_elements),
-            "capacity_builder_evidence_required:true".to_string(),
+            format!("capacity_builder_evidence_required:{}", !runtime_checked),
             format!("output_type:{}", operation.output_type.as_deref().unwrap_or("unknown")),
         ]);
-        builder_assumptions.extend([
-            "declared(builder must provide exactly one output per plan element)".to_string(),
-            "declared(builder must prove aggregate output capacity and occupied-capacity floors)".to_string(),
-        ]);
+        if !runtime_checked {
+            builder_assumptions.extend([
+                "declared(builder must provide exactly one output per plan element)".to_string(),
+                "declared(builder must prove aggregate output capacity and occupied-capacity floors)".to_string(),
+            ]);
+        }
         if let Some(template) = &operation.create_template {
             coverage.push(format!("create_template_output_type:{}", template.output_type));
             coverage.extend(template.fields.iter().map(|(field, value)| format!("create_template_field:{field}={value}")));
@@ -282,6 +350,27 @@ fn plan_for_bounded_collection(
         }
     }
     let feature = format!("{}:{}:{}", operation.operation, operation.collection_binding, operation.collection_type);
+    let on_chain_checked_obligations = if runtime_checked {
+        let mut obligations = vec![
+            format!("bounded-cell-collection:{feature}={status}"),
+            "type-only Script role".to_string(),
+            "current Script hash identity".to_string(),
+            "runtime cardinality bound".to_string(),
+            "exact fixed-width decode".to_string(),
+            "exactly-once predicate coverage".to_string(),
+        ];
+        if is_create {
+            obligations.extend([
+                "canonical witness plan codec".to_string(),
+                "one plan element per GroupOutput".to_string(),
+                "exact output lock hash".to_string(),
+                "declared output capacity floor".to_string(),
+            ]);
+        }
+        obligations
+    } else {
+        Vec::new()
+    };
     ProofPlanMetadata {
         name: format!("{}#bounded-collection{}", scope_name, index),
         origin: format!("{}:{}#bounded-collection:{}", scope_kind, scope_name, index),
@@ -298,10 +387,28 @@ fn plan_for_bounded_collection(
         scope: if is_create { "transaction".to_string() } else { "selected_cells".to_string() },
         reads: reads.clone(),
         coverage,
-        input_output_relation_checks: Vec::new(),
-        group_cardinality: format!("declared-maximum:0..={}; actual:not-observed-no-runtime-lowering", operation.max_elements),
-        identity_lifecycle_policy: if is_create {
+        input_output_relation_checks: if runtime_checked {
+            vec![if is_create {
+                format!("plan_count=group_output_count<={}", operation.max_elements)
+            } else {
+                format!("group_input_count<={}", operation.max_elements)
+            }]
+        } else {
+            Vec::new()
+        },
+        group_cardinality: if runtime_checked {
+            format!("runtime-observed:0..={}", operation.max_elements)
+        } else {
+            format!("declared-maximum:0..={}; actual:not-observed-no-runtime-lowering", operation.max_elements)
+        },
+        identity_lifecycle_policy: if is_create && runtime_checked {
+            "checked on chain: each canonical plan element binds exactly one current-Type-Script GroupOutput at the same relative index, with exact data and lock policy"
+                .to_string()
+        } else if is_create {
             "required but not enforced: define fresh-output identity, output ordering, and one-output-per-plan correspondence"
+                .to_string()
+        } else if runtime_checked {
+            "checked on chain: exact current Type Script group inputs are decoded once, predicates execute once, and every selected input is linearly discharged"
                 .to_string()
         } else {
             "checked statically only: the collection binding is linearly discharged; runtime Cell selection and per-element consumption are not emitted"
@@ -310,12 +417,22 @@ fn plan_for_bounded_collection(
         preserved_fields: Vec::new(),
         witness_fields: if source == "witness" { vec![format!("witness.{}", operation.collection_binding)] } else { Vec::new() },
         lock_args_fields: Vec::new(),
-        on_chain_checked: false,
-        on_chain_checked_obligations: Vec::new(),
+        on_chain_checked: runtime_checked,
+        on_chain_checked_obligations,
         builder_assumptions,
         codegen_coverage_status: codegen_coverage_status.to_string(),
         status: status.to_string(),
-        detail: if is_create {
+        detail: if runtime_checked && is_create {
+            format!(
+                "bounded create_each over '{}' is lowered by the '{}' consensus runtime contract",
+                operation.collection_binding, helper
+            )
+        } else if runtime_checked {
+            format!(
+                "bounded consume_each over '{}' is lowered by the '{}' consensus runtime contract",
+                operation.collection_binding, helper
+            )
+        } else if is_create {
             format!(
                 "bounded create_each over witness plan '{}' requires runtime iteration plus output-count and capacity builder evidence",
                 operation.collection_binding
@@ -327,8 +444,14 @@ fn plan_for_bounded_collection(
             )
         },
         diagnostics: vec![ProofPlanDiagnosticMetadata {
-            severity: "warning".to_string(),
-            message: if is_create {
+            severity: if runtime_checked { "info" } else { "warning" }.to_string(),
+            message: if runtime_checked && is_create {
+                "bounded create_each is enforced by the versioned Molecule plan codec, exact GroupOutput correspondence, output data/lock checks, and the declared capacity floor"
+                    .to_string()
+            } else if runtime_checked {
+                "bounded consume_each is enforced by exact Type Script group selection, runtime count, exact decode, and per-element predicate machine blocks"
+                    .to_string()
+            } else if is_create {
                 "bounded create_each is non-deployable until a canonical witness codec, output correspondence/order, identity, capacity, and runtime predicate contract are implemented"
                     .to_string()
             } else {

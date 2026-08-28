@@ -1,4 +1,4 @@
-module cellscript::canonical_style
+module cellscript::language::core::canonical_style
 
 resource Vault has store, create, consume, replace, relock {
     owner: Address,

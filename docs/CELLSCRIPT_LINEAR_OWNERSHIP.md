@@ -46,16 +46,17 @@ Silent end-of-scope loss is rejected.
 
 Generic ownership of collections of linear cells is not a production feature.
 0.13 stack-backed `Vec<T: FixedWidth>` helpers are verifier-local value
-helpers, not cell ownership containers. A `Vec<Token>` or `HashMap<Hash, NFT>`
-would require a verifier-backed membership and consumption model. Until that
-model exists, such cases must remain compile-time rejected or represented as
-structured runtime blockers.
+helpers, not cell ownership containers. 0.26 adds one closed exception:
+fixed-width `BoundedCellSet<T, N>` over the current Type Script `GroupInput`
+with linear `consume_each`, plus a fixed-width `BoundedList<P, N>` whose
+versioned plan is checked against canonical `GroupOutput` Cells. A
+`Vec<Token>` or `HashMap<Hash, NFT>` still lacks this source and membership
+contract and remains rejected.
 
-Missing executable verifier pieces:
+Still-missing executable verifier pieces for the generic case:
 
-- runtime source selection, decoding, and per-element enforcement for
-  `consume_each`
-- canonical witness/output correspondence for `create_each`
+- non-Type-group source selection and dynamic element decoding
+- non-canonical or proof-based witness/output membership correspondence
 - typed collection destructuring
 - verifier-backed membership proofs
 - schema-level ownership witnesses

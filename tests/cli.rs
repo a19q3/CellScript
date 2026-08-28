@@ -5140,9 +5140,13 @@ version = "0.1.0"
 module bounded::gap
 
 struct Plan { amount: u64 }
-resource Token has store, create, consume { amount: u64 }
+resource DynamicToken has store, consume {
+    amount: u64
+    memo: String
+}
+resource Token has store, create { amount: u64 }
 
-action batch(input inputs: BoundedCellSet<Token, 2>, witness plans: BoundedList<Plan, 2>) -> u64 {
+action batch(input inputs: BoundedCellSet<DynamicToken, 2>, witness plans: BoundedList<Plan, 2>) -> u64 {
     verification
         consume_each token in inputs {
             require false
@@ -5165,7 +5169,7 @@ action batch(input inputs: BoundedCellSet<Token, 2>, witness plans: BoundedList<
     assert_eq!(report["diagnostics"][0]["code"], "E2105");
     assert_eq!(report["phase"], "pre-codegen");
     assert_eq!(report["consensus_gaps"].as_array().map(Vec::len), Some(2));
-    assert_eq!(report["consensus_gaps"][0]["operation"], "consume_each:inputs:BoundedCellSet<Token, 2>");
+    assert_eq!(report["consensus_gaps"][0]["operation"], "consume_each:inputs:BoundedCellSet<DynamicToken, 2>");
     assert_eq!(report["consensus_gaps"][0]["missing_enforcement"], "gap:runtime-helper-required");
     assert_eq!(report["consensus_gaps"][1]["missing_enforcement"], "gap:builder-evidence-required");
     assert!(report["consensus_gaps"][0]["remediation"].as_str().unwrap().contains("fixed-arity"));
@@ -7651,7 +7655,7 @@ action run() -> u64 {
 
 #[test]
 fn cellc_explain_proof_summary_reports_fail_closed_diagnostics() {
-    let input = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/language/v0_14_witness_source.cell");
+    let input = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/language/ckb/witness_source.cell");
 
     let output = Command::new(env!("CARGO_BIN_EXE_cellc")).args(["explain", "proof"]).arg(&input).arg("--json").output().unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));

@@ -1,10 +1,10 @@
-module cellscript::language::v0_15_identity_lifecycle
+module cellscript::language::ownership::identity_lifecycle
 
 // v0.15 identity policies and destruction policies: demonstrates
 // identity declarations, create_unique/replace_unique lifecycle forms,
 // and policy-specific destruction.
 
-#[type_id("cellscript::language::v0_15_identity_lifecycle::TypedToken:v1")]
+#[type_id("cellscript::language::ownership::identity_lifecycle::TypedToken:v1")]
 resource TypedToken has store, create, consume, replace, burn, relock
     identity(ckb_type_id)
 {

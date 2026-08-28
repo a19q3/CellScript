@@ -206,13 +206,13 @@ Roadmap example gate:
 
 ```bash
 cargo run --locked -p cellscript -- explain-profile ckb --json
-cargo run --locked -p cellscript -- constraints examples/language/v0_14_witness_source.cell --target-profile ckb
-cargo run --locked -p cellscript -- examples/language/v0_14_delegate_verify.cell --target-profile ckb
-cargo run --locked -p cellscript -- examples/language/v0_14_multi_step_pipeline.cell --target-profile ckb
-cargo run --locked -p cellscript -- examples/language/v0_14_witness_source.cell --target-profile ckb
-cargo run --locked -p cellscript -- examples/language/v0_14_ckb_type_id_create.cell --target-profile ckb
-cargo run --locked -p cellscript -- examples/language/v0_14_capacity_time.cell --target-profile ckb
-cargo run --locked -p cellscript -- examples/language/canonical_style.cell --target-profile ckb
+cargo run --locked -p cellscript -- constraints examples/language/ckb/witness_source.cell --target-profile ckb
+cargo run --locked -p cellscript -- examples/language/ckb/delegate_verify.cell --target-profile ckb
+cargo run --locked -p cellscript -- examples/language/ckb/multi_step_pipeline.cell --target-profile ckb
+cargo run --locked -p cellscript -- examples/language/ckb/witness_source.cell --target-profile ckb
+cargo run --locked -p cellscript -- examples/language/ckb/type_id_create.cell --target-profile ckb
+cargo run --locked -p cellscript -- examples/language/ckb/capacity_time.cell --target-profile ckb
+cargo run --locked -p cellscript -- examples/language/core/canonical_style.cell --target-profile ckb
 ```
 
 ## Summary

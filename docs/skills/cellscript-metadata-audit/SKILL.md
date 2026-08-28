@@ -23,7 +23,7 @@ stream, not consensus truth. ProofPlan rows, TemplateLayout records, receipts,
 constraints, ABI, and builder assumptions explain what the compiler emitted and
 what remains to be checked by builders or CKB nodes.
 
-For the current 0.25 development line, inspect current metadata schema 61 under
+For the current 0.26 development line, inspect current metadata schema 62 under
 Edition 2026 and the resolved compatibility profile, together with the canonical
 lowering record and source map for CKB ELF builds. Typed transaction views, bounded
 quantifiers/collections, capability proofs, enum layouts, validity predicates,

@@ -1,4 +1,4 @@
-module cellscript::language::v0_22_borrow
+module cellscript::language::ownership::borrowing
 
 resource BorrowedToken has store, consume, burn {
     amount: u64,

@@ -1,4 +1,4 @@
-module cellscript::language::v0_14_witness_source
+module cellscript::language::ckb::witness_source
 
 resource Wallet has store {
     owner: Address,

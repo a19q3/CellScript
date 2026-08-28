@@ -47,12 +47,17 @@ both compiler-backed and least-privilege verifier outputs. Passing this matrix
 does not assert that a Lock Script semantically implements its IDL.
 
 `dev` and `ci` run `cellc fmt --check` against
-`examples/language/canonical_style.cell`. The formatter's comma-terminated
+`examples/language/core/canonical_style.cell`. The formatter's comma-terminated
 field form is the canonical checked-in surface; the parser may continue to
 accept comma-free fields as compatibility input. The same modes reject raw
 `u64` maximum and `MAX - delta` magic literals in the checked NFT, timelock,
 atomic-swap, and multi-phase-DAO example pairs; boundary arithmetic must use
 their local `U64_MAX` constants.
+
+The native source-policy check also rejects release or version markers in every
+tracked or untracked `.cell` filename. Language examples are classified by
+semantic purpose under `examples/language/{core,ckb,ownership,verification,collections,batches}`;
+version history belongs in the changelog and release notes, not source paths.
 
 Both release modes fail before doing expensive work unless the CellScript tree
 is completely clean, including untracked files. GitHub release CI additionally
@@ -242,12 +247,13 @@ CKB-VM execution, deployment, and chain evidence.
 
 ### 0.25 language, interface, and typed-semantics evidence
 
-The 0.25 implementation advances compile metadata to schema 61. The compiler
+The 0.26 implementation advances compile metadata to schema 62 and constraints
+metadata to schema 3. The compiler
 gate now checks the generated executable-surface matrix, bounded generic value
 instantiations, explicit visibility and canonical public interfaces, six-axis
 interface compatibility, and Registry interface/hash admission. CKB ELF
-lowering uses `cellscript-verified-lowering-record-v3`, embedding the canonical
-`cellscript-typed-semantics-v2` record.
+lowering uses `cellscript-verified-lowering-record-v4`, embedding the canonical
+`cellscript-typed-semantics-v3` record.
 
 The standalone checker remains parser/resolver/codegen-independent. Its
 mutation corpus extends the stable boundary with `V2419` for malformed or
@@ -351,24 +357,31 @@ quantifiers. It has a compile-time `1..=64` bound, emits a real resolved
 positive/missing-dependency CKB-VM cases. Out point, dep type, and original
 DepGroup identity remain manifest/builder evidence.
 
-Bounded Cell collections use the same finite-evidence rule, but are not yet an
-executable production surface. The ownership checker accepts
-`input cells: BoundedCellSet<T, N>` only when its binding is statically
-discharged once by `consume_each`. A fixed-width witness plan may describe
-`witness plans: BoundedList<P, N>` with exactly one `create` template per plan
-element. `runtime.collection_instantiations` records the declared source,
-maximum cardinality, vacuous-zero possibility, and ownership; it does not
-claim an actual runtime count. ProofPlan records
-`actual_scanned_cardinality:not-observed-no-runtime-lowering`.
+Bounded Cell collections use the same finite-evidence rule. In 0.26, the
+ownership checker and backend promote only two fully specified shapes to
+`checked-runtime`: fixed-width `input cells: BoundedCellSet<T, N>` discharged
+once by `consume_each` over the exact current Type Script `GroupInput`, and a
+fixed-width `witness plans: BoundedList<P, N>` whose one complete create
+template per element is verified against the same relative `GroupOutput`.
+Metadata records the versioned runtime contracts
+`bounded-type-group-inputs-v1` and `bounded-output-plan-v1`, runtime-observed
+cardinality, exact plan/output count, per-element predicate execution, output
+data/lock checks, and the on-chain capacity floor.
 
-The IR retains the checked predicates and create template, then emits a
-registered fail-closed operation. Non-production CKB artifacts return runtime
-error 24 (`collection-runtime-unsupported`). `--production` and
-`--deny-fail-closed` reject both operations before ASM/ELF generation with
-E2105. The diagnostic names the operation, source origin, missing enforcement,
-and remediation. The quick syntax gate continues to cover missing bounds,
-duplicate static consumption, and `Vec<Resource>` rejection; CKB-VM coverage
-pins the exact-negative runtime boundary.
+The plan codec is `CSBPLv1\0 || u32_count_le || fixed_width_elements`; its
+maximum encoded size is 4084 bytes so the surrounding `CSARGv1\0` entry payload
+fits the 4096-byte wrapper buffer. Bounded bodies may update only mutable outer
+numeric accumulators with `+=`, in addition to pure `require` predicates and
+the single create template. The gate has production-policy and CKB-VM vectors
+for zero/one/N/N+1 cardinality, malformed data and codecs, predicate failures,
+output count/order/data/lock/capacity mismatches, and the four checked 0.26
+business examples.
+
+Every other bounded shape remains registered fail-closed. Dynamic or recursive
+elements, non-input sources, custom output identities, incomplete templates,
+missing explicit locks or capacity floors, and arbitrary body mutation return
+runtime error 24 in permissive artifacts and are rejected before codegen with
+E2105 under `--production` or `--deny-fail-closed`.
 
 More generally, production treats every selected consensus-relevant ProofPlan
 `gap:*` status as a hard blocker. This includes runtime-helper, builder-evidence,

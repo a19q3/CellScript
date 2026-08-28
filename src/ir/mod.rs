@@ -312,12 +312,22 @@ pub struct IrBoundedCollectionOp {
     pub max_elements: usize,
     pub source: ParamSource,
     pub output_type: Option<String>,
-    /// Predicates retained from the type-checked bounded body. These are
-    /// audit records until a source-selection/runtime iteration contract is
-    /// defined; codegen must not pretend they were executed.
+    /// Predicates retained from the type-checked bounded body. A selected
+    /// runtime contract executes them once per element; fail-closed shapes
+    /// retain them only as audit evidence.
     pub predicates: Vec<String>,
+    /// Restricted outer numeric `+=` updates executed once per element. These
+    /// make aggregate conservation auditable without admitting arbitrary loop
+    /// mutation or Cell effects.
+    pub accumulator_updates: Vec<String>,
     /// The single type-checked create template retained for `create_each`.
     pub create_template: Option<IrBoundedCreateTemplate>,
+    /// Positive consensus-runtime contract selected for this exact shape.
+    /// `None` keeps the operation on the explicit fail-closed path.
+    pub runtime_contract: Option<String>,
+    /// Exact encoded element width for the first executable bounded runtime
+    /// contracts. Dynamic element schemas remain fail-closed.
+    pub element_width: Option<usize>,
     pub span: Span,
 }
 
@@ -330,6 +340,11 @@ pub struct IrBoundedCreateTemplate {
 
 pub const BOUNDED_CONSUME_EACH_FAIL_CLOSED_HELPER: &str = "__cellscript_bounded_consume_each_fail_closed";
 pub const BOUNDED_CREATE_EACH_FAIL_CLOSED_HELPER: &str = "__cellscript_bounded_create_each_fail_closed";
+pub const BOUNDED_TYPE_GROUP_INPUTS_V1: &str = "bounded-type-group-inputs-v1";
+pub const BOUNDED_OUTPUT_PLAN_V1: &str = "bounded-output-plan-v1";
+pub const BOUNDED_OUTPUT_PLAN_MAGIC_V1: &[u8; 8] = b"CSBPLv1\0";
+const BOUNDED_CELL_RUNTIME_MAX_DATA_BYTES: usize = 512;
+pub const BOUNDED_OUTPUT_PLAN_MAX_BYTES: usize = 4084;
 
 #[derive(Debug, Clone)]
 pub struct CellPattern {
@@ -406,44 +421,213 @@ pub struct BlockId(pub usize);
 
 #[derive(Debug, Clone)]
 pub enum IrInstruction {
-    LoadConst { dest: IrVar, value: IrConst },
-    LoadVar { dest: IrVar, name: String },
-    StoreVar { name: String, src: IrOperand },
-    Binary { dest: IrVar, op: BinaryOp, left: IrOperand, right: IrOperand },
-    Unary { dest: IrVar, op: UnaryOp, operand: IrOperand },
-    FieldAccess { dest: IrVar, obj: IrOperand, field: String },
-    Index { dest: IrVar, arr: IrOperand, idx: IrOperand },
-    Length { dest: IrVar, operand: IrOperand },
-    TypeHash { dest: IrVar, operand: IrOperand },
-    CollectionNew { dest: IrVar, ty: String, capacity: Option<IrOperand> },
-    CollectionCapacity { dest: IrVar, collection: IrOperand },
-    CollectionPush { collection: IrOperand, value: IrOperand },
-    CollectionExtend { collection: IrOperand, slice: IrOperand },
-    CollectionClear { collection: IrOperand },
-    CollectionContains { dest: IrVar, collection: IrOperand, value: IrOperand },
-    CollectionRemove { dest: IrVar, collection: IrOperand, index: IrOperand },
-    CollectionInsert { collection: IrOperand, index: IrOperand, value: IrOperand },
-    CollectionSet { collection: IrOperand, index: IrOperand, value: IrOperand },
-    CollectionPop { dest: IrVar, collection: IrOperand },
-    CollectionReverse { collection: IrOperand },
-    CollectionTruncate { collection: IrOperand, len: IrOperand },
-    CollectionSwap { collection: IrOperand, left: IrOperand, right: IrOperand },
-    Call { dest: Option<IrVar>, func: String, args: Vec<IrOperand> },
-    ReadRef { dest: IrVar, ty: String },
-    Move { dest: IrVar, src: IrOperand },
-    Tuple { dest: IrVar, fields: Vec<IrOperand> },
-    EnumConstruct { dest: IrVar, enum_name: String, variant: String, fields: Vec<IrOperand> },
-    EnumTag { dest: IrVar, operand: IrOperand, enum_name: String },
-    EnumPayload { dest: IrVar, operand: IrOperand, enum_name: String, variant: String, field_index: usize },
-    Consume { operand: IrOperand },
-    Create { dest: IrVar, pattern: CreatePattern },
-    Transfer { dest: IrVar, operand: IrOperand, to: IrOperand },
-    Destroy { operand: IrOperand, policy: IrDestructionPolicy },
-    Claim { dest: IrVar, receipt: IrOperand },
-    Settle { dest: IrVar, operand: IrOperand },
-    CreateUnique { dest: IrVar, pattern: CreatePattern, identity: IrIdentityPolicy },
-    ReplaceUnique { dest: IrVar, operand: IrOperand, pattern: CreatePattern, identity: IrIdentityPolicy },
-    CellMetadataEquality { left: IrOperand, right: IrOperand, field: CellMetadataField },
+    LoadConst {
+        dest: IrVar,
+        value: IrConst,
+    },
+    LoadVar {
+        dest: IrVar,
+        name: String,
+    },
+    StoreVar {
+        name: String,
+        src: IrOperand,
+    },
+    Binary {
+        dest: IrVar,
+        op: BinaryOp,
+        left: IrOperand,
+        right: IrOperand,
+    },
+    Unary {
+        dest: IrVar,
+        op: UnaryOp,
+        operand: IrOperand,
+    },
+    FieldAccess {
+        dest: IrVar,
+        obj: IrOperand,
+        field: String,
+    },
+    Index {
+        dest: IrVar,
+        arr: IrOperand,
+        idx: IrOperand,
+    },
+    Length {
+        dest: IrVar,
+        operand: IrOperand,
+    },
+    TypeHash {
+        dest: IrVar,
+        operand: IrOperand,
+    },
+    CollectionNew {
+        dest: IrVar,
+        ty: String,
+        capacity: Option<IrOperand>,
+    },
+    CollectionCapacity {
+        dest: IrVar,
+        collection: IrOperand,
+    },
+    CollectionPush {
+        collection: IrOperand,
+        value: IrOperand,
+    },
+    CollectionExtend {
+        collection: IrOperand,
+        slice: IrOperand,
+    },
+    CollectionClear {
+        collection: IrOperand,
+    },
+    CollectionContains {
+        dest: IrVar,
+        collection: IrOperand,
+        value: IrOperand,
+    },
+    CollectionRemove {
+        dest: IrVar,
+        collection: IrOperand,
+        index: IrOperand,
+    },
+    CollectionInsert {
+        collection: IrOperand,
+        index: IrOperand,
+        value: IrOperand,
+    },
+    CollectionSet {
+        collection: IrOperand,
+        index: IrOperand,
+        value: IrOperand,
+    },
+    CollectionPop {
+        dest: IrVar,
+        collection: IrOperand,
+    },
+    CollectionReverse {
+        collection: IrOperand,
+    },
+    CollectionTruncate {
+        collection: IrOperand,
+        len: IrOperand,
+    },
+    CollectionSwap {
+        collection: IrOperand,
+        left: IrOperand,
+        right: IrOperand,
+    },
+    /// Load one canonically ordered Cell from the current Type Script group's
+    /// input view. `found` is false only for CKB_INDEX_OUT_OF_BOUND. A
+    /// successful load at `index >= max_elements` fails with the stable
+    /// bounded-cardinality runtime error.
+    BoundedCellLoad {
+        dest: IrVar,
+        found: IrVar,
+        index: IrOperand,
+        max_elements: usize,
+        element_type: String,
+        element_width: usize,
+    },
+    /// Decode one element from the canonical versioned Molecule FixVec carried
+    /// by the BoundedList witness parameter.
+    BoundedPlanLoad {
+        dest: IrVar,
+        found: IrVar,
+        plan: IrOperand,
+        index: IrOperand,
+        max_elements: usize,
+        element_type: String,
+        element_width: usize,
+    },
+    /// Verify the GroupOutput at the plan-relative index against the single
+    /// type-checked create template, including lock and capacity policy.
+    BoundedOutputVerify {
+        index: IrOperand,
+        pattern: CreatePattern,
+        capacity_floor_shannons: u64,
+    },
+    /// Prove that the canonical GroupOutput view ends exactly where the plan
+    /// ends, rejecting both missing and extra outputs.
+    BoundedOutputEnd {
+        index: IrOperand,
+    },
+    Call {
+        dest: Option<IrVar>,
+        func: String,
+        args: Vec<IrOperand>,
+    },
+    ReadRef {
+        dest: IrVar,
+        ty: String,
+    },
+    Move {
+        dest: IrVar,
+        src: IrOperand,
+    },
+    Tuple {
+        dest: IrVar,
+        fields: Vec<IrOperand>,
+    },
+    EnumConstruct {
+        dest: IrVar,
+        enum_name: String,
+        variant: String,
+        fields: Vec<IrOperand>,
+    },
+    EnumTag {
+        dest: IrVar,
+        operand: IrOperand,
+        enum_name: String,
+    },
+    EnumPayload {
+        dest: IrVar,
+        operand: IrOperand,
+        enum_name: String,
+        variant: String,
+        field_index: usize,
+    },
+    Consume {
+        operand: IrOperand,
+    },
+    Create {
+        dest: IrVar,
+        pattern: CreatePattern,
+    },
+    Transfer {
+        dest: IrVar,
+        operand: IrOperand,
+        to: IrOperand,
+    },
+    Destroy {
+        operand: IrOperand,
+        policy: IrDestructionPolicy,
+    },
+    Claim {
+        dest: IrVar,
+        receipt: IrOperand,
+    },
+    Settle {
+        dest: IrVar,
+        operand: IrOperand,
+    },
+    CreateUnique {
+        dest: IrVar,
+        pattern: CreatePattern,
+        identity: IrIdentityPolicy,
+    },
+    ReplaceUnique {
+        dest: IrVar,
+        operand: IrOperand,
+        pattern: CreatePattern,
+        identity: IrIdentityPolicy,
+    },
+    CellMetadataEquality {
+        left: IrOperand,
+        right: IrOperand,
+        field: CellMetadataField,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -553,6 +737,8 @@ pub struct IrGenerator {
     transition_coverable_value_ids: HashSet<usize>,
     type_fields: HashMap<String, HashMap<String, IrType>>,
     type_kinds: HashMap<String, IrTypeKind>,
+    type_capacity_floors: HashMap<String, u64>,
+    type_identities: HashMap<String, IrIdentityPolicy>,
     receipt_claim_outputs: HashMap<String, Option<IrType>>,
     flow_states: HashMap<String, Vec<String>>,
     flow_state_fields: HashMap<String, String>,
@@ -792,6 +978,8 @@ impl IrGenerator {
             transition_coverable_value_ids: HashSet::new(),
             type_fields: HashMap::new(),
             type_kinds: HashMap::new(),
+            type_capacity_floors: HashMap::new(),
+            type_identities: HashMap::new(),
             receipt_claim_outputs: HashMap::new(),
             flow_states: HashMap::new(),
             flow_state_fields: HashMap::new(),
@@ -878,6 +1066,10 @@ impl IrGenerator {
             match item {
                 Item::Resource(r) => {
                     self.type_kinds.insert(r.name.clone(), IrTypeKind::Resource);
+                    if let Some(floor) = &r.capacity_floor {
+                        self.type_capacity_floors.insert(r.name.clone(), floor.shannons);
+                    }
+                    self.type_identities.insert(r.name.clone(), Self::lower_identity_policy(&r.identity));
                     self.type_fields.insert(
                         r.name.clone(),
                         r.fields.iter().map(|field| (field.name.clone(), Self::convert_type(&field.ty))).collect(),
@@ -889,6 +1081,10 @@ impl IrGenerator {
                 }
                 Item::Shared(s) => {
                     self.type_kinds.insert(s.name.clone(), IrTypeKind::Shared);
+                    if let Some(floor) = &s.capacity_floor {
+                        self.type_capacity_floors.insert(s.name.clone(), floor.shannons);
+                    }
+                    self.type_identities.insert(s.name.clone(), Self::lower_identity_policy(&s.identity));
                     self.type_fields.insert(
                         s.name.clone(),
                         s.fields.iter().map(|field| (field.name.clone(), Self::convert_type(&field.ty))).collect(),
@@ -900,6 +1096,10 @@ impl IrGenerator {
                 }
                 Item::Receipt(r) => {
                     self.type_kinds.insert(r.name.clone(), IrTypeKind::Receipt);
+                    if let Some(floor) = &r.capacity_floor {
+                        self.type_capacity_floors.insert(r.name.clone(), floor.shannons);
+                    }
+                    self.type_identities.insert(r.name.clone(), Self::lower_identity_policy(&r.identity));
                     self.receipt_claim_outputs.insert(r.name.clone(), r.claim_output.as_ref().map(Self::convert_type));
                     self.type_fields.insert(
                         r.name.clone(),
@@ -912,6 +1112,10 @@ impl IrGenerator {
                 }
                 Item::Struct(s) => {
                     self.type_kinds.insert(s.name.clone(), IrTypeKind::Struct);
+                    if let Some(floor) = &s.capacity_floor {
+                        self.type_capacity_floors.insert(s.name.clone(), floor.shannons);
+                    }
+                    self.type_identities.insert(s.name.clone(), IrIdentityPolicy::None);
                     self.type_fields.insert(
                         s.name.clone(),
                         s.fields.iter().map(|field| (field.name.clone(), Self::convert_type(&field.ty))).collect(),
@@ -2025,7 +2229,21 @@ impl IrGenerator {
         let create_set = self.collect_create_patterns(&blocks, &ir_params);
         let mutate_set = self.collect_mutate_param_patterns(&ir_params, consume_set.len(), create_set.len());
         let write_intents = Self::collect_write_intents(&create_set, &mutate_set);
-        let bounded_collection_ops = collect_bounded_collection_ops(stmts, params);
+        let mut bounded_collection_ops = collect_bounded_collection_ops(stmts, params);
+        for operation in &mut bounded_collection_ops {
+            if operation.operation == "consume_each"
+                && let Some(width) =
+                    self.bounded_consume_runtime_width(&operation.element_type, operation.source, operation.max_elements)
+            {
+                operation.runtime_contract = Some(BOUNDED_TYPE_GROUP_INPUTS_V1.to_string());
+                operation.element_width = Some(width);
+            } else if operation.operation == "create_each"
+                && let Some(width) = self.bounded_create_runtime_width(operation)
+            {
+                operation.runtime_contract = Some(BOUNDED_OUTPUT_PLAN_V1.to_string());
+                operation.element_width = Some(width);
+            }
+        }
         let borrow_regions = std::mem::take(&mut self.borrow_regions);
         self.transition_param_ids.clear();
         self.transition_coverable_value_ids.clear();
@@ -2034,6 +2252,50 @@ impl IrGenerator {
             ir_params,
             IrBody { consume_set, read_refs, create_set, mutate_set, write_intents, bounded_collection_ops, borrow_regions, blocks },
         )
+    }
+
+    fn bounded_consume_runtime_width(&self, element_type: &str, source: ParamSource, max_elements: usize) -> Option<usize> {
+        if source != ParamSource::Input || !(1..=1024).contains(&max_elements) {
+            return None;
+        }
+        if self.type_kinds.get(element_type) != Some(&IrTypeKind::Resource) {
+            return None;
+        }
+        let width = self.fixed_encoded_size(&IrType::Named(element_type.to_string()))?;
+        (width > 0 && width <= BOUNDED_CELL_RUNTIME_MAX_DATA_BYTES).then_some(width)
+    }
+
+    fn bounded_create_runtime_width(&self, operation: &IrBoundedCollectionOp) -> Option<usize> {
+        if operation.source != ParamSource::Witness || !(1..=1024).contains(&operation.max_elements) {
+            return None;
+        }
+        if self.type_kinds.get(&operation.element_type) != Some(&IrTypeKind::Struct) {
+            return None;
+        }
+        let plan_width = self.fixed_encoded_size(&IrType::Named(operation.element_type.clone()))?;
+        let encoded_max = operation.max_elements.checked_mul(plan_width)?.checked_add(12)?;
+        if plan_width == 0 || encoded_max > BOUNDED_OUTPUT_PLAN_MAX_BYTES {
+            return None;
+        }
+        let output_type = operation.output_type.as_ref()?;
+        if self.type_kinds.get(output_type) != Some(&IrTypeKind::Resource)
+            || self
+                .fixed_encoded_size(&IrType::Named(output_type.clone()))
+                .is_none_or(|width| width == 0 || width > BOUNDED_CELL_RUNTIME_MAX_DATA_BYTES)
+            || self.type_capacity_floors.get(output_type).copied().is_none_or(|floor| floor == 0)
+            || self.type_identities.get(output_type) != Some(&IrIdentityPolicy::None)
+        {
+            return None;
+        }
+        let template = operation.create_template.as_ref()?;
+        let required_fields = self.type_fields.get(output_type)?;
+        if template.lock.is_none()
+            || template.fields.len() != required_fields.len()
+            || !required_fields.keys().all(|field| template.fields.iter().any(|(name, _)| name == field))
+        {
+            return None;
+        }
+        Some(plan_width)
     }
 
     fn collect_write_intents(create_set: &[CreatePattern], mutate_set: &[MutatePattern]) -> Vec<WriteIntent> {
@@ -5564,15 +5826,24 @@ impl IrGenerator {
     ) -> Option<LoweredExpr> {
         match call.func.as_ref() {
             Expr::Identifier(name) => match name.as_str() {
-                "__cellscript_consume_each" | "__cellscript_create_each" => {
-                    let helper = if name == "__cellscript_consume_each" {
-                        BOUNDED_CONSUME_EACH_FAIL_CLOSED_HELPER
-                    } else {
-                        BOUNDED_CREATE_EACH_FAIL_CLOSED_HELPER
-                    };
+                "__cellscript_consume_each" => {
+                    if let Some(lowered) = self.lower_bounded_consume_each(call, current, blocks, vars) {
+                        return Some(lowered);
+                    }
                     self.block_mut(blocks, current).instructions.push(IrInstruction::Call {
                         dest: None,
-                        func: helper.to_string(),
+                        func: BOUNDED_CONSUME_EACH_FAIL_CLOSED_HELPER.to_string(),
+                        args: Vec::new(),
+                    });
+                    Some(LoweredExpr { operand: IrOperand::Const(IrConst::Unit), current: Some(current) })
+                }
+                "__cellscript_create_each" => {
+                    if let Some(lowered) = self.lower_bounded_create_each(call, current, blocks, vars) {
+                        return Some(lowered);
+                    }
+                    self.block_mut(blocks, current).instructions.push(IrInstruction::Call {
+                        dest: None,
+                        func: BOUNDED_CREATE_EACH_FAIL_CLOSED_HELPER.to_string(),
                         args: Vec::new(),
                     });
                     Some(LoweredExpr { operand: IrOperand::Const(IrConst::Unit), current: Some(current) })
@@ -6801,6 +7072,224 @@ impl IrGenerator {
             },
             _ => None,
         }
+    }
+
+    fn lower_bounded_consume_each(
+        &mut self,
+        call: &CallExpr,
+        current: BlockId,
+        blocks: &mut Vec<IrBlock>,
+        vars: &mut HashMap<String, IrVar>,
+    ) -> Option<LoweredExpr> {
+        let [Expr::Identifier(binding), Expr::Identifier(collection_binding), Expr::Block(body)] = call.args.as_slice() else {
+            return None;
+        };
+        let collection_var = vars.get(collection_binding)?.clone();
+        let IrType::Named(collection_type) = &collection_var.ty else {
+            return None;
+        };
+        let collection = parse_bounded_collection_type(&Type::Named(collection_type.clone()))?;
+        if collection.kind != BoundedCollectionKind::CellSet {
+            return None;
+        }
+        let element_width =
+            self.bounded_consume_runtime_width(&collection.element_type, ParamSource::Input, collection.max_elements)?;
+
+        let index_var = self.new_var("bounded_cell_index", IrType::U64);
+        self.block_mut(blocks, current)
+            .instructions
+            .push(IrInstruction::Move { dest: index_var.clone(), src: IrOperand::Const(IrConst::U64(0)) });
+
+        let scan_block = self.push_block(blocks);
+        let body_block = self.push_block(blocks);
+        let exit_block = self.push_block(blocks);
+        self.block_mut(blocks, current).terminator = IrTerminator::Jump(scan_block);
+
+        let element_var = self.new_var(binding.clone(), IrType::Named(collection.element_type.clone()));
+        let found_var = self.new_var("bounded_cell_found", IrType::Bool);
+        self.block_mut(blocks, scan_block).instructions.push(IrInstruction::BoundedCellLoad {
+            dest: element_var.clone(),
+            found: found_var.clone(),
+            index: IrOperand::Var(index_var.clone()),
+            max_elements: collection.max_elements,
+            element_type: collection.element_type.clone(),
+            element_width,
+        });
+        self.block_mut(blocks, scan_block).terminator =
+            IrTerminator::Branch { cond: IrOperand::Var(found_var), then_block: body_block, else_block: exit_block };
+
+        let mut body_vars = vars.clone();
+        body_vars.insert(binding.clone(), element_var);
+        let body_exit = self.lower_stmts(body, body_block, blocks, &mut body_vars, None, false);
+        if let Some(body_exit) = body_exit {
+            let next_index = self.new_var("bounded_cell_next", IrType::U64);
+            let block = self.block_mut(blocks, body_exit);
+            block.instructions.push(IrInstruction::Binary {
+                dest: next_index.clone(),
+                op: BinaryOp::Add,
+                left: IrOperand::Var(index_var.clone()),
+                right: IrOperand::Const(IrConst::U64(1)),
+            });
+            block.instructions.push(IrInstruction::Move { dest: index_var, src: IrOperand::Var(next_index) });
+            block.terminator = IrTerminator::Jump(scan_block);
+        }
+
+        Some(LoweredExpr { operand: IrOperand::Const(IrConst::Unit), current: Some(exit_block) })
+    }
+
+    fn lower_bounded_create_each(
+        &mut self,
+        call: &CallExpr,
+        current: BlockId,
+        blocks: &mut Vec<IrBlock>,
+        vars: &mut HashMap<String, IrVar>,
+    ) -> Option<LoweredExpr> {
+        let [Expr::Identifier(binding), Expr::Identifier(collection_binding), Expr::Block(body)] = call.args.as_slice() else {
+            return None;
+        };
+        let collection_var = vars.get(collection_binding)?.clone();
+        let IrType::Named(collection_type) = &collection_var.ty else {
+            return None;
+        };
+        let collection = parse_bounded_collection_type(&Type::Named(collection_type.clone()))?;
+        if collection.kind != BoundedCollectionKind::List {
+            return None;
+        }
+        let create = body.iter().find_map(|stmt| match stmt {
+            Stmt::Expr(Expr::Create(create)) => Some(create),
+            _ => None,
+        })?;
+        let (element_width, capacity_floor_shannons) =
+            self.bounded_create_call_runtime_shape(&collection.element_type, collection.max_elements, create)?;
+
+        let index_var = self.new_var("bounded_plan_index", IrType::U64);
+        self.block_mut(blocks, current)
+            .instructions
+            .push(IrInstruction::Move { dest: index_var.clone(), src: IrOperand::Const(IrConst::U64(0)) });
+
+        let scan_block = self.push_block(blocks);
+        let body_block = self.push_block(blocks);
+        let exit_block = self.push_block(blocks);
+        self.block_mut(blocks, current).terminator = IrTerminator::Jump(scan_block);
+
+        let element_var = self.new_var(binding.clone(), IrType::Named(collection.element_type.clone()));
+        let found_var = self.new_var("bounded_plan_found", IrType::Bool);
+        self.block_mut(blocks, scan_block).instructions.push(IrInstruction::BoundedPlanLoad {
+            dest: element_var.clone(),
+            found: found_var.clone(),
+            plan: IrOperand::Var(collection_var),
+            index: IrOperand::Var(index_var.clone()),
+            max_elements: collection.max_elements,
+            element_type: collection.element_type.clone(),
+            element_width,
+        });
+        self.block_mut(blocks, scan_block).terminator =
+            IrTerminator::Branch { cond: IrOperand::Var(found_var), then_block: body_block, else_block: exit_block };
+
+        let mut body_vars = vars.clone();
+        body_vars.insert(binding.clone(), element_var);
+        let mut active = Some(body_block);
+        for stmt in body {
+            let Some(current_body) = active else { break };
+            if let Stmt::Expr(Expr::Create(create)) = stmt {
+                let (next, pattern) = self.lower_bounded_create_pattern(create, current_body, blocks, &mut body_vars)?;
+                self.block_mut(blocks, next).instructions.push(IrInstruction::BoundedOutputVerify {
+                    index: IrOperand::Var(index_var.clone()),
+                    pattern,
+                    capacity_floor_shannons,
+                });
+                active = Some(next);
+            } else {
+                active = self.lower_stmt(stmt, current_body, blocks, &mut body_vars, None);
+            }
+        }
+        if let Some(body_exit) = active {
+            let next_index = self.new_var("bounded_plan_next", IrType::U64);
+            let block = self.block_mut(blocks, body_exit);
+            block.instructions.push(IrInstruction::Binary {
+                dest: next_index.clone(),
+                op: BinaryOp::Add,
+                left: IrOperand::Var(index_var.clone()),
+                right: IrOperand::Const(IrConst::U64(1)),
+            });
+            block.instructions.push(IrInstruction::Move { dest: index_var.clone(), src: IrOperand::Var(next_index) });
+            block.terminator = IrTerminator::Jump(scan_block);
+        }
+
+        self.block_mut(blocks, exit_block).instructions.push(IrInstruction::BoundedOutputEnd { index: IrOperand::Var(index_var) });
+        Some(LoweredExpr { operand: IrOperand::Const(IrConst::Unit), current: Some(exit_block) })
+    }
+
+    fn bounded_create_call_runtime_shape(&self, element_type: &str, max_elements: usize, create: &CreateExpr) -> Option<(usize, u64)> {
+        if !(1..=1024).contains(&max_elements) || self.type_kinds.get(element_type) != Some(&IrTypeKind::Struct) {
+            return None;
+        }
+        let plan_width = self.fixed_encoded_size(&IrType::Named(element_type.to_string()))?;
+        let encoded_max = max_elements.checked_mul(plan_width)?.checked_add(12)?;
+        if plan_width == 0 || encoded_max > BOUNDED_OUTPUT_PLAN_MAX_BYTES {
+            return None;
+        }
+        if self.type_kinds.get(&create.ty) != Some(&IrTypeKind::Resource)
+            || self
+                .fixed_encoded_size(&IrType::Named(create.ty.clone()))
+                .is_none_or(|width| width == 0 || width > BOUNDED_CELL_RUNTIME_MAX_DATA_BYTES)
+            || self.type_identities.get(&create.ty) != Some(&IrIdentityPolicy::None)
+            || create.lock.is_none()
+        {
+            return None;
+        }
+        let fields = self.type_fields.get(&create.ty)?;
+        if create.fields.len() != fields.len() || !fields.keys().all(|field| create.fields.iter().any(|(name, _)| name == field)) {
+            return None;
+        }
+        Some((plan_width, self.type_capacity_floors.get(&create.ty).copied().filter(|floor| *floor > 0)?))
+    }
+
+    fn lower_bounded_create_pattern(
+        &mut self,
+        create: &CreateExpr,
+        current: BlockId,
+        blocks: &mut Vec<IrBlock>,
+        vars: &mut HashMap<String, IrVar>,
+    ) -> Option<(BlockId, CreatePattern)> {
+        let mut active = current;
+        let mut lowered_fields = Vec::with_capacity(create.fields.len());
+        let mut field_vars = HashMap::new();
+        for (field_name, field_expr) in &create.fields {
+            let expected_ty = self.type_fields.get(&create.ty).and_then(|fields| fields.get(field_name)).cloned();
+            let lowered = if let Some(state_operand) = self.lower_flow_state_initializer(&create.ty, field_name, field_expr) {
+                LoweredExpr { operand: state_operand, current: Some(active) }
+            } else if let Some(expected_ty) = expected_ty {
+                self.lower_expr_with_expected_type(field_expr, &expected_ty, active, blocks, vars)
+            } else {
+                self.lower_expr(field_expr, active, blocks, vars)
+            };
+            active = lowered.current?;
+            lowered_fields.push((field_name.clone(), lowered.operand.clone()));
+            let field_ty = self.operand_type(&lowered.operand);
+            let field_var = self.new_var(format!("{}_{}", create.ty, field_name), field_ty);
+            self.block_mut(blocks, active).instructions.push(IrInstruction::Move { dest: field_var.clone(), src: lowered.operand });
+            field_vars.insert(field_name.clone(), field_var);
+        }
+        let lock = if let Some(lock_expr) = &create.lock {
+            let lowered = self.lower_expr(lock_expr, active, blocks, vars);
+            active = lowered.current?;
+            Some(lowered.operand)
+        } else {
+            None
+        };
+        active = self.lower_type_validity_checks(&create.ty, &field_vars, active, blocks, vars)?;
+        Some((
+            active,
+            CreatePattern {
+                operation: "bounded-create".to_string(),
+                ty: create.ty.clone(),
+                binding: format!("bounded_create_{}", create.ty),
+                fields: lowered_fields,
+                lock,
+                identity: IrIdentityPolicy::None,
+            },
+        ))
     }
 
     fn lower_script_args_empty(&mut self, current: BlockId, blocks: &mut [IrBlock]) -> LoweredExpr {
@@ -8414,6 +8903,13 @@ fn collect_bounded_collection_ops_from_expr(expr: &Expr, params: &[Param], ops: 
         })
         .flatten()
         .collect();
+    let accumulator_updates = body
+        .iter()
+        .filter_map(|stmt| match stmt {
+            Stmt::Expr(expr @ Expr::Assign(assign)) if assign.op == AssignOp::AddAssign => Some(crate::fmt::format_expression(expr)),
+            _ => None,
+        })
+        .collect();
     let create_template = body.iter().find_map(|stmt| match stmt {
         Stmt::Expr(Expr::Create(create)) => Some(IrBoundedCreateTemplate {
             output_type: create.ty.clone(),
@@ -8432,7 +8928,10 @@ fn collect_bounded_collection_ops_from_expr(expr: &Expr, params: &[Param], ops: 
         source: param.source,
         output_type,
         predicates,
+        accumulator_updates,
         create_template,
+        runtime_contract: None,
+        element_width: None,
         span: call.span,
     });
 }

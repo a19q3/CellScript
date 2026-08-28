@@ -98,8 +98,8 @@ The security-sensitive boundary remains deliberately narrow:
   separate.
 - Sighash building blocks (`source::group_input`, `witness::lock`,
   `env::sighash_all`) are implemented and exercised in
-  `examples/language/canonical_style.cell` and
-  `examples/language/v0_14_witness_source.cell`; the high-level
+  `examples/language/core/canonical_style.cell` and
+  `examples/language/ckb/witness_source.cell`; the high-level
   `verify_sighash_all(sig, owner)` composition is not part of 0.13.
 - First-class verified signer values are deferred.
 - `protects T { self ... }` sugar is deferred until protected-input selection
@@ -425,7 +425,7 @@ the seven-example CKB production matrix.
 
 ## Canonical Style Example
 
-`examples/language/canonical_style.cell` demonstrates:
+`examples/language/core/canonical_style.cell` demonstrates:
 
 - namespace module declaration;
 - resource, shared, and receipt declarations;
@@ -467,13 +467,13 @@ This list is the living implementation tracker for the RFC.
 | `witness` parameter classification | Done | Records `source: "witness"` metadata; this is still transaction witness data, never signer authority. |
 | `require` lock assertion form | Done | Lowers false conditions to the same fail-closed script validation failure path while producing `true` on success for bool-returning locks. |
 | `lock_args` data-source binding | Implemented for fixed-width lock parameters | Entry wrapper decodes the executing Script.args bytes and rejects trailing bytes after declared typed parameters. |
-| Sighash building blocks (`source::group_input`, `witness::lock`, `env::sighash_all`) | Done | Low-level CKB syscall wrappers for source view construction, witness lock field loading, and sighash-all digest computation. Exercised in `canonical_style.cell` and `v0_14_witness_source.cell`. |
+| Sighash building blocks (`source::group_input`, `witness::lock`, `env::sighash_all`) | Done | Low-level CKB syscall wrappers for source view construction, witness lock field loading, and sighash-all digest computation. Exercised in `canonical_style.cell` and `ckb/witness_source.cell`. |
 | High-level `verify_sighash_all` composition | Not started | Must compose building blocks into a single check and define digest mode, script group scope, witness layout, and replay assumptions. |
 | First-class verified signer abstraction | Deferred | Only after explicit verification primitives are proven and documented. |
 | Hidden sighash defaults | Rejected | Digest mode and signature scope must be visible. |
 | Implicit `Address` as signer | Rejected | Address values do not become authorization proofs by name. |
 | Single-source bundled examples | Done | Top-level `examples/*.cell` is the canonical checked-in bundled business source. `examples/business` and `examples/acceptance` are intentionally absent; acceptance metadata is runner/generated evidence. `examples/language/*.cell` remains for language/tooling coverage. |
-| `examples/language/canonical_style.cell` | Done | Provides a compact idiomatic reference for module style, capabilities, field shorthand, `[]`, `&mut` replacement, and lock-boundary classification. |
+| `examples/language/core/canonical_style.cell` | Done | Provides a compact idiomatic reference for module style, capabilities, field shorthand, `[]`, `&mut` replacement, and lock-boundary classification. |
 | Action production acceptance | Done | Existing bundled action acceptance remains builder-backed. |
 | Lock valid-spend and invalid-spend matrix | Done | Existing bundled locks are exercised through builder-backed local CKB transactions. |
 

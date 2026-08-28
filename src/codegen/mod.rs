@@ -782,6 +782,7 @@ struct CallableAbi {
     params: Vec<IrParam>,
     type_hash_param_indices: BTreeSet<usize>,
     runtime_bound_param_indices: BTreeSet<usize>,
+    bounded_plan_param_indices: BTreeSet<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1345,6 +1346,7 @@ impl CodeGenerator {
                 .enumerate()
                 .filter_map(|(index, param)| self.param_is_runtime_bound(param).then_some(index))
                 .collect::<BTreeSet<_>>();
+            let mut bounded_plan_param_indices = BTreeSet::new();
             for pattern in body.consume_set.iter().chain(body.read_refs.iter()) {
                 if let Some(param) = params.iter().position(|param| param.name == pattern.binding) {
                     runtime_bound_param_indices.insert(param);
@@ -1353,6 +1355,20 @@ impl CodeGenerator {
             for pattern in &body.mutate_set {
                 if let Some(param) = params.iter().position(|param| param.name == pattern.binding) {
                     runtime_bound_param_indices.insert(param);
+                }
+            }
+            for operation in &body.bounded_collection_ops {
+                if operation.operation == "consume_each"
+                    && operation.runtime_contract.as_deref() == Some(crate::ir::BOUNDED_TYPE_GROUP_INPUTS_V1)
+                    && let Some(param) = params.iter().position(|param| param.name == operation.collection_binding)
+                {
+                    runtime_bound_param_indices.insert(param);
+                }
+                if operation.operation == "create_each"
+                    && operation.runtime_contract.as_deref() == Some(crate::ir::BOUNDED_OUTPUT_PLAN_V1)
+                    && let Some(param) = params.iter().position(|param| param.name == operation.collection_binding)
+                {
+                    bounded_plan_param_indices.insert(param);
                 }
             }
             for block in &body.blocks {
@@ -1364,8 +1380,15 @@ impl CodeGenerator {
                     }
                 }
             }
-            self.callable_abis
-                .insert(name.clone(), CallableAbi { params: params.clone(), type_hash_param_indices, runtime_bound_param_indices });
+            self.callable_abis.insert(
+                name.clone(),
+                CallableAbi {
+                    params: params.clone(),
+                    type_hash_param_indices,
+                    runtime_bound_param_indices,
+                    bounded_plan_param_indices,
+                },
+            );
         }
         for external in &ir.external_callable_abis {
             if self.callable_abis.contains_key(&external.name) {
@@ -1383,6 +1406,7 @@ impl CodeGenerator {
                     params: external.params.clone(),
                     type_hash_param_indices: external.type_hash_param_indices.clone(),
                     runtime_bound_param_indices,
+                    bounded_plan_param_indices: BTreeSet::new(),
                 },
             );
         }
@@ -1644,6 +1668,15 @@ impl CodeGenerator {
     fn set_consumed_schema_pointers(&mut self, body: &IrBody) {
         for block in &body.blocks {
             for instruction in &block.instructions {
+                if let IrInstruction::BoundedCellLoad { dest, .. } = instruction {
+                    self.schema_pointer_vars.insert(dest.id);
+                    if let Some(size_offset) = self.cell_buffer_size_offsets.get(&dest.id).copied() {
+                        self.schema_pointer_size_offsets.insert(dest.id, size_offset);
+                    }
+                }
+                if let IrInstruction::BoundedPlanLoad { dest, .. } = instruction {
+                    self.schema_pointer_vars.insert(dest.id);
+                }
                 if let Some(var) = consumed_operand_var(instruction) {
                     self.schema_pointer_vars.insert(var.id);
                     if let Some(size_offset) = self.cell_buffer_size_offsets.get(&var.id).copied() {
@@ -2677,6 +2710,16 @@ impl CodeGenerator {
             IrInstruction::CollectionPop { dest, collection } => {
                 self.emit_collection_pop(dest, collection)?;
             }
+            IrInstruction::BoundedCellLoad { dest, found, index, max_elements, element_type, element_width } => {
+                self.emit_bounded_cell_load(dest, found, index, *max_elements, element_type, *element_width);
+            }
+            IrInstruction::BoundedPlanLoad { dest, found, plan, index, max_elements, element_type, element_width } => {
+                self.emit_bounded_plan_load(dest, found, plan, index, *max_elements, element_type, *element_width);
+            }
+            IrInstruction::BoundedOutputVerify { index, pattern, capacity_floor_shannons } => {
+                self.emit_bounded_output_verify(index, pattern, *capacity_floor_shannons);
+            }
+            IrInstruction::BoundedOutputEnd { index } => self.emit_bounded_output_end(index),
             IrInstruction::Call { dest, func, args } => {
                 self.emit_call(dest.as_ref(), func, args)?;
             }
@@ -3767,6 +3810,7 @@ fn first_entrypoint(ir: &IrModule) -> Option<(&str, &[IrParam])> {
 fn entry_witness_payload_layout(
     params: &[IrParam],
     runtime_bound_param_indices: &BTreeSet<usize>,
+    bounded_plan_param_indices: &BTreeSet<usize>,
     enum_layouts: &HashMap<String, IrEnumLayout>,
 ) -> Vec<EntryWitnessPayloadArg> {
     params
@@ -3775,6 +3819,8 @@ fn entry_witness_payload_layout(
         .map(|(index, param)| {
             if !entry_param_consumes_witness_payload(param, index, runtime_bound_param_indices) {
                 EntryWitnessPayloadArg { width: 0, schema_dynamic: false, unsupported: false }
+            } else if bounded_plan_param_indices.contains(&index) {
+                EntryWitnessPayloadArg { width: 4, schema_dynamic: true, unsupported: false }
             } else if is_bounded_collection_type(&param.ty) {
                 EntryWitnessPayloadArg { width: 0, schema_dynamic: false, unsupported: true }
             } else if let Some(layout) = match &param.ty {

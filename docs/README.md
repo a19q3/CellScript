@@ -43,11 +43,15 @@ drafts. Released versions should use non-draft filenames.
   for metadata schema 58, independently checked ELF/lowering evidence,
   executable package scenarios, and the least-privilege Registry artifact
   worker.
-- `docs/releases/CELLSCRIPT_0_25_RELEASE_NOTES.md` is the active implementation
-  record for metadata schema 61, bounded generics, public interfaces,
+- `docs/releases/CELLSCRIPT_0_25_RELEASE_NOTES.md` is the predecessor record
+  for metadata schema 61, bounded generics, public interfaces,
   typed-semantics verification,
   executable-surface closure, bounded-collection fail-closed hardening, local
   evidence retention, and the upgraded Playground inspector.
+- `docs/releases/CELLSCRIPT_0_26_RELEASE_NOTES.md` is the active implementation
+  record for metadata schema 62, typed-semantics v3, exact Type Script group
+  input scans, versioned bounded output plans, and the four checked dynamic
+  batching examples.
 
 Release candidates and planning notes should not live here unless they are the
 final release record.
@@ -64,7 +68,6 @@ High-value active references include:
 - `releases/CELLSCRIPT_0_13_2_RELEASE_NOTES.md` for the final 0.13 syntax
   governance summary
 - `CELLSCRIPT_GATE_POLICY.md`
-- `CELLSCRIPT_SYNTAX_COMBO_AUDIT_METHODOLOGY.md`
 - `CELLSCRIPT_GRAMMAR_GOVERNANCE_RFC.md` for the active grammar-governance
   direction around transition shape, `verification`, `require`, and accounting
   syntax
@@ -125,9 +128,8 @@ layer.
 Active design and evidence records include:
 
 - `CELLSCRIPT_CKB_STD_COMPAT.md` for the ckb-std compatibility boundary
-- `CELLSCRIPT_GRAMMAR_GOVERNANCE_RFC.md` and
-  `CELLSCRIPT_SYNTAX_COMBO_AUDIT_METHODOLOGY.md` for 0.19 grammar/syntax
-  governance scope
+- `CELLSCRIPT_GRAMMAR_GOVERNANCE_RFC.md` for 0.19 grammar/syntax governance
+  scope
 - `CELLSCRIPT_REGISTRY_PHASE1.md` for the current artifact, verification,
   deployment-evidence, and public API contract
 - `CELLSCRIPT_LS_IDL_REGISTRY_PROFILE.md` for the 0.24 Lock Script interface
@@ -147,8 +149,6 @@ current stable contract.
 
 Current archive:
 
-- `docs/archive/0.13/CELLSCRIPT_0_13_1_PLAN.md`
-- `docs/archive/0.13/CELLSCRIPT_SIGNATURE_DIRECTION_EXECUTION_PLAN.md`
 - `docs/archive/0.17/CELLSCRIPT_0_17_ICKB_FINAL_REPORT.md`
 - `docs/archive/0.17/CELLSCRIPT_0_17_ICKB_PRODUCTION_EQUIVALENCE_GATE.md`
 - `docs/archive/0.17/CELLSCRIPT_0_17_REVIEW_FINDINGS_CLOSURE.md`

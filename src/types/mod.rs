@@ -6242,15 +6242,52 @@ impl<'a> TypeChecker<'a> {
                     self.infer_expr(&mut body_env, expr)?;
                     created_types.push(create.ty.clone());
                 }
+                (_, Expr::Assign(assign)) => {
+                    let Expr::Identifier(accumulator) = assign.target.as_ref() else {
+                        return Err(CompileError::new(
+                            format!(
+                                "{} only permits '+=' updates to named outer numeric accumulators",
+                                operation.trim_start_matches("__cellscript_")
+                            ),
+                            assign.span,
+                        ));
+                    };
+                    let Some(accumulator_ty) = env.lookup(accumulator).cloned() else {
+                        return Err(CompileError::new(
+                            format!(
+                                "{} accumulator '{}' must be declared outside the bounded body",
+                                operation.trim_start_matches("__cellscript_"),
+                                accumulator
+                            ),
+                            assign.span,
+                        ));
+                    };
+                    if assign.op != AssignOp::AddAssign || !env.is_mutable(accumulator) || !self.is_numeric_type(&accumulator_ty) {
+                        return Err(CompileError::new(
+                            format!(
+                                "{} only permits '+=' updates to mutable outer numeric accumulators",
+                                operation.trim_start_matches("__cellscript_")
+                            ),
+                            assign.span,
+                        ));
+                    }
+                    let previous_callable = self.current_callable.replace(CallableKind::Invariant);
+                    let mut purity_env = body_env.clone();
+                    let result =
+                        self.infer_expr_with_expected_type(&mut purity_env, &assign.value, &accumulator_ty, expr_span(&assign.value));
+                    self.current_callable = previous_callable;
+                    result?;
+                    self.infer_expr(&mut body_env, expr)?;
+                }
                 _ => {
                     return Err(CompileError::new(
                         format!(
                             "{} body contains unsupported statement; {}",
                             operation.trim_start_matches("__cellscript_"),
                             if kind == BoundedCollectionKind::CellSet {
-                                "consume_each owns the per-element consume and only permits pure require predicates"
+                                "consume_each owns the per-element consume and permits require predicates plus outer numeric '+=' accumulators"
                             } else {
-                                "create_each permits pure require predicates and exactly one create template"
+                                "create_each permits require predicates, outer numeric '+=' accumulators, and exactly one create template"
                             }
                         ),
                         expr.span(),
@@ -9867,6 +9904,76 @@ invariant bad {
         );
 
         let err = check(&module).unwrap_err();
+        assert!(err.message.contains("only transitively Pure helpers are allowed"), "unexpected error: {}", err.message);
+    }
+
+    #[test]
+    fn bounded_lifecycle_bodies_only_admit_outer_numeric_add_assign_accumulators() {
+        let accepted = source_module(
+            r#"
+module test
+
+resource Token has store, consume { amount: u64 }
+
+action batch(input inputs: BoundedCellSet<Token, 4>) -> u64 {
+    verification
+        let mut total: u64 = 0
+        consume_each token in inputs {
+            require token.amount <= 100
+            total += token.amount
+        }
+        require total <= 400
+        return 0
+}
+"#,
+        );
+        check(&accepted).unwrap();
+
+        let rejected = source_module(
+            r#"
+module test
+
+resource Token has store, consume { amount: u64 }
+
+action batch(input inputs: BoundedCellSet<Token, 4>) -> u64 {
+    verification
+        let mut total: u64 = 0
+        consume_each token in inputs {
+            total = token.amount
+        }
+        return 0
+}
+"#,
+        );
+        let err = check(&rejected).unwrap_err();
+        assert!(
+            err.message.contains("only permits '+=' updates to mutable outer numeric accumulators"),
+            "unexpected error: {}",
+            err.message
+        );
+
+        let impure_rhs = source_module(
+            r#"
+module test
+
+resource Token has store, consume { amount: u64 }
+
+#[effect(ReadOnly)]
+fn observed_amount(amount: u64) -> u64 {
+    return amount
+}
+
+action batch(input inputs: BoundedCellSet<Token, 4>) -> u64 {
+    verification
+        let mut total: u64 = 0
+        consume_each token in inputs {
+            total += observed_amount(token.amount)
+        }
+        return 0
+}
+"#,
+        );
+        let err = check(&impure_rhs).unwrap_err();
         assert!(err.message.contains("only transitively Pure helpers are allowed"), "unexpected error: {}", err.message);
     }
 }

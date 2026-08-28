@@ -1,4 +1,4 @@
-module cellscript::language::v0_14_delegate_verify
+module cellscript::language::ckb::delegate_verify
 
 struct Proof {
     message_hash: Hash,

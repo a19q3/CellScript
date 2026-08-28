@@ -1,4 +1,4 @@
-module cellscript::language::v0_14_hash_blake2b
+module cellscript::language::ckb::blake2b_hash
 
 lock blake2b_matches(witness input: Hash, witness expected: Hash) -> bool {
     verification

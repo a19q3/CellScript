@@ -526,6 +526,34 @@ fn operation(
         IrInstruction::CollectionSwap { collection, left, right } => {
             ("collection-swap", vec![], vec![collection, left, right], TypedSemanticOperationDetail::None, None)
         }
+        IrInstruction::BoundedCellLoad { dest, found, index, element_type, max_elements, .. } => (
+            "bounded-cell-load",
+            vec![dest, found],
+            vec![index],
+            TypedSemanticOperationDetail::Collection { declared_type: format!("BoundedCellSet<{}, {}>", element_type, max_elements) },
+            None,
+        ),
+        IrInstruction::BoundedPlanLoad { dest, found, plan, index, element_type, max_elements, .. } => (
+            "bounded-plan-load",
+            vec![dest, found],
+            vec![plan, index],
+            TypedSemanticOperationDetail::Collection { declared_type: format!("BoundedList<{}, {}>", element_type, max_elements) },
+            None,
+        ),
+        IrInstruction::BoundedOutputVerify { index, pattern, .. } => {
+            let mut operands = vec![index];
+            operands.extend(create_pattern_operands(pattern));
+            (
+                "bounded-output-verify",
+                vec![],
+                operands,
+                TypedSemanticOperationDetail::Create { pattern: typed_create_pattern(pattern) },
+                None,
+            )
+        }
+        IrInstruction::BoundedOutputEnd { index } => {
+            ("bounded-output-end", vec![], vec![index], TypedSemanticOperationDetail::None, None)
+        }
         IrInstruction::Call { dest, func, args } => {
             let signature = signatures.get(func).cloned().unwrap_or_else(|| CallableSignature {
                 params: args.iter().map(operand_type).collect(),

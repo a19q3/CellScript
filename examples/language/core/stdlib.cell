@@ -1,4 +1,4 @@
-module cellscript::language::stdlib
+module cellscript::language::core::stdlib
 
 resource Coin has store, create, consume, replace, burn, relock {
     amount: u64,

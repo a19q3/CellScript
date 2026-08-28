@@ -1,6 +1,6 @@
 # CellScript Public Interfaces And Compatibility
 
-**Status**: implemented on `nightly-0.25`
+**Status**: implemented on `nightly-0.26`
 
 **Schemas**: `cellscript-package-interface-v2` and
 `cellscript-interface-compatibility-v1`
@@ -115,7 +115,7 @@ deployment evidence, and chain commitment remain separate states.
 ## Typed Semantics Relationship
 
 The public interface answers “what can a dependency rely on?” The
-`cellscript-typed-semantics-v2` record answers “what typed operations and
+`cellscript-typed-semantics-v3` record answers “what typed operations and
 control-flow facts were lowered?” Both hashes are bound into metadata. ELF
 builds additionally bind the typed record to the verified lowering and machine
 records described in

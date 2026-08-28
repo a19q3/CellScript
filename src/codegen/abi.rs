@@ -17,13 +17,19 @@ impl CodeGenerator {
         let callable_abi = self.callable_abis.get(target).cloned();
         let type_hash_param_indices = callable_abi.as_ref().map(|abi| abi.type_hash_param_indices.clone()).unwrap_or_default();
         let runtime_bound_param_indices = callable_abi.as_ref().map(|abi| abi.runtime_bound_param_indices.clone()).unwrap_or_default();
+        let bounded_plan_param_indices = callable_abi.as_ref().map(|abi| abi.bounded_plan_param_indices.clone()).unwrap_or_default();
         let outgoing_stack_arg_bytes = align_stack_arg_bytes(entry_abi_arg_count(params, callable_abi.as_ref()).saturating_sub(8) * 8);
-        let payload = entry_witness_payload_layout(params, &runtime_bound_param_indices, &self.enum_layouts);
+        let payload =
+            entry_witness_payload_layout(params, &runtime_bound_param_indices, &bounded_plan_param_indices, &self.enum_layouts);
         let payload_len = payload.iter().map(|arg| arg.width).sum::<usize>();
         let has_witness_payload = payload.iter().any(|arg| arg.width > 0 || arg.unsupported);
         let has_lock_args = params.iter().any(|param| param.source == ParamSource::LockArgs);
         let has_dynamic_payload = payload.iter().any(|arg| arg.schema_dynamic);
-        let has_bounded_collection_param = params.iter().any(|param| is_bounded_collection_type(&param.ty));
+        let has_unsupported_bounded_collection_param = params.iter().enumerate().any(|(index, param)| {
+            is_bounded_collection_type(&param.ty)
+                && !runtime_bound_param_indices.contains(&index)
+                && !bounded_plan_param_indices.contains(&index)
+        });
         let min_witness_len = ENTRY_WITNESS_HEADER_SIZE + payload_len;
         let loaded_label = self.fresh_label("entry_witness_loaded");
         let try_group_output_label = self.fresh_label("entry_witness_try_group_output");
@@ -42,7 +48,7 @@ impl CodeGenerator {
         self.emit("# cellscript entry abi: placement profile requires CSARGv1 inside WitnessArgs.input_type");
         self.emit_large_addi("sp", "sp", -(ENTRY_WITNESS_FRAME_SIZE as i64));
         self.emit_stack_store("ra", ENTRY_WITNESS_RA_OFFSET);
-        if has_bounded_collection_param {
+        if has_unsupported_bounded_collection_param {
             self.emit(
                 "# cellscript entry abi: bounded collection source/codec contract is unavailable; reject before decoding witness bytes",
             );
@@ -344,7 +350,7 @@ impl CodeGenerator {
             self.emit(format!("j {}", done_label));
         }
 
-        if has_bounded_collection_param {
+        if has_unsupported_bounded_collection_param {
             self.emit_label(&bounded_collection_fail_label);
             self.emit_runtime_error_comment(CellScriptRuntimeError::CollectionRuntimeUnsupported);
             self.emit(format!("li a0, {}", CellScriptRuntimeError::CollectionRuntimeUnsupported.code()));

@@ -1,4 +1,4 @@
-module cellscript::language::order_book
+module cellscript::language::collections::order_book
 
 struct Order {
     trader: Address,

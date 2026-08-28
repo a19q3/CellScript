@@ -6,7 +6,7 @@ and the locks that decide whether a Cell may be spent. The compiler then turns
 that `.cell` source into ckb-vm compatible RISC-V assembly or ELF artifacts, and
 writes metadata that explains what was built.
 
-Last updated: 2026-08-12 (`nightly-0.25` development line).
+Last updated: 2026-08-28 (`nightly-0.26` development line).
 
 This wiki is a guided path. It starts with one compiled example, then slowly
 builds the mental model: source files, Cell effects, packages, the CKB profile,
@@ -58,6 +58,9 @@ After that, the wiki continues outward:
   `create_each` remain visible to analysis, but production compilation rejects
   them until their consensus selection, codec, and output-correspondence rules
   are fully specified and executable;
+- v0.26 implements that first narrow executable shape: exact fixed-width
+  Type Script `GroupInput` scans and versioned fixed-width witness plans bound
+  one-to-one to canonical `GroupOutput` data, locks, capacity, and count;
 - production evidence proves more than compiler success;
 - editor tooling shortens the local loop;
 - bundled examples show the style in real contracts.

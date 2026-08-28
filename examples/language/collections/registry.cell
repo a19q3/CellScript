@@ -1,4 +1,4 @@
-module cellscript::language::registry
+module cellscript::language::collections::registry
 
 action local_registry_membership(owner: Address, candidate: Address) -> bool {
     verification

@@ -54,13 +54,13 @@ require_doc_boundary README.md '0.14 release notes'
 mkdir -p "$OUT_DIR"
 
 examples=(
-    examples/language/canonical_style.cell
-    examples/language/v0_14_capacity_time.cell
-    examples/language/v0_14_ckb_type_id_create.cell
-    examples/language/v0_14_delegate_verify.cell
-    examples/language/v0_14_hash_blake2b.cell
-    examples/language/v0_14_multi_step_pipeline.cell
-    examples/language/v0_14_witness_source.cell
+    examples/language/core/canonical_style.cell
+    examples/language/ckb/capacity_time.cell
+    examples/language/ckb/type_id_create.cell
+    examples/language/ckb/delegate_verify.cell
+    examples/language/ckb/blake2b_hash.cell
+    examples/language/ckb/multi_step_pipeline.cell
+    examples/language/ckb/witness_source.cell
 )
 
 metadata_files=()
