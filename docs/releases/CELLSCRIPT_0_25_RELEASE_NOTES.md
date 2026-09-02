@@ -32,9 +32,9 @@ artifact and CKB data hash are an already published trust identity, not a
 workspace package to relabel. The release website promotes `v0.25.0` and loads
 the separately identified 0.25 metadata compiler. The canonical browser bundle
 uses asset identity
-`20260824-v0.25.0-32dc571c`, SHA-256
-`32dc571c2e8e32134460cb45e2329ddd29d754959d9cfe4478c638aa5fc4c7d7`,
-and is 590,724 bytes under standard gzip.
+`20260902-v0.25.0-34c09595`, SHA-256
+`34c09595bab309e10d8fb4c14356f02744310d9dff9b3bd45f00ca548a20376e`,
+and is 590,726 bytes under standard gzip.
 
 ## Language Kernel
 

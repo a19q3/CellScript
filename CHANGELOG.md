@@ -12,8 +12,8 @@
   CKB data hash are already part of its published trust identity. Keep the
   website's public release badge on stable `v0.25.0` and bind the 0.25
   Playground compiler to its release asset identity
-  (`20260824-v0.25.0-32dc571c`, SHA-256
-  `32dc571c2e8e32134460cb45e2329ddd29d754959d9cfe4478c638aa5fc4c7d7`).
+  (`20260902-v0.25.0-34c09595`, SHA-256
+  `34c09595bab309e10d8fb4c14356f02744310d9dff9b3bd45f00ca548a20376e`).
 
 - Harden bounded lifecycle collections at the production boundary. The typed
   IR now retains `consume_each` predicates and the `create_each` output
