@@ -1,13 +1,18 @@
 use serde::{Deserialize, Serialize};
 
-pub const LOWERING_RECORD_SCHEMA: &str = "cellscript-verified-lowering-record-v4";
-pub const TYPED_SEMANTICS_SCHEMA: &str = "cellscript-typed-semantics-v3";
-pub const SOURCE_MAP_SCHEMA: &str = "cellscript-source-artifact-map-v1";
+pub const LOWERING_RECORD_SCHEMA: &str = "cellscript-verified-lowering-record-v5";
+pub const TYPED_SEMANTICS_SCHEMA: &str = "cellscript-typed-semantics-v4";
+pub const SEMANTIC_FOUNDATION_SCHEMA: &str = "cellscript-semantic-foundation-v1";
+pub const PROVENANCE_GRAPH_SCHEMA: &str = "cellscript-value-provenance-dag-v1";
+pub const SOURCE_MAP_SCHEMA: &str = "cellscript-source-artifact-map-v2";
+pub const VERIFIED_ARTIFACT_BOUNDARY_SCHEMA: &str = "cellscript-verified-artifact-boundary-v2";
 pub const CHECKER_POLICY_SCHEMA: &str = "cellscript-artifact-checker-policy-v1";
 pub const CHECKER_REPORT_SCHEMA: &str = "cellscript-artifact-checker-report-v1";
-pub const LOWERING_RECORD_VERSION: u32 = 4;
-pub const TYPED_SEMANTICS_VERSION: u32 = 3;
-pub const SOURCE_MAP_VERSION: u32 = 1;
+pub const LOWERING_RECORD_VERSION: u32 = 5;
+pub const TYPED_SEMANTICS_VERSION: u32 = 4;
+pub const SEMANTIC_FOUNDATION_VERSION: u32 = 1;
+pub const PROVENANCE_GRAPH_VERSION: u32 = 1;
+pub const SOURCE_MAP_VERSION: u32 = 2;
 pub const CHECKER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +108,7 @@ pub struct TypedSemanticRecord {
     pub types: Vec<TypedSemanticType>,
     pub entries: Vec<TypedSemanticEntry>,
     pub instantiations: Vec<TypedSemanticInstantiation>,
+    pub foundation: SemanticFoundationRecord,
 }
 
 impl TypedSemanticRecord {
@@ -133,7 +139,254 @@ impl TypedSemanticRecord {
             entry.obligations.dedup();
         }
         self.instantiations.sort_by(|left, right| left.identity.cmp(&right.identity));
+        self.foundation.canonicalize();
     }
+}
+
+/// Versioned, frontend-independent description of CKB value sources, entry
+/// selection, transaction roles, Cell dispositions, and enforcement classes.
+/// Source paths and byte spans are deliberately excluded from this record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticFoundationRecord {
+    pub schema: String,
+    pub version: u32,
+    pub provenance: ProvenanceGraph,
+    pub entry_contract: ArtifactEntryContract,
+    pub roles: Vec<RoleBinding>,
+    pub dispositions: Vec<CellDisposition>,
+    pub claims: Vec<SemanticClaim>,
+    pub artifact_contract: ArtifactContractDescriptor,
+    pub identities: LayeredSemanticIdentities,
+    pub legacy_nodes: Vec<LegacySemanticNode>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactContractDescriptor {
+    pub target_profile: String,
+    pub artifact_format: String,
+    pub lowering_record_schema: String,
+    pub typed_semantics_schema: String,
+}
+
+impl SemanticFoundationRecord {
+    pub fn canonicalize(&mut self) {
+        self.provenance.canonicalize();
+        if let EntryDispatchContract::ExplicitVersionedDispatch { variants, .. } = &mut self.entry_contract.dispatch {
+            variants.sort_by(|left, right| left.tag.cmp(&right.tag).then(left.entry_id.cmp(&right.entry_id)));
+        }
+        self.roles.sort_by(|left, right| left.role_id.cmp(&right.role_id));
+        self.dispositions.sort_by(|left, right| left.id.cmp(&right.id));
+        for disposition in &mut self.dispositions {
+            disposition.envelope.data_fields.sort_by(|left, right| left.field.cmp(&right.field));
+        }
+        self.claims.sort_by(|left, right| left.id.cmp(&right.id));
+        self.legacy_nodes.sort_by(|left, right| left.id.cmp(&right.id));
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvenanceGraph {
+    pub schema: String,
+    pub version: u32,
+    pub nodes: Vec<ProvenanceNode>,
+    pub bindings: Vec<ProvenanceBinding>,
+}
+
+impl ProvenanceGraph {
+    pub fn canonicalize(&mut self) {
+        self.nodes.sort_by(|left, right| left.id.cmp(&right.id));
+        self.nodes.dedup_by(|left, right| left.id == right.id);
+        self.bindings.sort_by(|left, right| {
+            (&left.entry_id, left.local_id, &left.node_id).cmp(&(&right.entry_id, right.local_id, &right.node_id))
+        });
+        self.bindings.dedup();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvenanceNode {
+    pub id: String,
+    pub provenance: ValueProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvenanceBinding {
+    pub entry_id: String,
+    pub local_id: u32,
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ValueProvenance {
+    EntryWitness { placement_abi: String, payload_abi: String, group_witness_source: String, field_path: String },
+    ScriptArgs { script_role: String, byte_range: String, codec: String },
+    GroupInput { role: String, ordinal: String, field_path: String },
+    GroupOutput { role: String, ordinal: String, field_path: String },
+    TransactionInput { selector: String, field_path: String },
+    TransactionOutput { selector: String, field_path: String },
+    CellDep { identity_policy: String, selector: String, field_path: String },
+    HeaderDep { selector: String, field_path: String },
+    TransactionField { field: String },
+    Constant { declaration: String },
+    Derived { operation: String, inputs: Vec<String> },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactEntryContract {
+    pub semantic_node_id: String,
+    pub script_role: String,
+    pub trigger: String,
+    pub exact_entry: String,
+    pub dispatch: EntryDispatchContract,
+    pub entry_payload_abi: String,
+    pub witness_placement_abi: String,
+    pub witness_placement_field: String,
+    pub witness_placement_source: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum EntryDispatchContract {
+    #[default]
+    SingleEntry,
+    ExplicitVersionedDispatch {
+        selector_node_id: String,
+        selector_type: String,
+        variants: Vec<EntryDispatchVariant>,
+        unknown_selector: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EntryDispatchVariant {
+    pub tag: String,
+    pub entry_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoleBinding {
+    pub semantic_node_id: String,
+    pub role_id: String,
+    pub entry_id: String,
+    pub binding: String,
+    pub ty: String,
+    pub direction: String,
+    pub locality: String,
+    pub source: String,
+    pub selector: String,
+    pub cardinality: String,
+    pub lock_or_type_role: String,
+    pub script_identity_policy: String,
+    pub schema_identity: String,
+    pub correspondence_policy: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CellDisposition {
+    pub semantic_node_id: String,
+    pub id: String,
+    pub entry_id: String,
+    pub input_role: Option<String>,
+    pub output_role: Option<String>,
+    pub input: Option<InputDisposition>,
+    pub output: Option<OutputOrigin>,
+    pub envelope: CellEnvelopeDisposition,
+    pub enforcement: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum InputDisposition {
+    Successor { output_role: String },
+    Pooled { pool_id: String, accounting_obligation: String },
+    Retired { absence_policy: String },
+    AuthorizationOnly { disposition_owner: String },
+    LegacyConsumed { operation: String, migration: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum OutputOrigin {
+    SuccessorOf { input_role: String },
+    Fresh { identity_policy: String },
+    PoolResult { pool_id: String, accounting_obligation: String },
+    LegacyCreated { operation: String },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CellEnvelopeDisposition {
+    pub completeness: String,
+    pub data_fields: Vec<FieldDisposition>,
+    pub logical_identity: String,
+    pub lock_script: String,
+    pub type_script: String,
+    pub capacity: String,
+    pub cardinality: String,
+    pub correspondence: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FieldDisposition {
+    pub field: String,
+    pub treatment: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticClaim {
+    pub semantic_node_id: String,
+    pub id: String,
+    pub entry_id: String,
+    pub category: String,
+    pub statement: String,
+    pub enforcement: String,
+    pub on_chain_checked: bool,
+    /// Stable reference to the ProofPlan item or typed-entry branch that
+    /// supplies evidence for this claim.
+    pub evidence_reference: String,
+    /// Present when the claim is an executable source condition rather than a
+    /// supporting ProofPlan obligation.
+    pub execution: Option<ClaimExecutionBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClaimExecutionBinding {
+    pub condition_block: u32,
+    pub condition_node_id: String,
+    pub success_block: u32,
+    pub failure_block: u32,
+    pub failure_error_code: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayeredSemanticIdentities {
+    pub core_semantic_id: String,
+    pub entry_contract_id: String,
+    pub artifact_contract_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LegacySemanticNode {
+    pub semantic_node_id: String,
+    pub id: String,
+    pub kind: String,
+    pub meaning: String,
+    pub migration: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -590,8 +843,10 @@ pub struct SourceArtifactMap {
     pub artifact_hash: String,
     pub lowering_record_hash: String,
     pub source_set_hash: String,
+    pub source_digest: String,
     pub text_range: MachineRange,
     pub intervals: Vec<SourceMapInterval>,
+    pub semantic_mappings: Vec<SemanticSourceMapping>,
     pub coverage_claim: SourceMapCoverageClaim,
 }
 
@@ -613,7 +868,25 @@ impl SourceArtifactMap {
             interval.runtime_error_codes.sort();
             interval.runtime_error_codes.dedup();
         }
+        self.semantic_mappings.sort_by(|left, right| {
+            (&left.semantic_node_id, &left.source_path, left.source_start, left.source_end).cmp(&(
+                &right.semantic_node_id,
+                &right.source_path,
+                right.source_start,
+                right.source_end,
+            ))
+        });
+        self.semantic_mappings.dedup();
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticSourceMapping {
+    pub semantic_node_id: String,
+    pub source_path: String,
+    pub source_start: u32,
+    pub source_end: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -707,13 +980,19 @@ pub struct VerifiedArtifactMetadata {
     pub lowering_record_hash: Option<String>,
     pub source_map_schema: String,
     pub source_map_hash: Option<String>,
+    pub source_digest: Option<String>,
+    pub core_semantic_id: Option<String>,
+    pub entry_contract_id: Option<String>,
+    pub artifact_contract_id: Option<String>,
+    pub deployable_artifact_id: Option<String>,
+    pub verified_bundle_id: Option<String>,
     pub claim: String,
 }
 
 impl Default for VerifiedArtifactMetadata {
     fn default() -> Self {
         Self {
-            boundary_schema: "cellscript-verified-artifact-boundary-v1".to_string(),
+            boundary_schema: VERIFIED_ARTIFACT_BOUNDARY_SCHEMA.to_string(),
             state: VerifiedArtifactState::NotEmittedNonElf,
             checker_name: "cellscript-artifact-checker".to_string(),
             checker_version: CHECKER_VERSION.to_string(),
@@ -722,6 +1001,12 @@ impl Default for VerifiedArtifactMetadata {
             lowering_record_hash: None,
             source_map_schema: SOURCE_MAP_SCHEMA.to_string(),
             source_map_hash: None,
+            source_digest: None,
+            core_semantic_id: None,
+            entry_contract_id: None,
+            artifact_contract_id: None,
+            deployable_artifact_id: None,
+            verified_bundle_id: None,
             claim: "unverified".to_string(),
         }
     }

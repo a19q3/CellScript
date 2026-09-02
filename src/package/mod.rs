@@ -3049,7 +3049,7 @@ mod tests {
     }
 
     #[test]
-    fn package_manifest_requires_edition_2026() {
+    fn package_manifest_requires_a_known_explicit_edition() {
         let missing = toml::from_str::<PackageManifest>(
             r#"
 [package]
@@ -3069,7 +3069,19 @@ version = "0.1.0"
 "#,
         )
         .unwrap_err();
-        assert!(unsupported.to_string().contains("2026"));
+        let message = unsupported.to_string();
+        assert!(message.contains("2026") && message.contains("2027"));
+
+        let preview = toml::from_str::<PackageManifest>(
+            r#"
+[package]
+edition = "2027"
+name = "demo"
+version = "0.1.0"
+"#,
+        )
+        .unwrap();
+        assert_eq!(preview.package.edition, crate::NEXT_EDITION);
     }
 
     #[test]

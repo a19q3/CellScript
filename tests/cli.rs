@@ -8289,6 +8289,271 @@ action bad() -> bool {
 }
 
 #[test]
+fn cellc_expand_uses_the_manifest_edition_and_emits_the_semantic_foundation() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cell.toml"),
+        r#"
+[package]
+edition = "2027"
+name = "semantic-preview"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    let source_path = root.join("src").join("main.cell");
+    std::fs::write(
+        &source_path,
+        r#"
+module semantic_preview
+
+action main(witness value: u64) -> u64 {
+    verification
+        return value
+}
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).args(["--json", "expand"]).output().unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let foundation: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(foundation["schema"], "cellscript-semantic-foundation-v1");
+    assert_eq!(foundation["entry_contract"]["dispatch"]["kind"], "single-entry");
+    assert!(foundation["identities"]["core_semantic_id"].as_str().is_some_and(|id| !id.is_empty()));
+
+    std::fs::write(
+        source_path,
+        r#"
+module semantic_preview
+
+action main(value: u64) -> u64 {
+    verification
+        return value
+}
+"#,
+    )
+    .unwrap();
+    let rejected = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("expand").output().unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("has no explicit source"));
+}
+
+#[test]
+fn cellc_expand_compiles_native_edition_2027_type_script_surface() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cell.toml"),
+        r#"
+[package]
+edition = "2027"
+name = "native-semantic-preview"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src").join("main.cell"),
+        r#"
+module native_semantic_preview
+
+resource Token has store, replace, relock {
+    owner: Address,
+    amount: u64,
+}
+
+type_script TokenTransfer on type_group<Token> {
+    entry transfer(
+        input token: Token from group_input[0],
+        witness recipient: Address from group_witness.input_type,
+        output next: Token from group_output[0],
+    ) {
+        verify {
+            enforce token.amount > 0
+        }
+
+        effects {
+            replace token -> next {
+                data {
+                    owner = same
+                    amount = same
+                }
+                identity = same
+                type_script = same
+                lock_script = recipient
+                capacity = same
+                cardinality = one_to_one
+            }
+        }
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).args(["--json", "expand"]).output().unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let foundation: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(foundation["entry_contract"]["trigger"], "type-group<Token>");
+    assert_eq!(foundation["entry_contract"]["exact_entry"], "action:transfer");
+    assert_eq!(foundation["dispositions"][0]["input"]["kind"], "successor");
+    assert_eq!(foundation["dispositions"][0]["envelope"]["completeness"], "exhaustive");
+    let enforced = foundation["claims"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|claim| claim["category"] == "entry-condition")
+        .expect("native enforce must emit an executable semantic claim");
+    assert_eq!(enforced["statement"], "require token.amount > 0");
+    assert_eq!(enforced["enforcement"], "checked-runtime");
+    assert_eq!(enforced["on_chain_checked"], true);
+    assert_eq!(enforced["evidence_reference"], "typed-entry:action:transfer:block:0:branch-condition");
+    assert!(enforced["execution"]["condition_node_id"].as_str().is_some_and(|id| !id.is_empty()));
+    assert_eq!(enforced["execution"]["failure_error_code"], 5);
+
+    let format = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("fmt").output().unwrap();
+    assert!(format.status.success(), "stderr: {}", String::from_utf8_lossy(&format.stderr));
+    let checked = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).args(["fmt", "--check"]).output().unwrap();
+    assert!(checked.status.success(), "stderr: {}", String::from_utf8_lossy(&checked.stderr));
+}
+
+#[test]
+fn cellc_expand_compiles_native_edition_2027_lock_script_surface() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cell.toml"),
+        r#"
+[package]
+edition = "2027"
+name = "native-lock-preview"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src").join("main.cell"),
+        r#"
+module native_lock_preview
+
+resource Vault has store {
+    owner: Address,
+}
+
+lock_script VaultOwner on lock_group {
+    entry unlock(
+        protected vault: Vault from group_input[0],
+        lock_args owner: Address from current_script.args,
+        witness claimed_owner: Address from group_witness.input_type,
+    ) {
+        verify {
+            enforce vault.owner == owner
+            enforce claimed_owner == owner
+        }
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    let parsed = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).args(["--json", "--parse"]).output().unwrap();
+    assert!(parsed.status.success(), "stderr: {}", String::from_utf8_lossy(&parsed.stderr));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).args(["--json", "expand"]).output().unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let foundation: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(foundation["entry_contract"]["script_role"], "lock");
+    assert_eq!(foundation["entry_contract"]["trigger"], "lock-group");
+    assert_eq!(foundation["entry_contract"]["exact_entry"], "lock:unlock");
+    assert_eq!(foundation["dispositions"][0]["input"]["kind"], "authorization-only");
+    assert_eq!(foundation["dispositions"][0]["input"]["disposition_owner"], "type-script-or-explicit-transaction-policy");
+    let enforced =
+        foundation["claims"].as_array().unwrap().iter().filter(|claim| claim["category"] == "entry-condition").collect::<Vec<_>>();
+    assert_eq!(enforced.len(), 2);
+    assert_eq!(enforced[0]["statement"], "require vault.owner == owner");
+    assert_eq!(enforced[1]["statement"], "require claimed_owner == owner");
+    assert!(enforced.iter().all(|claim| claim["execution"]["failure_error_code"] == 5));
+
+    let format = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("fmt").output().unwrap();
+    assert!(format.status.success(), "stderr: {}", String::from_utf8_lossy(&format.stderr));
+    let checked = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).args(["fmt", "--check"]).output().unwrap();
+    assert!(checked.status.success(), "stderr: {}", String::from_utf8_lossy(&checked.stderr));
+}
+
+#[test]
+fn cellc_migrate_emits_only_a_differentially_verified_edition_2027_candidate() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cell.toml"),
+        r#"
+[package]
+edition = "2026"
+name = "migration-preview"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+    let source = r#"module migration_preview
+
+resource Token has store, replace, relock {
+    owner: Address,
+    amount: u64,
+}
+
+action transfer(input token: Token, witness recipient: Address) -> next: Token {
+    verification
+        require token.amount > 0
+        std::lifecycle::transfer(token, next, recipient) { owner amount }
+        std::cell::preserve_capacity(next, token)
+}
+"#;
+    let source_path = root.join("src").join("main.cell");
+    std::fs::write(&source_path, source).unwrap();
+
+    let output =
+        Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).args(["--json", "migrate", ".", "--to", "2027"]).output().unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["schema"], "cellscript-source-migration-preview-v1");
+    assert_eq!(report["kind"], "type-script");
+    assert_eq!(report["artifact_byte_identical"], true);
+    assert_eq!(report["source_edition"], "2026");
+    assert_eq!(report["target_edition"], "2027");
+    assert!(report["source"].as_str().unwrap().contains("type_script TransferScript on type_group<Token>"));
+    assert_eq!(std::fs::read_to_string(&source_path).unwrap(), source);
+
+    let candidate_path = root.join("candidate.cell");
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .current_dir(root)
+        .args(["migrate", ".", "--output", candidate_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(std::fs::read_to_string(&candidate_path).unwrap().contains("enforce token.amount > 0"));
+
+    std::fs::write(&source_path, source.replace("require token.amount > 0", "require token.amount > 0, \"positive\"")).unwrap();
+    let rejected_path = root.join("rejected.cell");
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .current_dir(root)
+        .args(["migrate", ".", "--output", rejected_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no accepted custom-message mapping"));
+    assert!(!rejected_path.exists());
+}
+
+#[test]
 fn cellc_explain_generics_reports_checked_vec_instantiations() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -8438,6 +8703,16 @@ action mint(amount: u64) -> Token {
 "#,
     )
     .unwrap();
+
+    let parse = Command::new(env!("CARGO_BIN_EXE_cellc"))
+        .current_dir(root)
+        .arg("--json")
+        .arg("--parse")
+        .arg("src/main.cell")
+        .output()
+        .unwrap();
+    assert!(parse.status.success(), "stderr: {}", String::from_utf8_lossy(&parse.stderr));
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&parse.stdout).unwrap()["status"], "ok");
 
     let output = Command::new(env!("CARGO_BIN_EXE_cellc"))
         .current_dir(root)

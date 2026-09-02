@@ -5,9 +5,10 @@ use crate::{CompileMetadata, ParamMetadata};
 use cellscript_artifact_checker::{
     canonical_hash, check_bundle_values, domain_hash_bytes, parse_elf, CheckerBudgets, CompatibilityProfileIdentity, EdgeKind,
     EntryKind, LoweringBlock, LoweringEdge, LoweringEntry, MachineRange, MachineTerminator, ProofRecord, RuntimeErrorExit,
-    SourceArtifactMap, SourceMapCoverageClaim, SourceMapInterval, StorageClass, SyscallSite, TypedBlockBinding, TypedParameter,
-    VerificationClaim, VerifiedArtifactMetadata, VerifiedArtifactState, VerifiedLoweringRecord, CHECKER_POLICY_SCHEMA,
+    SemanticSourceMapping, SourceArtifactMap, SourceMapCoverageClaim, SourceMapInterval, StorageClass, SyscallSite, TypedBlockBinding,
+    TypedParameter, VerificationClaim, VerifiedArtifactMetadata, VerifiedArtifactState, VerifiedLoweringRecord, CHECKER_POLICY_SCHEMA,
     CHECKER_VERSION, LOWERING_RECORD_SCHEMA, LOWERING_RECORD_VERSION, SOURCE_MAP_SCHEMA, SOURCE_MAP_VERSION,
+    VERIFIED_ARTIFACT_BOUNDARY_SCHEMA,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,10 +16,11 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) struct VerifiedArtifactDraft {
     pub machine_layout: MachineLayoutEvidence,
     pub source_spans: BTreeMap<String, Span>,
+    pub claim_spans: BTreeMap<String, Span>,
 }
 
 impl VerifiedArtifactDraft {
-    pub(crate) fn new(machine_layout: MachineLayoutEvidence, module: &ast::Module) -> Self {
+    pub(crate) fn new(machine_layout: MachineLayoutEvidence, module: &ast::Module, ir: &crate::ir::IrModule) -> Self {
         let source_spans = module
             .items
             .iter()
@@ -29,7 +31,23 @@ impl VerifiedArtifactDraft {
                 _ => None,
             })
             .collect();
-        Self { machine_layout, source_spans }
+        let claim_spans = ir
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::ir::IrItem::Action(entry) => Some((format!("action:{}", entry.name), &entry.body)),
+                crate::ir::IrItem::Lock(entry) => Some((format!("lock:{}", entry.name), &entry.body)),
+                crate::ir::IrItem::PureFn(entry) => Some((format!("helper:{}", entry.name), &entry.body)),
+                crate::ir::IrItem::TypeDef(_) | crate::ir::IrItem::Invariant(_) => None,
+            })
+            .flat_map(|(entry_id, body)| {
+                body.enforced_claims
+                    .iter()
+                    .enumerate()
+                    .map(move |(ordinal, claim)| (format!("claim:{entry_id}:enforced:{ordinal:05}"), claim.span))
+            })
+            .collect();
+        Self { machine_layout, source_spans, claim_spans }
     }
 }
 
@@ -227,8 +245,10 @@ pub(crate) fn build_verified_artifact_boundary(
         artifact_hash: record.artifact_hash.clone(),
         lowering_record_hash: record_hash.clone(),
         source_set_hash: source_identity,
+        source_digest: record.source_content_hash.clone(),
         text_range: record.text_range,
         intervals,
+        semantic_mappings: semantic_source_mappings(metadata, draft, &source_path),
         coverage_claim: SourceMapCoverageClaim {
             mapped_instruction_ranges_only: true,
             complete_text_coverage: false,
@@ -237,8 +257,22 @@ pub(crate) fn build_verified_artifact_boundary(
     };
     source_map.canonicalize();
     let source_map_hash = canonical_hash(SOURCE_MAP_SCHEMA, &source_map).map_err(|error| boundary_error(error.to_string()))?;
+    let identities = &metadata.typed_semantics.foundation.identities;
+    let deployable_artifact_id = record.artifact_hash.clone();
+    let verified_bundle_id = canonical_hash(
+        "cellscript-verified-bundle-id-v1",
+        &(
+            deployable_artifact_id.as_str(),
+            metadata.typed_semantics_hash.as_str(),
+            record.compatibility_profile_hash.as_str(),
+            record_hash.as_str(),
+            source_map_hash.as_str(),
+            source_map.source_digest.as_str(),
+        ),
+    )
+    .map_err(|error| boundary_error(error.to_string()))?;
     let boundary_metadata = VerifiedArtifactMetadata {
-        boundary_schema: "cellscript-verified-artifact-boundary-v1".to_string(),
+        boundary_schema: VERIFIED_ARTIFACT_BOUNDARY_SCHEMA.to_string(),
         state: VerifiedArtifactState::Emitted,
         checker_name: "cellscript-artifact-checker".to_string(),
         checker_version: CHECKER_VERSION.to_string(),
@@ -247,9 +281,61 @@ pub(crate) fn build_verified_artifact_boundary(
         lowering_record_hash: Some(record_hash),
         source_map_schema: SOURCE_MAP_SCHEMA.to_string(),
         source_map_hash: Some(source_map_hash),
+        source_digest: Some(source_map.source_digest.clone()),
+        core_semantic_id: Some(identities.core_semantic_id.clone()),
+        entry_contract_id: Some(identities.entry_contract_id.clone()),
+        artifact_contract_id: Some(identities.artifact_contract_id.clone()),
+        deployable_artifact_id: Some(deployable_artifact_id),
+        verified_bundle_id: Some(verified_bundle_id),
         claim: "binding-verified+structurally-verified;semantic-equivalence-not-claimed".to_string(),
     };
     Ok((record, source_map, boundary_metadata))
+}
+
+fn semantic_source_mappings(
+    metadata: &CompileMetadata,
+    draft: &VerifiedArtifactDraft,
+    source_path: &str,
+) -> Vec<SemanticSourceMapping> {
+    let foundation = &metadata.typed_semantics.foundation;
+    let mut mappings = Vec::new();
+    let mut push = |semantic_node_id: &str, entry_id: &str, exact_span: Option<Span>| {
+        let entry_name = entry_id.split_once(':').map_or(entry_id, |(_, name)| name);
+        let span = exact_span.or_else(|| draft.source_spans.get(entry_name).copied()).unwrap_or_default();
+        mappings.push(SemanticSourceMapping {
+            semantic_node_id: semantic_node_id.to_string(),
+            source_path: source_path.to_string(),
+            source_start: u32::try_from(span.start).unwrap_or(u32::MAX),
+            source_end: u32::try_from(span.end).unwrap_or(u32::MAX),
+        });
+    };
+    push(&foundation.entry_contract.semantic_node_id, &foundation.entry_contract.exact_entry, None);
+    for role in &foundation.roles {
+        push(&role.semantic_node_id, &role.entry_id, None);
+    }
+    for disposition in &foundation.dispositions {
+        push(&disposition.semantic_node_id, &disposition.entry_id, None);
+    }
+    for claim in &foundation.claims {
+        let claim_span =
+            claim.execution.as_ref().and_then(|_| draft.claim_spans.get(&claim.id)).copied().filter(|span| span.end > span.start);
+        push(&claim.semantic_node_id, &claim.entry_id, claim_span);
+    }
+    for legacy in &foundation.legacy_nodes {
+        let mut segments = legacy.id.strip_prefix("legacy:disposition:").unwrap_or_default().split(':');
+        let entry_id = match (segments.next(), segments.next()) {
+            (Some(kind), Some(name)) => format!("{kind}:{name}"),
+            _ => String::new(),
+        };
+        push(&legacy.semantic_node_id, &entry_id, None);
+    }
+    for binding in &foundation.provenance.bindings {
+        push(&binding.node_id, &binding.entry_id, None);
+    }
+    for node in &foundation.provenance.nodes {
+        push(&node.id, &foundation.entry_contract.exact_entry, None);
+    }
+    mappings
 }
 
 fn mark_reachable_blocks(entries: &[LoweringEntry], blocks: &mut [LoweringBlock], edges: &[LoweringEdge]) {

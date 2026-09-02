@@ -1,23 +1,33 @@
 # CellScript Edition Policy
 
-**Status**: normative for the 0.23 development line.
+**Status**: Edition 2026 normative; Edition 2027 experimental on `0.26b`.
 
 CellScript editions are long-lived source-language semantic epochs. An edition
 answers one question: how should this CellScript source be understood? The year
 in an edition label is an identifier, not an annual release schedule. Edition
 2026 may remain current across multiple compiler release years.
 
-The only supported edition is:
+The stable supported edition is:
 
 ```toml
 [package]
 edition = "2026"
 ```
 
-`edition` is mandatory in every package manifest. A missing value or any value
-other than `2026` is an error. The 0.23 line does not provide an edition
-migration command, an implicit alternate edition, or a compatibility parser
-because Edition 2026 is the first CellScript source-semantics contract.
+`edition` is mandatory in every package manifest. A missing or unknown value is
+an error. The `0.26b` implementation branch also recognizes `edition = "2027"`
+as `cellscript-source-semantics-2027-preview3`. That preview is deliberately not
+the current default, accepted grammar, migration promise, or 1.0 release
+contract. It has a separately routed frontend, requires explicit sources for
+transaction-facing parameters, rejects ambiguous `consume`/`consume_each`, and
+initially emits only `SingleEntry` artifacts. Its implemented native subset is
+specified in [the Edition 2027 preview grammar](CELLSCRIPT_2027_PREVIEW_GRAMMAR.md).
+
+`cellc migrate --to 2027` is a bounded review tool, not a migration promise.
+It recognizes only the self-contained legacy Type/Lock shapes with a total
+mapping to preview3, preserves source outside the final entry, and emits no
+candidate unless `CoreSemanticId` and RISC-V ELF bytes match. It never changes
+`Cell.toml`, `Cell.lock`, deployment state, or source files by default.
 
 ## What The Edition Owns
 
@@ -29,11 +39,13 @@ An edition owns rules that can change the meaning of the same source text:
 - desugaring and other source-observable semantics; and
 - edition-specific deprecation diagnostics and migration lints.
 
-Edition 2026 currently identifies those rules as
-`cellscript-source-semantics-2026`. Because it is the first and only edition,
-the frontend has no alternate parser or type-checker branch yet. The edition is
-still carried through package loading and emitted identity so a future
-semantic break cannot be mistaken for the same source contract.
+Edition 2026 identifies those rules as `cellscript-source-semantics-2026` and
+keeps its legacy frontend path frozen. Edition 2027 preview uses the distinct
+`cellscript-source-semantics-2027-preview3` route. Both currently lower through
+the shared checked AST/IR into typed-semantics v4 and may have identical
+`CoreSemanticId` values for the explicitly equivalent subset. Preview3 admits
+one final native `type_script` or `lock_script` container; it does not admit
+both in one source module.
 
 Additive syntax, diagnostics, formatter improvements, and optimizer changes do
 not require a new edition when existing source keeps its meaning. A new edition
@@ -48,16 +60,16 @@ primitive-assurance mode, metadata schemas, or CKB wire ABIs. The compiler
 assembles those independently versioned values with the source edition into a
 resolved compatibility profile:
 
-| Axis | Current 0.23 value |
+| Axis | Current `0.26b` value |
 |---|---|
-| Source edition | `2026` |
-| Source semantics | `cellscript-source-semantics-2026` |
+| Source edition | stable `2026`; experimental `2027` |
+| Source semantics | `cellscript-source-semantics-2026` or `cellscript-source-semantics-2027-preview3` |
 | Compiler release | workspace SemVer (`0.x.y`), recorded separately |
 | Target profile | selected independently, normally `ckb` |
 | Primitive assurance | selected independently, or `default` |
 | Payload ABI | `cellscript-entry-witness-v1` (`CSARGv1\0`) |
 | Placement ABI | `cellscript-witnessargs-input-type-v2` |
-| Metadata schemas | metadata 57, source 2, artifact 1, constraints 2 |
+| Metadata schemas | metadata 63, source 2, artifact 1, constraints 3 |
 
 The compiler release is recorded next to the profile but is not part of the
 profile itself. A compiler patch may change diagnostics or optimization
@@ -143,7 +155,8 @@ Package compilation reads the mandatory edition from `Cell.toml`. APIs without
 a package manifest must receive the edition explicitly:
 
 - native metadata-only Rust APIs take `CellScriptEdition`;
-- WASM exports take an edition string and accept only `"2026"`;
+- WASM exports take an edition string and accept `"2026"` plus the `0.26b`
+  experimental `"2027"` value;
 - browser workers pass `"2026"` explicitly; and
 - LSP package compilation resolves the nearest package manifest.
 

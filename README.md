@@ -164,6 +164,7 @@ Inspect what the compiler can explain about the NFT example:
 
 ```bash
 cellc metadata examples/nft.cell --target-profile ckb
+cellc expand examples/nft.cell --target-profile ckb
 cellc constraints examples/nft.cell --target-profile ckb
 cellc scheduler-plan examples/nft.cell --target-profile ckb
 cellc explain assumptions examples/nft.cell --target-profile ckb --json
@@ -175,6 +176,26 @@ cellc audit-bundle examples/nft.cell --target-profile ckb --json
 
 These commands show what the compiler believes the protocol reads, writes,
 creates, consumes, assumes, and exposes to CKB-facing policy tooling.
+
+On `0.26b`, the bounded Edition 2027 migration preview is review-only:
+
+```bash
+cellc migrate path/to/edition-2026-package --to 2027
+cellc --json migrate path/to/edition-2026-package --to 2027
+```
+
+It never edits the package. A candidate is emitted only for the exact
+self-contained Type/Lock subset after matching `CoreSemanticId` and generated
+RISC-V ELF bytes; update `Cell.toml` only after reviewing the output.
+
+The experimental `0.26b` branch also includes a locked
+[`examples/semantic-foundation-2027`](examples/semantic-foundation-2027/README.md)
+package for the bounded native `type_script` preview and a locked
+[`examples/lock-script-2027`](examples/lock-script-2027/README.md) package for
+the bounded native `lock_script` preview. Their exact grammar, lowering, issue
+conflicts, and deferred forms are documented in
+[`CELLSCRIPT_2027_PREVIEW_GRAMMAR.md`](docs/CELLSCRIPT_2027_PREVIEW_GRAMMAR.md).
+Edition 2026 remains the stable language boundary.
 
 > **Next:** Read on for the [language model](#core-model), [full examples](#example),
 > or dive into the [architecture](#architecture).
@@ -940,6 +961,8 @@ the manual, CI, recovery, and external-wallet path.
 | `cellc check` | Type-check and lower without writing artifacts |
 | `cellc clean --cache` | Remove build artifacts and every nested workspace incremental cache |
 | `cellc metadata` | Emit lowering, runtime, scheduler, source, and schema metadata |
+| `cellc expand` | Inspect the canonical semantic foundation (`--json` for the checked schema) |
+| `cellc migrate --to 2027` | Generate a non-mutating Edition 2027 candidate after semantic-ID and ELF differential checks |
 | `cellc constraints` | Emit profile-aware production constraints |
 | `cellc abi` | Explain `_cellscript_entry` witness ABI layout for an action or lock |
 | `cellc entry-witness` | Encode `_cellscript_entry` witness bytes |

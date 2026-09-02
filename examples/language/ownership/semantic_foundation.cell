@@ -1,0 +1,28 @@
+module cellscript::language::ownership::semantic_foundation
+
+// This source is accepted by the stable 2026 frontend and the experimental
+// 2027 semantic-foundation frontend. Every transaction-facing parameter has
+// an explicit source, and replacement is represented as a successor relation
+// rather than an ambiguous consume operation.
+
+resource GovernedToken has store, replace, relock {
+    owner: Address,
+    amount: u64,
+}
+
+shared TransferPolicy {
+    minimum_amount: u64,
+}
+
+action transfer(
+    input token: GovernedToken,
+    witness recipient: Address,
+) -> next: GovernedToken {
+    verification
+        let policy = read_ref<TransferPolicy>()
+        require token.amount >= policy.minimum_amount
+        std::lifecycle::transfer(token, next, recipient) {
+            owner
+            amount
+        }
+}

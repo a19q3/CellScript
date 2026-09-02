@@ -5,10 +5,14 @@
 use crate::ir::{self, IrInstruction, IrOperand, IrTerminator, IrType, IrVar};
 use crate::CompileMetadata;
 use cellscript_artifact_checker::{
-    canonical_hash, TypedSemanticBlock, TypedSemanticBorrow, TypedSemanticCall, TypedSemanticConstant, TypedSemanticCreatePattern,
-    TypedSemanticEntry, TypedSemanticField, TypedSemanticInstantiation, TypedSemanticLocal, TypedSemanticOperand,
-    TypedSemanticOperation, TypedSemanticOperationDetail, TypedSemanticOwnership, TypedSemanticParam, TypedSemanticRecord,
-    TypedSemanticRuntimeError, TypedSemanticType, TypedSemanticVariant, TypedSemanticVariantField, TYPED_SEMANTICS_SCHEMA,
+    canonical_hash, ArtifactContractDescriptor, ArtifactEntryContract, CellDisposition, CellEnvelopeDisposition,
+    ClaimExecutionBinding, EntryDispatchContract, FieldDisposition, InputDisposition, LayeredSemanticIdentities, LegacySemanticNode,
+    OutputOrigin, ProvenanceBinding, ProvenanceGraph, ProvenanceNode, RoleBinding, SemanticClaim, SemanticFoundationRecord,
+    TypedSemanticBlock, TypedSemanticBorrow, TypedSemanticCall, TypedSemanticConstant, TypedSemanticCreatePattern, TypedSemanticEntry,
+    TypedSemanticField, TypedSemanticInstantiation, TypedSemanticLocal, TypedSemanticOperand, TypedSemanticOperation,
+    TypedSemanticOperationDetail, TypedSemanticOwnership, TypedSemanticParam, TypedSemanticRecord, TypedSemanticRuntimeError,
+    TypedSemanticType, TypedSemanticVariant, TypedSemanticVariantField, ValueProvenance, PROVENANCE_GRAPH_SCHEMA,
+    PROVENANCE_GRAPH_VERSION, SEMANTIC_FOUNDATION_SCHEMA, SEMANTIC_FOUNDATION_VERSION, TYPED_SEMANTICS_SCHEMA,
     TYPED_SEMANTICS_VERSION,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -187,9 +191,968 @@ pub(crate) fn build(module: &ir::IrModule, metadata: &CompileMetadata) -> TypedS
             entries
         },
         instantiations,
+        foundation: SemanticFoundationRecord::default(),
     };
     record.canonicalize();
+    record.foundation = build_semantic_foundation(module, metadata, &record.types, &record.entries);
+    record.canonicalize();
     record
+}
+
+fn build_semantic_foundation(
+    module: &ir::IrModule,
+    metadata: &CompileMetadata,
+    types: &[TypedSemanticType],
+    entries: &[TypedSemanticEntry],
+) -> SemanticFoundationRecord {
+    let cell_types = types
+        .iter()
+        .filter(|ty| matches!(ty.kind.as_str(), "resource" | "shared" | "receipt"))
+        .map(|ty| ty.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let type_layouts = types.iter().map(|ty| (ty.name.as_str(), ty)).collect::<BTreeMap<_, _>>();
+    let entry_contract = build_entry_contract(module);
+    let (provenance, condition_nodes) = build_provenance_graph(entries, &cell_types);
+    let mut roles = Vec::new();
+    let mut dispositions = Vec::new();
+    let mut legacy_nodes = Vec::new();
+
+    for item in &module.items {
+        let (kind, name, params, body) = match item {
+            ir::IrItem::Action(entry) => ("action", entry.name.as_str(), entry.params.as_slice(), &entry.body),
+            ir::IrItem::Lock(entry) => ("lock", entry.name.as_str(), entry.params.as_slice(), &entry.body),
+            ir::IrItem::PureFn(entry) => ("helper", entry.name.as_str(), entry.params.as_slice(), &entry.body),
+            ir::IrItem::TypeDef(_) | ir::IrItem::Invariant(_) => continue,
+        };
+        let entry_id = format!("{kind}:{name}");
+        if kind == "helper" {
+            continue;
+        }
+        append_roles(&mut roles, &entry_id, kind, params, body, &type_layouts, &cell_types);
+        append_dispositions(
+            &mut dispositions,
+            &mut legacy_nodes,
+            &entry_id,
+            kind,
+            params,
+            body,
+            &type_layouts,
+            &metadata.runtime.proof_plan,
+            metadata.edition.as_str(),
+        );
+    }
+    roles.sort_by(|left, right| left.role_id.cmp(&right.role_id));
+    roles.dedup_by(|left, right| left.role_id == right.role_id);
+    dispositions.sort_by(|left, right| left.id.cmp(&right.id));
+    dispositions.dedup_by(|left, right| left.id == right.id);
+    legacy_nodes.sort_by(|left, right| left.id.cmp(&right.id));
+    legacy_nodes.dedup_by(|left, right| left.id == right.id);
+    let mut claims = build_claims(metadata, module, entries, &condition_nodes);
+    claims.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let core_semantic_id = canonical_hash("cellscript-core-semantic-id-v1", &(types, &roles, &dispositions, &claims, &legacy_nodes))
+        .expect("semantic foundation core projection is serializable");
+    let provenance_roots = provenance
+        .nodes
+        .iter()
+        .filter(|node| !matches!(node.provenance, ValueProvenance::Derived { .. }))
+        .map(|node| node.id.as_str())
+        .collect::<Vec<_>>();
+    let entry_contract_id = canonical_hash(
+        "cellscript-entry-contract-id-v1",
+        &(core_semantic_id.as_str(), &entry_contract, provenance_roots, crate::ENTRY_WITNESS_ABI, crate::ENTRY_WITNESS_PLACEMENT_ABI),
+    )
+    .expect("semantic foundation entry projection is serializable");
+    let artifact_contract = ArtifactContractDescriptor {
+        target_profile: metadata.target_profile.name.clone(),
+        artifact_format: metadata.artifact_format.clone(),
+        lowering_record_schema: cellscript_artifact_checker::LOWERING_RECORD_SCHEMA.to_string(),
+        typed_semantics_schema: TYPED_SEMANTICS_SCHEMA.to_string(),
+    };
+    let artifact_contract_id = canonical_hash("cellscript-artifact-contract-id-v1", &(entry_contract_id.as_str(), &artifact_contract))
+        .expect("semantic foundation artifact projection is serializable");
+
+    let mut foundation = SemanticFoundationRecord {
+        schema: SEMANTIC_FOUNDATION_SCHEMA.to_string(),
+        version: SEMANTIC_FOUNDATION_VERSION,
+        provenance,
+        entry_contract,
+        roles,
+        dispositions,
+        claims,
+        artifact_contract,
+        identities: LayeredSemanticIdentities { core_semantic_id, entry_contract_id, artifact_contract_id },
+        legacy_nodes,
+    };
+    foundation.canonicalize();
+    foundation
+}
+
+fn build_entry_contract(module: &ir::IrModule) -> ArtifactEntryContract {
+    let (script_role, trigger, exact_entry) = module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            ir::IrItem::Action(action) => {
+                Some(("type", action.entry_trigger.as_deref().unwrap_or("type-group"), format!("action:{}", action.name)))
+            }
+            ir::IrItem::Lock(lock) => Some(("lock", "lock-group", format!("lock:{}", lock.name))),
+            ir::IrItem::TypeDef(_) | ir::IrItem::Invariant(_) | ir::IrItem::PureFn(_) => None,
+        })
+        .unwrap_or(("none", "none", "none".to_string()));
+    let semantic_node_id = canonical_hash(
+        "cellscript-semantic-node-entry-contract-v1",
+        &(
+            script_role,
+            trigger,
+            exact_entry.as_str(),
+            "single-entry",
+            crate::ENTRY_WITNESS_ABI,
+            crate::ENTRY_WITNESS_PLACEMENT_ABI,
+            crate::ENTRY_WITNESS_PLACEMENT_FIELD,
+            crate::ENTRY_WITNESS_PLACEMENT_SOURCE,
+        ),
+    )
+    .expect("entry contract node is serializable");
+    ArtifactEntryContract {
+        semantic_node_id,
+        script_role: script_role.to_string(),
+        trigger: trigger.to_string(),
+        exact_entry,
+        dispatch: EntryDispatchContract::SingleEntry,
+        entry_payload_abi: crate::ENTRY_WITNESS_ABI.to_string(),
+        witness_placement_abi: crate::ENTRY_WITNESS_PLACEMENT_ABI.to_string(),
+        witness_placement_field: crate::ENTRY_WITNESS_PLACEMENT_FIELD.to_string(),
+        witness_placement_source: crate::ENTRY_WITNESS_PLACEMENT_SOURCE.to_string(),
+    }
+}
+
+fn build_provenance_graph(
+    entries: &[TypedSemanticEntry],
+    cell_types: &BTreeSet<&str>,
+) -> (ProvenanceGraph, BTreeMap<(String, u32), String>) {
+    let mut nodes = BTreeMap::<String, ProvenanceNode>::new();
+    let mut bindings = Vec::new();
+    let mut condition_nodes = BTreeMap::new();
+    for entry in entries {
+        let mut local_nodes = BTreeMap::<u32, String>::new();
+        let mut named_nodes = BTreeMap::<String, String>::new();
+        for param in &entry.params {
+            let provenance = param_provenance(entry, param, cell_types);
+            let node_id = insert_provenance_node(&mut nodes, provenance);
+            local_nodes.insert(param.binding_id, node_id.clone());
+            named_nodes.insert(param.name.clone(), node_id.clone());
+            bindings.push(ProvenanceBinding { entry_id: entry.id.clone(), local_id: param.binding_id, node_id });
+        }
+        for block in &entry.blocks {
+            for operation in &block.operations {
+                let mut input_nodes = Vec::with_capacity(operation.operands.len());
+                for operand in &operation.operands {
+                    if let Some(local) = operand.local {
+                        if let Some(node) = local_nodes.get(&local).cloned() {
+                            input_nodes.push(node);
+                            continue;
+                        }
+                        if let Some(node) = alias_provenance_node(entry, local, &local_nodes) {
+                            local_nodes.insert(local, node.clone());
+                            bindings.push(ProvenanceBinding { entry_id: entry.id.clone(), local_id: local, node_id: node.clone() });
+                            input_nodes.push(node);
+                            continue;
+                        }
+                    }
+                    let declaration = operand
+                        .constant
+                        .as_ref()
+                        .map(|constant| format!("{:?}", constant))
+                        .unwrap_or_else(|| format!("typed-local:{}", operand.local.unwrap_or(u32::MAX)));
+                    input_nodes.push(insert_provenance_node(&mut nodes, ValueProvenance::Constant { declaration }));
+                }
+                if operation.opcode == "bounded-cell-load"
+                    && let Some(root) = entry
+                        .params
+                        .iter()
+                        .find(|param| param.ty.starts_with("BoundedCellSet<"))
+                        .and_then(|param| local_nodes.get(&param.binding_id))
+                {
+                    input_nodes.insert(0, root.clone());
+                }
+                if operation.opcode == "load-var"
+                    && let TypedSemanticOperationDetail::Binding { name } = &operation.detail
+                    && let Some(node_id) = named_nodes.get(name).cloned()
+                {
+                    bind_operation_destinations(entry, operation, node_id, &mut local_nodes, &mut bindings);
+                    continue;
+                }
+                if operation.opcode == "store-var"
+                    && let TypedSemanticOperationDetail::Binding { name } = &operation.detail
+                    && let Some(node_id) = input_nodes.first().cloned()
+                {
+                    named_nodes.insert(name.clone(), node_id);
+                    continue;
+                }
+                if operation.opcode == "branch-condition"
+                    && let Some(condition_node) = input_nodes.first()
+                {
+                    condition_nodes.insert((entry.id.clone(), block.id), condition_node.clone());
+                }
+                if operation.opcode == "read-ref" {
+                    for destination in &operation.destinations {
+                        let role = format!("{}:read-ref:{}", entry.id, destination);
+                        let node_id = insert_provenance_node(
+                            &mut nodes,
+                            ValueProvenance::CellDep {
+                                identity_policy: "declared-type-hash".to_string(),
+                                selector: format!("cell-dep-ordinal-for-local-{destination}"),
+                                field_path: "data".to_string(),
+                            },
+                        );
+                        local_nodes.insert(*destination, node_id.clone());
+                        named_nodes.insert(role, node_id.clone());
+                        bindings.push(ProvenanceBinding { entry_id: entry.id.clone(), local_id: *destination, node_id });
+                    }
+                    continue;
+                }
+                for (destination_index, destination) in operation.destinations.iter().enumerate() {
+                    let node_id = insert_provenance_node(
+                        &mut nodes,
+                        ValueProvenance::Derived {
+                            operation: format!("{}#{}", operation.opcode, destination_index),
+                            inputs: input_nodes.clone(),
+                        },
+                    );
+                    local_nodes.insert(*destination, node_id.clone());
+                    bindings.push(ProvenanceBinding { entry_id: entry.id.clone(), local_id: *destination, node_id });
+                }
+            }
+        }
+    }
+    let mut graph = ProvenanceGraph {
+        schema: PROVENANCE_GRAPH_SCHEMA.to_string(),
+        version: PROVENANCE_GRAPH_VERSION,
+        nodes: nodes.into_values().collect(),
+        bindings,
+    };
+    graph.canonicalize();
+    (graph, condition_nodes)
+}
+
+fn alias_provenance_node(entry: &TypedSemanticEntry, local_id: u32, local_nodes: &BTreeMap<u32, String>) -> Option<String> {
+    let source_id = entry.locals.iter().find(|local| local.id == local_id)?.source_id;
+    entry.locals.iter().filter(|local| local.source_id == source_id).find_map(|local| local_nodes.get(&local.id).cloned())
+}
+
+fn param_provenance(entry: &TypedSemanticEntry, param: &TypedSemanticParam, cell_types: &BTreeSet<&str>) -> ValueProvenance {
+    if entry.kind == "helper" {
+        return ValueProvenance::Derived { operation: format!("call-parameter:{}", param.name), inputs: Vec::new() };
+    }
+    let bare_type = strip_semantic_reference(&param.ty);
+    let cell_bound = cell_types.contains(bare_type) || bounded_cell_element(&param.ty).is_some();
+    match param.source.as_str() {
+        "lockargs" | "lock-args" => ValueProvenance::ScriptArgs {
+            script_role: "lock".to_string(),
+            byte_range: format!("parameter[{}]", param.index),
+            codec: "typed-fixed-bytes".to_string(),
+        },
+        "output" => ValueProvenance::GroupOutput {
+            role: format!("{}:{}", entry.id, param.name),
+            ordinal: format!("source-order:output[{}]", param.index),
+            field_path: "data".to_string(),
+        },
+        "protected" => ValueProvenance::GroupInput {
+            role: format!("{}:{}", entry.id, param.name),
+            ordinal: "lock-group-relative".to_string(),
+            field_path: "cell".to_string(),
+        },
+        "input" if param.ty.starts_with("BoundedCellSet<") => ValueProvenance::GroupInput {
+            role: format!("{}:{}", entry.id, param.name),
+            ordinal: "all-in-canonical-group-order-up-to-bound".to_string(),
+            field_path: "cell".to_string(),
+        },
+        "input" | "default" if cell_bound => ValueProvenance::GroupInput {
+            role: format!("{}:{}", entry.id, param.name),
+            ordinal: format!("source-order:input[{}]", param.index),
+            field_path: "data".to_string(),
+        },
+        _ => ValueProvenance::EntryWitness {
+            placement_abi: crate::ENTRY_WITNESS_PLACEMENT_ABI.to_string(),
+            payload_abi: crate::ENTRY_WITNESS_ABI.to_string(),
+            group_witness_source: crate::ENTRY_WITNESS_PLACEMENT_SOURCE.to_string(),
+            field_path: format!("args[{}].{}", param.index, param.name),
+        },
+    }
+}
+
+fn insert_provenance_node(nodes: &mut BTreeMap<String, ProvenanceNode>, provenance: ValueProvenance) -> String {
+    let id = canonical_hash("cellscript-value-provenance-node-v1", &provenance).expect("value provenance node is serializable");
+    nodes.entry(id.clone()).or_insert_with(|| ProvenanceNode { id: id.clone(), provenance });
+    id
+}
+
+fn bind_operation_destinations(
+    entry: &TypedSemanticEntry,
+    operation: &TypedSemanticOperation,
+    node_id: String,
+    local_nodes: &mut BTreeMap<u32, String>,
+    bindings: &mut Vec<ProvenanceBinding>,
+) {
+    for destination in &operation.destinations {
+        local_nodes.insert(*destination, node_id.clone());
+        bindings.push(ProvenanceBinding { entry_id: entry.id.clone(), local_id: *destination, node_id: node_id.clone() });
+    }
+}
+
+fn append_roles(
+    roles: &mut Vec<RoleBinding>,
+    entry_id: &str,
+    entry_kind: &str,
+    params: &[ir::IrParam],
+    body: &ir::IrBody,
+    types: &BTreeMap<&str, &TypedSemanticType>,
+    cell_types: &BTreeSet<&str>,
+) {
+    let mut input_ordinal = 0usize;
+    let mut output_ordinal = 0usize;
+    let read_bindings = body.read_refs.iter().map(|pattern| pattern.binding.as_str()).collect::<BTreeSet<_>>();
+    for param in params {
+        let ty = render_type(&param.ty);
+        let bare = strip_semantic_reference(&ty);
+        let element = bounded_cell_element(&ty);
+        if !cell_types.contains(bare) && element.is_none() {
+            continue;
+        }
+        let is_read = param.is_read_ref || read_bindings.contains(param.name.as_str());
+        let (direction, source, ordinal) = if is_read {
+            let ordinal = input_ordinal;
+            input_ordinal += 1;
+            ("read-only-dependency", "cell-dep", ordinal)
+        } else if param.source == crate::ast::ParamSource::Output {
+            let ordinal = output_ordinal;
+            output_ordinal += 1;
+            ("output", "group-relative", ordinal)
+        } else {
+            let ordinal = input_ordinal;
+            input_ordinal += 1;
+            ("input", "group-relative", ordinal)
+        };
+        let role_id = format!("role:{entry_id}:{direction}:{}", param.name);
+        let cardinality = bounded_cell_maximum(&ty).map_or_else(|| "exactly-one".to_string(), |maximum| format!("0..={maximum}"));
+        let schema_name = element.unwrap_or(bare);
+        let schema_identity =
+            types.get(schema_name).map(|layout| layout.layout_hash.clone()).unwrap_or_else(|| format!("unresolved:{schema_name}"));
+        let selector = if direction == "read-only-dependency" {
+            format!("cell-dep[{ordinal}] by declared type identity")
+        } else if ty.starts_with("BoundedCellSet<") {
+            "all current Type Script Group cells in canonical group order".to_string()
+        } else {
+            format!("{source}[{ordinal}]")
+        };
+        let correspondence_policy =
+            if direction == "output" { format!("canonical-fixed-arity-output-ordinal:{ordinal}") } else { "none".to_string() };
+        roles.push(make_role(
+            role_id,
+            entry_id,
+            param.name.clone(),
+            ty,
+            direction,
+            source,
+            selector,
+            cardinality,
+            if entry_kind == "lock" { "lock" } else { "type" },
+            "current-script-exact",
+            schema_identity,
+            correspondence_policy,
+        ));
+    }
+    for pattern in &body.mutate_set {
+        let role_id = format!("role:{entry_id}:output:{}", pattern.binding);
+        if roles.iter().any(|role| role.role_id == role_id) {
+            continue;
+        }
+        let schema_identity = types
+            .get(pattern.ty.as_str())
+            .map(|layout| layout.layout_hash.clone())
+            .unwrap_or_else(|| format!("unresolved:{}", pattern.ty));
+        roles.push(make_role(
+            role_id,
+            entry_id,
+            pattern.binding.clone(),
+            pattern.ty.clone(),
+            "output",
+            "group-relative",
+            format!("group-output[{}]", pattern.output_index),
+            "exactly-one".to_string(),
+            if entry_kind == "lock" { "lock" } else { "type" },
+            "current-script-exact",
+            schema_identity,
+            format!("successor-of-group-input[{}]", pattern.input_index),
+        ));
+    }
+    for (ordinal, pattern) in body.create_set.iter().enumerate() {
+        let role_id = format!("role:{entry_id}:output:{}", pattern.binding);
+        if roles.iter().any(|role| role.role_id == role_id) {
+            continue;
+        }
+        let schema_identity = types
+            .get(pattern.ty.as_str())
+            .map(|layout| layout.layout_hash.clone())
+            .unwrap_or_else(|| format!("unresolved:{}", pattern.ty));
+        roles.push(make_role(
+            role_id,
+            entry_id,
+            pattern.binding.clone(),
+            pattern.ty.clone(),
+            "output",
+            "group-relative",
+            format!("group-output[{ordinal}]"),
+            "exactly-one".to_string(),
+            if entry_kind == "lock" { "lock" } else { "type" },
+            "current-script-exact",
+            schema_identity,
+            format!("canonical-create-order:{ordinal}"),
+        ));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_role(
+    role_id: String,
+    entry_id: &str,
+    binding: String,
+    ty: String,
+    direction: &str,
+    source: &str,
+    selector: String,
+    cardinality: String,
+    lock_or_type_role: &str,
+    script_identity_policy: &str,
+    schema_identity: String,
+    correspondence_policy: String,
+) -> RoleBinding {
+    let semantic_node_id = canonical_hash(
+        "cellscript-semantic-node-role-v1",
+        &(
+            role_id.as_str(),
+            entry_id,
+            binding.as_str(),
+            ty.as_str(),
+            direction,
+            source,
+            selector.as_str(),
+            cardinality.as_str(),
+            lock_or_type_role,
+            script_identity_policy,
+            schema_identity.as_str(),
+            correspondence_policy.as_str(),
+        ),
+    )
+    .expect("role binding node is serializable");
+    RoleBinding {
+        semantic_node_id,
+        role_id,
+        entry_id: entry_id.to_string(),
+        binding,
+        ty,
+        direction: direction.to_string(),
+        locality: "local".to_string(),
+        source: source.to_string(),
+        selector,
+        cardinality,
+        lock_or_type_role: lock_or_type_role.to_string(),
+        script_identity_policy: script_identity_policy.to_string(),
+        schema_identity,
+        correspondence_policy,
+    }
+}
+
+fn append_dispositions(
+    dispositions: &mut Vec<CellDisposition>,
+    legacy_nodes: &mut Vec<LegacySemanticNode>,
+    entry_id: &str,
+    entry_kind: &str,
+    params: &[ir::IrParam],
+    body: &ir::IrBody,
+    types: &BTreeMap<&str, &TypedSemanticType>,
+    proof_plan: &[crate::ProofPlanMetadata],
+    edition: &str,
+) {
+    if entry_kind == "lock" {
+        for param in params.iter().filter(|param| param.source == crate::ast::ParamSource::Protected) {
+            let rendered_ty = render_type(&param.ty);
+            let ty = strip_semantic_reference(&rendered_ty);
+            let input_role = format!("role:{entry_id}:input:{}", param.name);
+            dispositions.push(make_disposition(
+                format!("disposition:{entry_id}:authorization-only:{}", param.name),
+                entry_id,
+                Some(input_role),
+                None,
+                Some(InputDisposition::AuthorizationOnly {
+                    disposition_owner: "type-script-or-explicit-transaction-policy".to_string(),
+                }),
+                None,
+                CellEnvelopeDisposition {
+                    completeness: "authorization-scope-explicit".to_string(),
+                    data_fields: type_fields(types, ty)
+                        .into_iter()
+                        .map(|field| FieldDisposition {
+                            field: field.to_string(),
+                            treatment: "not-constrained-by-lock-artifact".to_string(),
+                        })
+                        .collect(),
+                    logical_identity: "not-constrained-by-lock-artifact".to_string(),
+                    lock_script: "spend-authorization-checked".to_string(),
+                    type_script: "not-constrained-by-lock-artifact".to_string(),
+                    capacity: "not-constrained-by-lock-artifact".to_string(),
+                    cardinality: "exactly-one-protected-role".to_string(),
+                    correspondence: "none-authorized-spend-only".to_string(),
+                },
+                "checked-runtime",
+            ));
+        }
+        return;
+    }
+    let mutated = body.mutate_set.iter().map(|pattern| pattern.binding.as_str()).collect::<BTreeSet<_>>();
+    for pattern in &body.mutate_set {
+        let input_role = format!("role:{entry_id}:input:{}", pattern.binding);
+        let output_role = format!("role:{entry_id}:output:{}", pattern.binding);
+        let transition_by_field = pattern
+            .transitions
+            .iter()
+            .map(|transition| {
+                let operation = match transition.op {
+                    ir::MutateTransitionOp::Set => "set",
+                    ir::MutateTransitionOp::Add => "add",
+                    ir::MutateTransitionOp::Sub => "sub",
+                    ir::MutateTransitionOp::Append => "append",
+                };
+                (transition.field.as_str(), operation)
+            })
+            .collect::<BTreeMap<_, _>>();
+        let fields = type_fields(types, &pattern.ty)
+            .into_iter()
+            .map(|field| FieldDisposition {
+                treatment: if pattern.preserved_fields.iter().any(|preserved| preserved == field) {
+                    "preserve".to_string()
+                } else if let Some(operation) = transition_by_field.get(field) {
+                    format!("{operation}-from-expression")
+                } else {
+                    "set-from-expression".to_string()
+                },
+                field: field.to_string(),
+            })
+            .collect::<Vec<_>>();
+        let id = format!("disposition:{entry_id}:successor:{}", pattern.binding);
+        dispositions.push(make_disposition(
+            id,
+            entry_id,
+            Some(input_role.clone()),
+            Some(output_role.clone()),
+            Some(InputDisposition::Successor { output_role }),
+            Some(OutputOrigin::SuccessorOf { input_role }),
+            CellEnvelopeDisposition {
+                completeness: "exhaustive".to_string(),
+                data_fields: fields,
+                logical_identity: "preserve".to_string(),
+                lock_script: if pattern.preserve_lock_hash { "preserve" } else { "set-and-check" }.to_string(),
+                type_script: if pattern.preserve_type_hash { "preserve" } else { "set-and-check" }.to_string(),
+                capacity: "preserve-or-explicit-runtime-relation".to_string(),
+                cardinality: "one-input-to-one-output".to_string(),
+                correspondence: format!("group-input[{}]->group-output[{}]", pattern.input_index, pattern.output_index),
+            },
+            "checked-runtime",
+        ));
+    }
+    let successor_pairs = checked_successor_pairs(entry_id, params, body, proof_plan);
+    let successor_inputs = successor_pairs.iter().map(|pair| pair.input_binding.as_str()).collect::<BTreeSet<_>>();
+    let successor_outputs = successor_pairs.iter().map(|pair| pair.output_binding.as_str()).collect::<BTreeSet<_>>();
+    for pair in &successor_pairs {
+        let input_role = format!("role:{entry_id}:input:{}", pair.input_binding);
+        let output_role = format!("role:{entry_id}:output:{}", pair.output_binding);
+        let fields = type_fields(types, &pair.ty)
+            .into_iter()
+            .map(|field| FieldDisposition { field: field.to_string(), treatment: "checked-successor-relation".to_string() })
+            .collect::<Vec<_>>();
+        dispositions.push(make_disposition(
+            format!("disposition:{entry_id}:successor:{}->{}", pair.input_binding, pair.output_binding),
+            entry_id,
+            Some(input_role.clone()),
+            Some(output_role.clone()),
+            Some(InputDisposition::Successor { output_role }),
+            Some(OutputOrigin::SuccessorOf { input_role }),
+            CellEnvelopeDisposition {
+                completeness: "exhaustive".to_string(),
+                data_fields: fields,
+                logical_identity: "preserve-and-check".to_string(),
+                lock_script: if pair.output_has_lock { "set-and-check" } else { "preserve-and-check" }.to_string(),
+                type_script: "preserve-and-check".to_string(),
+                capacity: "builder-set-and-chain-checked".to_string(),
+                cardinality: "one-input-to-one-output".to_string(),
+                correspondence: format!("group-input[{}]->group-output[{}]", pair.input_index, pair.output_index),
+            },
+            "checked-runtime",
+        ));
+    }
+    for pattern in &body.consume_set {
+        if mutated.contains(pattern.binding.as_str()) || successor_inputs.contains(pattern.binding.as_str()) {
+            continue;
+        }
+        let input_role = format!("role:{entry_id}:input:{}", pattern.binding);
+        let (input, identity, completeness, migration) = if pattern.operation == "destroy" {
+            (
+                InputDisposition::Retired { absence_policy: "legacy-destruction-policy".to_string() },
+                "retire-under-declared-policy",
+                "legacy-policy-bound",
+                "review the legacy destruction policy and spell Retired(absence_policy) explicitly",
+            )
+        } else {
+            (
+                InputDisposition::LegacyConsumed {
+                    operation: pattern.operation.clone(),
+                    migration: "explicit-successor-pooled-or-retired-required".to_string(),
+                },
+                "legacy-unspecified",
+                "legacy-ambiguous",
+                "choose Successor, Pooled, or Retired; migration is intentionally non-mechanical",
+            )
+        };
+        let id = format!("disposition:{entry_id}:input:{}", pattern.binding);
+        let disposition = make_disposition(
+            id.clone(),
+            entry_id,
+            Some(input_role),
+            None,
+            Some(input),
+            None,
+            CellEnvelopeDisposition {
+                completeness: completeness.to_string(),
+                data_fields: pattern
+                    .fields
+                    .iter()
+                    .map(|(field, _)| FieldDisposition {
+                        field: field.clone(),
+                        treatment: "decoded-before-legacy-discharge".to_string(),
+                    })
+                    .collect(),
+                logical_identity: identity.to_string(),
+                lock_script: "no-successor-envelope".to_string(),
+                type_script: "no-successor-envelope".to_string(),
+                capacity: "ledger-input-consumed".to_string(),
+                cardinality: "exactly-one".to_string(),
+                correspondence: "none".to_string(),
+            },
+            "checked-runtime",
+        );
+        legacy_nodes.push(make_legacy_node(
+            format!("legacy:{id}"),
+            "input-disposition",
+            format!(
+                "Edition {edition} operation '{}' terminates linear ownership without a complete next-edition disposition",
+                pattern.operation
+            ),
+            migration,
+        ));
+        dispositions.push(disposition);
+    }
+    for pattern in &body.create_set {
+        if successor_outputs.contains(pattern.binding.as_str()) {
+            continue;
+        }
+        let output_role = format!("role:{entry_id}:output:{}", pattern.binding);
+        let id = format!("disposition:{entry_id}:output:{}", pattern.binding);
+        let declared_fields = type_fields(types, &pattern.ty);
+        let provided = pattern.fields.iter().map(|(field, _)| field.as_str()).collect::<BTreeSet<_>>();
+        let exhaustive = !declared_fields.is_empty() && declared_fields.iter().all(|field| provided.contains(field));
+        dispositions.push(make_disposition(
+            id,
+            entry_id,
+            None,
+            Some(output_role),
+            None,
+            Some(OutputOrigin::Fresh { identity_policy: identity_policy_label(&pattern.identity) }),
+            CellEnvelopeDisposition {
+                completeness: if exhaustive && pattern.lock.is_some() { "exhaustive" } else { "legacy-partial" }.to_string(),
+                data_fields: declared_fields
+                    .into_iter()
+                    .map(|field| FieldDisposition {
+                        treatment: if provided.contains(field) { "set-from-expression" } else { "missing-in-legacy-source" }
+                            .to_string(),
+                        field: field.to_string(),
+                    })
+                    .collect(),
+                logical_identity: format!("create:{}", identity_policy_label(&pattern.identity)),
+                lock_script: if pattern.lock.is_some() { "set-and-check" } else { "legacy-unspecified" }.to_string(),
+                type_script: "set-to-declared-resource-type".to_string(),
+                capacity: if pattern.operation == "bounded-create" {
+                    "at-least-declared-floor-checked-runtime"
+                } else {
+                    "builder-computed-and-chain-checked"
+                }
+                .to_string(),
+                cardinality: if pattern.operation == "bounded-create" { "bounded-plan-cardinality" } else { "exactly-one" }
+                    .to_string(),
+                correspondence: if pattern.operation == "bounded-create" {
+                    "canonical-plan-relative-group-output"
+                } else {
+                    "canonical-create-order"
+                }
+                .to_string(),
+            },
+            if pattern.operation == "bounded-create" { "checked-runtime" } else { "builder-evidence-required" },
+        ));
+    }
+    for operation in &body.bounded_collection_ops {
+        if operation.operation != "consume_each" {
+            continue;
+        }
+        let input_role = format!("role:{entry_id}:input:{}", operation.collection_binding);
+        let id = format!("disposition:{entry_id}:bounded-input:{}", operation.collection_binding);
+        dispositions.push(make_disposition(
+            id.clone(),
+            entry_id,
+            Some(input_role),
+            None,
+            Some(InputDisposition::LegacyConsumed {
+                operation: "consume_each".to_string(),
+                migration: "per-element-successor-pooled-or-retired-required".to_string(),
+            }),
+            None,
+            CellEnvelopeDisposition {
+                completeness: "legacy-ambiguous".to_string(),
+                data_fields: type_fields(types, &operation.element_type)
+                    .into_iter()
+                    .map(|field| FieldDisposition { field: field.to_string(), treatment: "decoded-and-predicate-checked".to_string() })
+                    .collect(),
+                logical_identity: "legacy-unspecified-per-element".to_string(),
+                lock_script: "no-successor-envelope".to_string(),
+                type_script: "current-type-group".to_string(),
+                capacity: "ledger-input-consumed".to_string(),
+                cardinality: format!("0..={}", operation.max_elements),
+                correspondence: "none".to_string(),
+            },
+            operation.runtime_contract.as_deref().map_or("runtime-helper-required", |_| "checked-runtime"),
+        ));
+        legacy_nodes.push(make_legacy_node(
+            format!("legacy:{id}"),
+            "bounded-input-disposition",
+            format!(
+                "Edition {edition} consume_each checks up to {} Type Script Group inputs but does not classify their business disposition",
+                operation.max_elements
+            ),
+            "select a per-element Successor, Pooled, or Retired disposition",
+        ));
+    }
+}
+
+struct CheckedSuccessorPair {
+    input_binding: String,
+    output_binding: String,
+    ty: String,
+    input_index: usize,
+    output_index: usize,
+    output_has_lock: bool,
+}
+
+fn checked_successor_pairs(
+    entry_id: &str,
+    params: &[ir::IrParam],
+    body: &ir::IrBody,
+    proof_plan: &[crate::ProofPlanMetadata],
+) -> Vec<CheckedSuccessorPair> {
+    let mut pairs = Vec::new();
+    let type_names = params
+        .iter()
+        .filter(|param| body.consume_set.iter().any(|pattern| pattern.binding == param.name))
+        .map(|param| strip_semantic_reference(&render_type(&param.ty)).to_string())
+        .collect::<BTreeSet<_>>();
+    for ty in type_names {
+        let inputs = body
+            .consume_set
+            .iter()
+            .enumerate()
+            .filter(|(_, pattern)| {
+                params.iter().any(|param| param.name == pattern.binding && strip_semantic_reference(&render_type(&param.ty)) == ty)
+            })
+            .collect::<Vec<_>>();
+        let outputs = body.create_set.iter().enumerate().filter(|(_, pattern)| pattern.ty == ty).collect::<Vec<_>>();
+        let checked = proof_plan.iter().any(|record| {
+            record.origin == entry_id
+                && record.feature == format!("resource-conservation:{ty}")
+                && record.evidence_tier == crate::proof_plan::EvidenceTier::CheckedRuntime
+                && record.on_chain_checked
+        });
+        if checked && inputs.len() == 1 && outputs.len() == 1 {
+            pairs.push(CheckedSuccessorPair {
+                input_binding: inputs[0].1.binding.clone(),
+                output_binding: outputs[0].1.binding.clone(),
+                ty,
+                input_index: inputs[0].0,
+                output_index: outputs[0].0,
+                output_has_lock: outputs[0].1.lock.is_some(),
+            });
+        }
+    }
+    pairs
+}
+
+fn make_disposition(
+    id: String,
+    entry_id: &str,
+    input_role: Option<String>,
+    output_role: Option<String>,
+    input: Option<InputDisposition>,
+    output: Option<OutputOrigin>,
+    mut envelope: CellEnvelopeDisposition,
+    enforcement: &str,
+) -> CellDisposition {
+    envelope.data_fields.sort_by(|left, right| left.field.cmp(&right.field));
+    let semantic_node_id = canonical_hash(
+        "cellscript-semantic-node-disposition-v1",
+        &(id.as_str(), entry_id, input_role.as_deref(), output_role.as_deref(), &input, &output, &envelope, enforcement),
+    )
+    .expect("Cell disposition node is serializable");
+    CellDisposition {
+        semantic_node_id,
+        id,
+        entry_id: entry_id.to_string(),
+        input_role,
+        output_role,
+        input,
+        output,
+        envelope,
+        enforcement: enforcement.to_string(),
+    }
+}
+
+fn make_legacy_node(id: String, kind: &str, meaning: String, migration: &str) -> LegacySemanticNode {
+    let semantic_node_id = canonical_hash("cellscript-semantic-node-legacy-v1", &(id.as_str(), kind, meaning.as_str(), migration))
+        .expect("legacy semantic node is serializable");
+    LegacySemanticNode { semantic_node_id, id, kind: kind.to_string(), meaning, migration: migration.to_string() }
+}
+
+fn build_claims(
+    metadata: &CompileMetadata,
+    module: &ir::IrModule,
+    entries: &[TypedSemanticEntry],
+    condition_nodes: &BTreeMap<(String, u32), String>,
+) -> Vec<SemanticClaim> {
+    let plans = metadata
+        .actions
+        .iter()
+        .flat_map(|entry| entry.proof_plan.iter().map(move |plan| (format!("action:{}", entry.name), plan)))
+        .chain(metadata.locks.iter().flat_map(|entry| entry.proof_plan.iter().map(move |plan| (format!("lock:{}", entry.name), plan))))
+        .chain(
+            metadata
+                .functions
+                .iter()
+                .flat_map(|entry| entry.proof_plan.iter().map(move |plan| (format!("helper:{}", entry.name), plan))),
+        );
+    let mut claims = plans
+        .enumerate()
+        .map(|(index, (entry_id, plan))| {
+            let id = format!("claim:{entry_id}:{index:05}:{}", plan.name);
+            let statement = format!("{}: {}", plan.feature, plan.detail);
+            let enforcement = plan.evidence_tier.as_str().to_string();
+            make_claim(
+                id,
+                entry_id,
+                plan.category.clone(),
+                statement,
+                enforcement,
+                plan.on_chain_checked,
+                format!("proof-plan:{}", plan.name),
+                None,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    for item in &module.items {
+        let (kind, name, body) = match item {
+            ir::IrItem::Action(entry) => ("action", entry.name.as_str(), &entry.body),
+            ir::IrItem::Lock(entry) => ("lock", entry.name.as_str(), &entry.body),
+            ir::IrItem::PureFn(entry) => ("helper", entry.name.as_str(), &entry.body),
+            ir::IrItem::TypeDef(_) | ir::IrItem::Invariant(_) => continue,
+        };
+        let entry_id = format!("{kind}:{name}");
+        let typed_entry = entries.iter().find(|entry| entry.id == entry_id).expect("IR entry has typed semantic entry");
+        for (ordinal, claim) in body.enforced_claims.iter().enumerate() {
+            let condition_block = u32::try_from(claim.condition_block.0).unwrap_or(u32::MAX);
+            let success_block = u32::try_from(claim.success_block.0).unwrap_or(u32::MAX);
+            let failure_block = u32::try_from(claim.failure_block.0).unwrap_or(u32::MAX);
+            let condition_node_id = condition_nodes
+                .get(&(entry_id.clone(), condition_block))
+                .cloned()
+                .expect("lowered require branch has canonical condition provenance");
+            let failure_error_code = typed_entry
+                .blocks
+                .iter()
+                .find(|block| block.id == failure_block)
+                .and_then(|block| block.runtime_error.as_ref())
+                .map(|error| error.code)
+                .expect("lowered require failure block has a typed runtime error");
+            let id = format!("claim:{entry_id}:enforced:{ordinal:05}");
+            let evidence_reference = format!("typed-entry:{entry_id}:block:{condition_block}:branch-condition");
+            claims.push(make_claim(
+                id,
+                entry_id.clone(),
+                "entry-condition".to_string(),
+                format!("require {}", claim.statement),
+                "checked-runtime".to_string(),
+                true,
+                evidence_reference,
+                Some(ClaimExecutionBinding { condition_block, condition_node_id, success_block, failure_block, failure_error_code }),
+            ));
+        }
+    }
+    claims
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_claim(
+    id: String,
+    entry_id: String,
+    category: String,
+    statement: String,
+    enforcement: String,
+    on_chain_checked: bool,
+    evidence_reference: String,
+    execution: Option<ClaimExecutionBinding>,
+) -> SemanticClaim {
+    let semantic_node_id = canonical_hash(
+        "cellscript-semantic-node-claim-v1",
+        &(
+            id.as_str(),
+            entry_id.as_str(),
+            category.as_str(),
+            statement.as_str(),
+            enforcement.as_str(),
+            on_chain_checked,
+            evidence_reference.as_str(),
+            &execution,
+        ),
+    )
+    .expect("semantic claim node is serializable");
+    SemanticClaim { semantic_node_id, id, entry_id, category, statement, enforcement, on_chain_checked, evidence_reference, execution }
+}
+
+fn type_fields<'a>(types: &BTreeMap<&str, &'a TypedSemanticType>, ty: &str) -> Vec<&'a str> {
+    types.get(ty).map_or_else(Vec::new, |layout| layout.fields.iter().map(|field| field.name.as_str()).collect())
+}
+
+fn strip_semantic_reference(ty: &str) -> &str {
+    ty.strip_prefix("&mut ").or_else(|| ty.strip_prefix('&')).unwrap_or(ty)
+}
+
+fn bounded_cell_element(ty: &str) -> Option<&str> {
+    ty.strip_prefix("BoundedCellSet<")
+        .and_then(|value| value.strip_suffix('>'))
+        .and_then(|value| value.rsplit_once(','))
+        .map(|(element, _)| element.trim())
+}
+
+fn bounded_cell_maximum(ty: &str) -> Option<usize> {
+    ty.strip_prefix("BoundedCellSet<")
+        .and_then(|value| value.strip_suffix('>'))
+        .and_then(|value| value.rsplit_once(','))
+        .and_then(|(_, maximum)| maximum.trim().parse().ok())
 }
 
 #[derive(Clone)]

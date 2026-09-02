@@ -1,4 +1,4 @@
-use cellscript::{compile, CompileOptions, CompileResult};
+use cellscript::{compile, CompileOptions, CompileResult, NEXT_EDITION};
 use cellscript_artifact_checker::{
     canonical_bytes, canonical_hash, check_bundle, check_bundle_values, parse_elf, CheckerBudgets, CheckerRejectionCode, EdgeKind,
     SourceArtifactMap, TypedSemanticConstant, TypedSemanticOperationDetail, VerifiedLoweringRecord, LOWERING_RECORD_SCHEMA,
@@ -60,8 +60,21 @@ impl Fixture {
         let record_hash = canonical_hash(LOWERING_RECORD_SCHEMA, &self.record).unwrap();
         self.source_map.lowering_record_hash = record_hash.clone();
         let source_map_hash = canonical_hash(SOURCE_MAP_SCHEMA, &self.source_map).unwrap();
+        let verified_bundle_id = canonical_hash(
+            "cellscript-verified-bundle-id-v1",
+            &(
+                self.record.artifact_hash.as_str(),
+                self.record.typed_semantics_hash.as_str(),
+                self.record.compatibility_profile_hash.as_str(),
+                record_hash.as_str(),
+                source_map_hash.as_str(),
+                self.source_map.source_digest.as_str(),
+            ),
+        )
+        .unwrap();
         self.metadata["verified_artifact"]["lowering_record_hash"] = Value::String(record_hash);
         self.metadata["verified_artifact"]["source_map_hash"] = Value::String(source_map_hash);
+        self.metadata["verified_artifact"]["verified_bundle_id"] = Value::String(verified_bundle_id);
     }
 
     fn rebind_typed_semantics(&mut self) {
@@ -79,6 +92,7 @@ impl Fixture {
         self.source_map.artifact_hash.clone_from(&artifact_hash);
         self.metadata["artifact_hash"] = Value::String(artifact_hash);
         self.metadata["artifact_size_bytes"] = Value::from(self.artifact.len() as u64);
+        self.metadata["verified_artifact"]["deployable_artifact_id"] = Value::String(self.record.artifact_hash.clone());
         self.rebind_sidecars();
     }
 }
@@ -100,6 +114,68 @@ action main() -> u64 {
 }
 "#;
 
+const NATIVE_EDITION_2027_SOURCE: &str = r#"
+module artifact_checker_native_2027
+
+resource Token has store, replace, relock {
+    owner: Address,
+    amount: u64,
+}
+
+type_script TokenTransfer on type_group<Token> {
+    entry transfer(
+        input token: Token from group_input[0],
+        witness recipient: Address from group_witness.input_type,
+        output next: Token from group_output[0],
+    ) {
+        verify {
+            enforce token.amount > 0
+        }
+
+        effects {
+            replace token -> next {
+                data {
+                    owner = same
+                    amount = same
+                }
+                identity = same
+                type_script = same
+                lock_script = recipient
+                capacity = same
+                cardinality = one_to_one
+            }
+        }
+    }
+}
+"#;
+
+const LEGACY_LOCK_SOURCE: &str = r#"
+module artifact_checker_lock_2027
+resource Vault has store { owner: Address }
+lock unlock(protected vault: Vault, lock_args owner: Address, witness claimed_owner: Address) -> bool {
+    verification
+        require vault.owner == owner
+        require claimed_owner == owner
+}
+"#;
+
+const NATIVE_LOCK_EDITION_2027_SOURCE: &str = r#"
+module artifact_checker_lock_2027
+resource Vault has store { owner: Address }
+lock_script VaultOwner on lock_group {
+    entry unlock(
+        protected vault: Vault from group_input[0],
+        lock_args owner: Address from current_script.args,
+        witness claimed_owner: Address from group_witness.input_type,
+    ) {
+        verify {
+            enforce vault.owner == owner
+            enforce claimed_owner == owner
+        }
+    }
+}
+"#;
+
 fn assert_code(fixture: &Fixture, expected: CheckerRejectionCode) {
     match fixture.check() {
         Ok(()) => panic!("mutation unexpectedly passed; expected {}", expected.as_str()),
@@ -115,6 +191,235 @@ fn verified_artifact_sidecars_are_deterministic_and_canonical() {
     assert_eq!(canonical_bytes(&first.record).unwrap(), canonical_bytes(&second.record).unwrap());
     assert_eq!(canonical_bytes(&first.source_map).unwrap(), canonical_bytes(&second.source_map).unwrap());
     assert!(first.source_map.intervals.iter().all(|interval| interval.source_path == "<memory>"));
+    let foundation = &first.record.typed_semantics.foundation;
+    assert_eq!(foundation.schema, cellscript_artifact_checker::SEMANTIC_FOUNDATION_SCHEMA);
+    assert!(!foundation.identities.core_semantic_id.is_empty());
+    assert!(!foundation.identities.entry_contract_id.is_empty());
+    assert!(!foundation.identities.artifact_contract_id.is_empty());
+    assert_eq!(first.metadata["verified_artifact"]["deployable_artifact_id"], Value::String(first.record.artifact_hash.clone()));
+    assert_eq!(
+        first.metadata["verified_artifact"]["boundary_schema"],
+        Value::String(cellscript_artifact_checker::VERIFIED_ARTIFACT_BOUNDARY_SCHEMA.to_string())
+    );
+    let mapped = first
+        .source_map
+        .semantic_mappings
+        .iter()
+        .map(|mapping| mapping.semantic_node_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(foundation.provenance.nodes.iter().all(|node| mapped.contains(node.id.as_str())));
+}
+
+#[test]
+fn checker_accepts_native_edition_2027_type_script_trigger_and_disposition() {
+    let result = compile(
+        NATIVE_EDITION_2027_SOURCE,
+        CompileOptions { edition: NEXT_EDITION, target: Some("riscv64-elf".to_string()), ..CompileOptions::default() },
+    )
+    .unwrap();
+    let fixture = Fixture::from_result(result);
+    let foundation = &fixture.record.typed_semantics.foundation;
+    assert_eq!(foundation.entry_contract.trigger, "type-group<Token>");
+    assert_eq!(foundation.entry_contract.exact_entry, "action:transfer");
+    assert!(foundation.dispositions.iter().any(|disposition| {
+        matches!(
+            &disposition.input,
+            Some(cellscript_artifact_checker::InputDisposition::Successor { output_role })
+                if output_role.ends_with(":next")
+        ) && disposition.envelope.completeness == "exhaustive"
+    }));
+    let enforced = foundation.claims.iter().find(|claim| claim.execution.is_some()).expect("native enforce claim");
+    assert_eq!(enforced.statement, "require token.amount > 0");
+    assert_eq!(enforced.enforcement, "checked-runtime");
+    assert!(enforced.on_chain_checked);
+    let mapping = fixture
+        .source_map
+        .semantic_mappings
+        .iter()
+        .find(|mapping| mapping.semantic_node_id == enforced.semantic_node_id)
+        .expect("native enforce claim must have a source mapping");
+    let mapped_source = &NATIVE_EDITION_2027_SOURCE[mapping.source_start as usize..mapping.source_end as usize];
+    assert_eq!(mapped_source, "enforce token.amount > 0");
+
+    let mut invalid = fixture.clone();
+    invalid
+        .record
+        .typed_semantics
+        .foundation
+        .claims
+        .iter_mut()
+        .find_map(|claim| claim.execution.as_mut())
+        .expect("native enforce execution binding")
+        .condition_node_id = "00".repeat(32);
+    invalid.rebind_typed_semantics();
+    assert_code(&invalid, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut invalid = fixture.clone();
+    let execution = invalid
+        .record
+        .typed_semantics
+        .foundation
+        .claims
+        .iter_mut()
+        .find_map(|claim| claim.execution.as_mut())
+        .expect("native enforce execution binding");
+    std::mem::swap(&mut execution.success_block, &mut execution.failure_block);
+    invalid.rebind_typed_semantics();
+    assert_code(&invalid, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut invalid = fixture;
+    invalid
+        .record
+        .typed_semantics
+        .foundation
+        .claims
+        .iter_mut()
+        .find_map(|claim| claim.execution.as_mut())
+        .expect("native enforce execution binding")
+        .failure_error_code = 1;
+    invalid.rebind_typed_semantics();
+    assert_code(&invalid, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+}
+
+#[test]
+fn checker_accepts_native_lock_script_with_byte_identical_legacy_lowering() {
+    let legacy =
+        compile(LEGACY_LOCK_SOURCE, CompileOptions { target: Some("riscv64-elf".to_string()), ..CompileOptions::default() }).unwrap();
+    let native = compile(
+        NATIVE_LOCK_EDITION_2027_SOURCE,
+        CompileOptions { edition: NEXT_EDITION, target: Some("riscv64-elf".to_string()), ..CompileOptions::default() },
+    )
+    .unwrap();
+    assert_eq!(legacy.artifact_bytes, native.artifact_bytes);
+    assert_eq!(legacy.metadata.typed_semantics.foundation.identities, native.metadata.typed_semantics.foundation.identities);
+    let legacy_claim = legacy
+        .metadata
+        .typed_semantics
+        .foundation
+        .claims
+        .iter()
+        .find(|claim| claim.execution.is_some())
+        .expect("legacy require claim");
+    let legacy_mapping = legacy
+        .source_artifact_map
+        .as_ref()
+        .unwrap()
+        .semantic_mappings
+        .iter()
+        .find(|mapping| mapping.semantic_node_id == legacy_claim.semantic_node_id)
+        .expect("legacy require claim must have a source mapping");
+    assert_eq!(
+        &LEGACY_LOCK_SOURCE[legacy_mapping.source_start as usize..legacy_mapping.source_end as usize],
+        "require vault.owner == owner"
+    );
+
+    let fixture = Fixture::from_result(native);
+    let contract = &fixture.record.typed_semantics.foundation.entry_contract;
+    assert_eq!(contract.script_role, "lock");
+    assert_eq!(contract.trigger, "lock-group");
+    assert_eq!(contract.exact_entry, "lock:unlock");
+
+    let mut invalid = fixture;
+    let disposition = invalid.record.typed_semantics.foundation.dispositions.first_mut().expect("lock disposition");
+    let Some(cellscript_artifact_checker::InputDisposition::AuthorizationOnly { disposition_owner }) = &mut disposition.input else {
+        panic!("native Lock Script must emit AuthorizationOnly");
+    };
+    disposition_owner.clear();
+    invalid.rebind_typed_semantics();
+    assert_code(&invalid, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+}
+
+#[test]
+fn semantic_foundation_and_source_mapping_mutations_are_rejected() {
+    let valid = Fixture::new();
+
+    let mut changed = valid.clone();
+    changed.record.typed_semantics.foundation.provenance.nodes[0].id = "00".repeat(32);
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid.clone();
+    changed.record.typed_semantics.foundation.identities.core_semantic_id = "11".repeat(32);
+    changed.metadata["verified_artifact"]["core_semantic_id"] = Value::String("11".repeat(32));
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid;
+    changed.source_map.semantic_mappings[0].semantic_node_id = "22".repeat(32);
+    changed.source_map.canonicalize();
+    changed.rebind_sidecars();
+    assert_code(&changed, CheckerRejectionCode::V2416SourceMapInvalid);
+}
+
+#[test]
+fn checker_accepts_an_explicit_versioned_dispatch_contract() {
+    let mut fixture = Fixture::new();
+    let foundation = &mut fixture.record.typed_semantics.foundation;
+    let selector_node_id = foundation
+        .provenance
+        .nodes
+        .iter()
+        .find(|node| !matches!(node.provenance, cellscript_artifact_checker::ValueProvenance::Derived { .. }))
+        .expect("fixture must have a provenance root")
+        .id
+        .clone();
+    let exact_entry = foundation.entry_contract.exact_entry.clone();
+    let previous_contract_node = foundation.entry_contract.semantic_node_id.clone();
+    foundation.entry_contract.dispatch = cellscript_artifact_checker::EntryDispatchContract::ExplicitVersionedDispatch {
+        selector_node_id,
+        selector_type: "u32-le".to_string(),
+        variants: vec![cellscript_artifact_checker::EntryDispatchVariant { tag: "0".to_string(), entry_id: exact_entry.clone() }],
+        unknown_selector: "reject".to_string(),
+    };
+    foundation.entry_contract.semantic_node_id = canonical_hash(
+        "cellscript-semantic-node-entry-contract-v1",
+        &(
+            foundation.entry_contract.script_role.as_str(),
+            foundation.entry_contract.trigger.as_str(),
+            exact_entry.as_str(),
+            "explicit-versioned-dispatch",
+            foundation.entry_contract.entry_payload_abi.as_str(),
+            foundation.entry_contract.witness_placement_abi.as_str(),
+            foundation.entry_contract.witness_placement_field.as_str(),
+            foundation.entry_contract.witness_placement_source.as_str(),
+        ),
+    )
+    .unwrap();
+    let roots = foundation
+        .provenance
+        .nodes
+        .iter()
+        .filter(|node| !matches!(node.provenance, cellscript_artifact_checker::ValueProvenance::Derived { .. }))
+        .map(|node| node.id.as_str())
+        .collect::<Vec<_>>();
+    foundation.identities.entry_contract_id = canonical_hash(
+        "cellscript-entry-contract-id-v1",
+        &(
+            foundation.identities.core_semantic_id.as_str(),
+            &foundation.entry_contract,
+            roots,
+            foundation.entry_contract.entry_payload_abi.as_str(),
+            foundation.entry_contract.witness_placement_abi.as_str(),
+        ),
+    )
+    .unwrap();
+    foundation.identities.artifact_contract_id = canonical_hash(
+        "cellscript-artifact-contract-id-v1",
+        &(foundation.identities.entry_contract_id.as_str(), &foundation.artifact_contract),
+    )
+    .unwrap();
+    let replacement_contract_node = foundation.entry_contract.semantic_node_id.clone();
+    for mapping in &mut fixture.source_map.semantic_mappings {
+        if mapping.semantic_node_id == previous_contract_node {
+            mapping.semantic_node_id.clone_from(&replacement_contract_node);
+        }
+    }
+    fixture.source_map.canonicalize();
+    fixture.metadata["verified_artifact"]["entry_contract_id"] = Value::String(foundation.identities.entry_contract_id.clone());
+    fixture.metadata["verified_artifact"]["artifact_contract_id"] = Value::String(foundation.identities.artifact_contract_id.clone());
+    fixture.rebind_typed_semantics();
+
+    assert!(fixture.check().is_ok());
 }
 
 #[test]

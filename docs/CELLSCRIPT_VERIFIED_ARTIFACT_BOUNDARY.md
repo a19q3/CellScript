@@ -1,13 +1,16 @@
 # CellScript Verified Artifact Boundary
 
-**Status**: typed boundary implemented on the 0.26 development line
+**Status**: semantic-foundation preview implemented on the `0.26b` branch
 
-**Schemas**: `cellscript-verified-lowering-record-v4`,
-`cellscript-typed-semantics-v3`,
-`cellscript-source-artifact-map-v1`, and
+**Schemas**: `cellscript-verified-lowering-record-v5`,
+`cellscript-typed-semantics-v4`,
+`cellscript-semantic-foundation-v1`,
+`cellscript-value-provenance-dag-v1`,
+`cellscript-source-artifact-map-v2`, and
+`cellscript-verified-artifact-boundary-v2`, plus
 `cellscript-artifact-checker-policy-v1`
 
-**Metadata schema**: 61
+**Metadata schema**: 63
 
 ## Purpose
 
@@ -23,12 +26,30 @@ build/main.elf.sourcemap.json
 
 The typed semantic record retains checked types, locals, calls, effects,
 ownership, borrow regions, concrete generic instantiations, layouts, and CFG
-operations in a parser-free schema. Lowering record v3 embeds that record and
-binds it to the final machine layout. Every typed block is accounted for;
+operations in a parser-free schema. Typed semantics v4 also embeds the
+frontend-independent semantic foundation: value provenance, artifact entry
+selection, transaction roles, exhaustive Cell dispositions, enforcement
+classes, legacy migration nodes, and layered semantic identities. Lowering
+record v5 embeds that record and binds it to the final machine layout. Every
+typed block is accounted for;
 optimized/elided typed blocks have an explicit empty machine-block list, while
-materialized blocks carry exact typed-block hashes. The source map binds source
-spans and lowering block IDs to final instruction ranges. All records are hash-bound into
-compile metadata and validated immediately after compilation.
+materialized blocks carry exact typed-block hashes. Source-map v2 binds source
+spans both to lowering block IDs/final instruction ranges and to semantic node
+IDs. `SourceDigest` identifies the source units separately. Paths and moving
+spans never enter `CoreSemanticId`. Executable condition claims use their
+originating condition or generated-sugar range when non-empty, with the
+containing entry as a fail-safe diagnostic fallback. Other records may use the
+containing entry range. All records are hash-bound into compile metadata and
+validated immediately after compilation.
+
+The Edition 2027 `preview3` native Type Script surface may refine a legacy
+`type-group` trigger to an exact non-empty `type-group<T>` value. Its native
+Lock Script surface preserves the exact `lock-group` trigger while making role
+provenance and authorization-only scope explicit. The independent checker
+validates both spellings and their recomputed entry-node hashes. This is an
+entry-contract distinction: equivalent native and legacy Type Script lowerings
+may share `CoreSemanticId` while intentionally having different
+`EntryContractId` values; the bounded Lock forms share both identities.
 
 The sidecars do not claim complete source-to-machine semantic equivalence.
 Their explicit claims are typed-record validation, `binding-verified` for the
@@ -57,6 +78,11 @@ The checker independently recomputes and validates:
   and local tables, call signatures and effects, definite-definition joins,
   ownership/borrow state transitions, enum/layout hashes, and owner-qualified
   concrete instantiations;
+- canonical, bounded, acyclic provenance DAGs; explicit single-entry or
+  versioned-dispatch contracts; role/schema/cardinality binding; exhaustive
+  Cell envelopes and successor correspondence; claim enforcement classes;
+  executable-claim links to condition provenance, ordered typed branches, and
+  exact fail-closed runtime errors; and layered semantic identity projections;
 - typed entry/block/operation identities against lowering blocks, final
   machine ABI, and the metadata `typed_semantics_hash`;
 - ELF64 little-endian RISC-V identity, exact static sections, read/execute
@@ -67,8 +93,8 @@ The checker independently recomputes and validates:
   adjustments, return-path stack restoration, and declared syscalls;
 - every mapped block digest and every source-map range against final ELF bytes;
   and
-- compiler, source, profile, artifact, lowering-record, and source-map identity
-  agreement.
+- compiler, source, profile, deployable artifact, semantic layers,
+  lowering-record, source-map, and verified-bundle identity agreement.
 
 Declared unreachable machine blocks are not silently treated as reachable.
 The record carries a `reachable` bit and the checker recomputes it from every
@@ -164,3 +190,6 @@ not deployment or chain evidence.
   not applicable.
 - Consumers must bind all four files from the same build. Mixing a valid ELF,
   metadata file, lowering record, or source map from different builds fails.
+- `DeployableArtifactId` identifies the ELF bytes. `VerifiedBundleId` binds the
+  ELF, typed semantics, compatibility profile, lowering record, source map, and
+  `SourceDigest`; it is not interchangeable with any semantic identity.

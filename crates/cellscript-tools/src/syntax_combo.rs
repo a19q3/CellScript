@@ -65,6 +65,8 @@ struct Oracle {
 struct AuditCase {
     name: String,
     source: String,
+    #[serde(default = "stable_edition")]
+    edition: String,
     expected: Expected,
     #[serde(default)]
     oracle: Oracle,
@@ -76,9 +78,13 @@ fn generated_origin() -> String {
     "generated".to_owned()
 }
 
+fn stable_edition() -> String {
+    "2026".to_owned()
+}
+
 impl AuditCase {
     fn case_id(&self) -> String {
-        let input = format!("{}\n{}", self.name, self.source);
+        let input = format!("{}\n{}\n{}", self.name, self.edition, self.source);
         let mut state = Blake2bBuilder::new(6).build();
         state.update(input.as_bytes());
         let mut digest = [0_u8; 6];
@@ -171,6 +177,7 @@ fn cellc_bin(root: &Path) -> Result<PathBuf> {
 
 fn parse_seed(root: &Path, path: &Path) -> Result<AuditCase> {
     let text = fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut edition = stable_edition();
     let mut expected = Expected { phase: "accept".to_owned(), contains: Vec::new() };
     let mut oracle = Oracle::default();
     for line in text.lines() {
@@ -182,6 +189,12 @@ fn parse_seed(root: &Path, path: &Path) -> Result<AuditCase> {
         };
         let value = value.trim().to_owned();
         match key.trim() {
+            "edition" => {
+                if !matches!(value.as_str(), "2026" | "2027") {
+                    bail!("{} declares unsupported audit edition {value}", path.display());
+                }
+                edition = value;
+            }
             "phase" => expected.phase = value,
             "contains" => expected.contains.push(value),
             "validity_type" => oracle.validity_type = Some(value),
@@ -203,6 +216,7 @@ fn parse_seed(root: &Path, path: &Path) -> Result<AuditCase> {
     Ok(AuditCase {
         name: format!("seed-{stem}"),
         source: text,
+        edition,
         expected,
         oracle,
         origin: path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/"),
@@ -332,6 +346,7 @@ fn seeded_deep_cases(seed: u64) -> Vec<AuditCase> {
     vec![
         AuditCase {
             name: format!("seeded-deep-transfer-{suffix}"),
+            edition: stable_edition(),
             source: module_source(
                 &format!("seeded_deep_transfer_{suffix}"),
                 &format!(
@@ -352,6 +367,7 @@ fn seeded_deep_cases(seed: u64) -> Vec<AuditCase> {
         },
         AuditCase {
             name: format!("seeded-deep-cell-helper-{suffix}"),
+            edition: stable_edition(),
             source: module_source(
                 &format!("seeded_deep_cell_helper_{suffix}"),
                 &format!(
@@ -364,6 +380,7 @@ fn seeded_deep_cases(seed: u64) -> Vec<AuditCase> {
         },
         AuditCase {
             name: format!("seeded-deep-reject-{}-{suffix}", reject.0),
+            edition: stable_edition(),
             source: module_source(&format!("seeded_deep_reject_{}_{suffix}", reject.0), &reject.1),
             expected: Expected { phase: "reject_compile".into(), contains: reject.2.clone() },
             oracle: Oracle::default(),
@@ -902,16 +919,27 @@ fn validate_metadata(root: &Path, case: &AuditCase, metadata_path: &Path, run_di
 
 fn audit_case(root: &Path, case: &AuditCase, run_dir: &Path, cellc: &Path) -> Result<(String, Vec<Value>)> {
     let case_id = case.case_id();
-    let case_path = if case.expected.phase == "reject_parse" {
+    let edition_root = (case.edition == "2027").then(|| run_dir.join("edition-2027").join(&case_id));
+    let case_path = if let Some(edition_root) = &edition_root {
+        edition_root.join("case.cell")
+    } else if case.expected.phase == "reject_parse" {
         run_dir.join("parse_reject").join(format!("{case_id}.cell"))
     } else {
         run_dir.join("cases").join(format!("{case_id}.cell"))
     };
-    let fmt_path = run_dir.join("fmt").join(format!("{case_id}.cell"));
+    let fmt_path = edition_root
+        .as_ref()
+        .map_or_else(|| run_dir.join("fmt").join(format!("{case_id}.cell")), |edition_root| edition_root.join("formatted.cell"));
     let asm_path = run_dir.join("asm").join(format!("{case_id}.s"));
     let meta_path = run_dir.join("meta").join(format!("{case_id}.json"));
     for parent in [case_path.parent(), fmt_path.parent(), asm_path.parent(), meta_path.parent()].into_iter().flatten() {
         fs::create_dir_all(parent)?;
+    }
+    if let Some(edition_root) = &edition_root {
+        fs::write(
+            edition_root.join("Cell.toml"),
+            format!("[package]\nedition = \"{}\"\nname = \"syntax-combo-{}\"\nversion = \"0.0.0\"\n", case.edition, case_id),
+        )?;
     }
     fs::write(&case_path, &case.source)?;
     let cellc = cellc.display().to_string();

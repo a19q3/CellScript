@@ -31,6 +31,22 @@ Edition 2026 keeps the historical public-by-default behavior for an item with
 no modifier. New reusable packages should spell visibility explicitly so a
 future edition migration does not silently change the exported surface.
 
+On the experimental `0.26b` branch, the bounded native Edition 2027
+`type_script` entry lowers to the existing action interface while its semantic
+foundation separately records the exact `type-group<T>` trigger. The native
+`lock_script` entry likewise lowers to the checked lock interface and records
+its exact `lock-group` authorization boundary. The source edition, public
+interface, core semantics, and entry contract remain distinct identities; see
+the
+[`Edition 2027 preview grammar`](CELLSCRIPT_2027_PREVIEW_GRAMMAR.md).
+
+The experimental `cellc migrate --to 2027` command does not decide public API
+compatibility or rewrite visibility. It replaces only the one final legacy
+entry in a self-contained module, preserves all surrounding source bytes, and
+requires the old and candidate core semantic identities and ELF bytes to
+match. Full six-dimensional public-interface comparison remains a later
+migration gate.
+
 ```cellscript
 module example::math
 
@@ -115,8 +131,12 @@ deployment evidence, and chain commitment remain separate states.
 ## Typed Semantics Relationship
 
 The public interface answers “what can a dependency rely on?” The
-`cellscript-typed-semantics-v3` record answers “what typed operations and
-control-flow facts were lowered?” Both hashes are bound into metadata. ELF
+`cellscript-typed-semantics-v4` record answers “what typed operations and
+control-flow facts were lowered?” Its embedded
+`cellscript-semantic-foundation-v1` additionally answers where values came
+from, which transaction roles they bind, how Cells are disposed, where claims
+are enforced, and how entry/artifact contracts are identified. These remain
+distinct from the package interface hash. ELF
 builds additionally bind the typed record to the verified lowering and machine
 records described in
 [CellScript Verified Artifact Boundary](CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md).

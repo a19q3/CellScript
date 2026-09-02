@@ -1866,6 +1866,7 @@ impl<'a> Parser<'a> {
             effect: effect.unwrap_or(EffectClass::Pure),
             effect_declared,
             scheduler_hint,
+            next_surface: None,
             doc_comment: None,
             span: Span::new(start_span.start, end_span.end, start_span.line, start_span.column),
         })
@@ -2113,6 +2114,7 @@ impl<'a> Parser<'a> {
             params,
             return_type,
             body,
+            next_surface: None,
             span: Span::new(start_span.start, end_span.end, start_span.line, start_span.column),
         })
     }
@@ -3840,6 +3842,30 @@ pub fn parse_diagnostics(tokens: &[Token]) -> std::result::Result<Module, Vec<Co
             Err(parser.diagnostics)
         }
     }
+}
+
+pub(crate) fn parse_type_fragment(tokens: &[Token]) -> Result<Type> {
+    let mut fragment = tokens.to_vec();
+    let end = fragment.last().map_or(Span::default(), |token| token.span);
+    fragment.push(Token::new(TokenKind::Eof, Span::new(end.end, end.end, end.line, end.column), ""));
+    let mut parser = Parser::new(&fragment);
+    parser.skip_newlines();
+    let ty = parser.parse_type()?;
+    parser.skip_newlines();
+    parser.expect(TokenKind::Eof)?;
+    Ok(ty)
+}
+
+pub(crate) fn parse_expression_fragment(tokens: &[Token]) -> Result<Expr> {
+    let mut fragment = tokens.to_vec();
+    let end = fragment.last().map_or(Span::default(), |token| token.span);
+    fragment.push(Token::new(TokenKind::Eof, Span::new(end.end, end.end, end.line, end.column), ""));
+    let mut parser = Parser::new(&fragment);
+    parser.skip_newlines();
+    let expression = parser.parse_expr()?;
+    parser.skip_newlines();
+    parser.expect(TokenKind::Eof)?;
+    Ok(expression)
 }
 
 fn merge_capabilities(attr_capabilities: Option<Vec<Capability>>, inline_capabilities: Vec<Capability>) -> Vec<Capability> {

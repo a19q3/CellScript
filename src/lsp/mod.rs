@@ -12,6 +12,7 @@ pub struct LspServer {
     documents: HashMap<String, String>,
     ast_cache: HashMap<String, Module>,
     diagnostics: HashMap<String, Vec<Diagnostic>>,
+    edition_overrides: HashMap<String, crate::CellScriptEdition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,10 +144,21 @@ impl Default for LspServer {
 
 impl LspServer {
     pub fn new() -> Self {
-        Self { documents: HashMap::new(), ast_cache: HashMap::new(), diagnostics: HashMap::new() }
+        Self { documents: HashMap::new(), ast_cache: HashMap::new(), diagnostics: HashMap::new(), edition_overrides: HashMap::new() }
     }
 
     pub fn open_document(&mut self, uri: String, content: String) {
+        self.edition_overrides.remove(&uri);
+        self.store_document(uri, content);
+    }
+
+    /// Open a virtual document under an explicit source edition.
+    ///
+    /// Native LSP clients normally resolve the edition from `Cell.toml`.
+    /// Browser and other in-memory clients have no manifest path, so they use
+    /// this entry point instead of silently falling back to Edition 2026.
+    pub fn open_document_with_edition(&mut self, uri: String, content: String, edition: crate::CellScriptEdition) {
+        self.edition_overrides.insert(uri.clone(), edition);
         self.store_document(uri, content);
     }
 
@@ -186,6 +198,7 @@ impl LspServer {
         self.documents.remove(uri);
         self.ast_cache.remove(uri);
         self.diagnostics.remove(uri);
+        self.edition_overrides.remove(uri);
     }
 
     fn store_document(&mut self, uri: String, content: String) {
@@ -215,16 +228,9 @@ impl LspServer {
 
     fn parse_document(&mut self, uri: &str, content: &str) {
         self.ast_cache.remove(uri);
-
-        let tokens = match crate::lexer::lex(content) {
-            Ok(tokens) => tokens,
-            Err(error) => {
-                self.diagnostics.insert(uri.to_string(), vec![diagnostic_from_error(content, &error)]);
-                return;
-            }
-        };
-
-        let ast = match crate::parser::parse_diagnostics(&tokens) {
+        let uri_path = file_uri_to_utf8_path(uri).filter(|path| path.exists());
+        let edition = self.document_edition(uri);
+        let ast = match crate::frontend::parse_diagnostics(content, edition) {
             Ok(ast) => ast,
             Err(errors) => {
                 self.diagnostics.insert(uri.to_string(), errors.iter().map(|error| diagnostic_from_error(content, error)).collect());
@@ -233,11 +239,10 @@ impl LspServer {
         };
 
         self.ast_cache.insert(uri.to_string(), ast.clone());
-        let uri_path = file_uri_to_utf8_path(uri).filter(|path| path.exists());
         let report = uri_path
             .as_ref()
             .map(|path| crate::compile_path_metadata_with_diagnostics_for_source(path, content, crate::CompileOptions::default()))
-            .unwrap_or_else(|| crate::compile_metadata_with_diagnostics(content, crate::CURRENT_EDITION, None));
+            .unwrap_or_else(|| crate::compile_metadata_with_diagnostics(content, edition, None));
         let mut diagnostics = report
             .diagnostics
             .iter()
@@ -248,6 +253,12 @@ impl LspServer {
             diagnostics.extend(lowering_diagnostics(content, &ast, metadata));
         }
         self.diagnostics.insert(uri.to_string(), diagnostics);
+    }
+
+    fn document_edition(&self, uri: &str) -> crate::CellScriptEdition {
+        self.edition_overrides.get(uri).copied().unwrap_or_else(|| {
+            file_uri_to_utf8_path(uri).as_ref().and_then(|path| crate::source_edition(path).ok()).unwrap_or(crate::CURRENT_EDITION)
+        })
     }
 
     pub fn get_diagnostics(&self, uri: &str) -> Vec<Diagnostic> {
@@ -276,10 +287,10 @@ impl LspServer {
                 }
             }
             CompletionContext::Declaration => {
-                items.extend(self.declaration_keyword_completions());
+                items.extend(self.declaration_keyword_completions(uri));
             }
             CompletionContext::Expression => {
-                items.extend(self.keyword_completions());
+                items.extend(self.keyword_completions(uri));
                 items.extend(self.type_completions());
                 if let (Some(ast), Some(content)) = (self.ast_cache.get(uri), self.documents.get(uri)) {
                     items.extend(self.symbol_completions(ast));
@@ -349,8 +360,9 @@ impl LspServer {
     }
 
     /// Declaration-position keywords only.
-    fn declaration_keyword_completions(&self) -> Vec<CompletionItem> {
-        vec![
+    fn declaration_keyword_completions(&self, uri: &str) -> Vec<CompletionItem> {
+        let edition = self.document_edition(uri);
+        let mut declarations = vec![
             ("resource", "resource ${1:Name} {\n    $0\n}"),
             ("shared", "shared ${1:Name} {\n    $0\n}"),
             ("receipt", "receipt ${1:Name} {\n    $0\n}"),
@@ -360,7 +372,7 @@ impl LspServer {
                 "invariant",
                 "invariant ${1:name} {\n    trigger: ${2:type_group}\n    scope: ${3:group}\n    reads: ${4:group_inputs<Token>.amount}, ${5:group_outputs<Token>.amount}\n    assert_conserved(${6:Token.amount}, scope = ${7:group})\n}",
             ),
-            ("action", "action ${1:name}(${2:input}: ${3:CellType}) -> ${4:output}: ${3:CellType} {\n    verification\n        $0\n}"),
+            ("action", "action ${1:name}(input ${2:cell}: ${3:CellType}) -> ${4:output}: ${3:CellType} {\n    verification\n        $0\n}"),
             (
                 "lock",
                 "lock ${1:name}(protected ${2:cell}: ${3:CellType}, witness ${4:arg}: ${5:Address}, lock_args ${6:owner}: ${7:Address}) -> bool {\n    verification\n        require ${6} == ${2}.owner\n        require ${4} == ${6}\n        $0\n}",
@@ -371,16 +383,27 @@ impl LspServer {
             ("public", "public ${1:fn}"),
             ("private", "private ${1:fn}"),
             ("public(package)", "public(package) ${1:fn}"),
-        ]
-        .into_iter()
-        .map(|(label, insert)| CompletionItem {
-            label: label.to_string(),
-            kind: CompletionItemKind::Keyword,
-            detail: Some(format!("{} keyword", label)),
-            documentation: None,
-            insert_text: Some(insert.to_string()),
-        })
-        .collect()
+        ];
+        if edition == crate::NEXT_EDITION {
+            declarations.push((
+                "type_script",
+                "type_script ${1:Name} on type_group<${2:CellType}> {\n    entry ${3:verify}(\n        input ${4:before}: ${2:CellType} from group_input[0],\n        witness ${5:to}: Address from group_witness.input_type,\n        output ${6:after}: ${2:CellType} from group_output[0],\n    ) {\n        verify {\n            enforce ${4:before}.${7:amount} > 0\n        }\n\n        effects {\n            replace ${4:before} -> ${6:after} {\n                data {\n                    ${7:amount} = same\n                }\n                identity = same\n                type_script = same\n                lock_script = ${5:to}\n                capacity = same\n                cardinality = one_to_one\n            }\n        }\n    }\n}",
+            ));
+            declarations.push((
+                "lock_script",
+                "lock_script ${1:Name} on lock_group {\n    entry ${2:unlock}(\n        protected ${3:cell}: ${4:CellType} from group_input[0],\n        lock_args ${5:owner}: Address from current_script.args,\n        witness ${6:claimed_owner}: Address from group_witness.input_type,\n    ) {\n        verify {\n            enforce ${3:cell}.${7:owner} == ${5:owner}\n            enforce ${6:claimed_owner} == ${5:owner}\n        }\n    }\n}",
+            ));
+        }
+        declarations
+            .into_iter()
+            .map(|(label, insert)| CompletionItem {
+                label: label.to_string(),
+                kind: CompletionItemKind::Keyword,
+                detail: Some(format!("{} keyword", label)),
+                documentation: None,
+                insert_text: Some(insert.to_string()),
+            })
+            .collect()
     }
 
     /// Completions for user-defined types (at type positions).
@@ -982,15 +1005,16 @@ impl LspServer {
         items
     }
 
-    fn keyword_completions(&self) -> Vec<CompletionItem> {
-        let keywords = vec![
+    fn keyword_completions(&self, uri: &str) -> Vec<CompletionItem> {
+        let edition = self.document_edition(uri);
+        let mut keywords = vec![
             ("module", "module ${1:name}"),
             ("use", "use ${1:path}"),
             ("resource", "resource ${1:Name} {\n    $0\n}"),
             ("shared", "shared ${1:Name} {\n    $0\n}"),
             ("receipt", "receipt ${1:Name} {\n    $0\n}"),
             ("struct", "struct ${1:Name} {\n    $0\n}"),
-            ("action", "action ${1:name}(${2:input}: ${3:CellType}) -> ${4:output}: ${3:CellType} {\n    verification\n        $0\n}"),
+            ("action", "action ${1:name}(input ${2:cell}: ${3:CellType}) -> ${4:output}: ${3:CellType} {\n    verification\n        $0\n}"),
             ("flow", "flow ${1:Name} for ${2:Type}.${3:state} {\n    ${4:Created} -> ${5:Live};\n}"),
             ("input", "input ${1:name}: ${2:CellType}"),
             ("transition", "transition ${1:input} -> ${2:output}"),
@@ -1038,9 +1062,23 @@ impl LspServer {
             ("witness", "witness ${1:arg}: ${2:Address}"),
             ("lock_args", "lock_args ${1:args}: ${2:OwnerArgs}"),
         ];
+        if edition == crate::NEXT_EDITION {
+            keywords.extend([
+                ("type_script", "type_script ${1:Name} on type_group<${2:CellType}> {\n    $0\n}"),
+                ("lock_script", "lock_script ${1:Name} on lock_group {\n    $0\n}"),
+                ("lock_group", "lock_group"),
+                ("current_script", "current_script.args"),
+                ("entry", "entry ${1:name}($0)"),
+                ("verify", "verify {\n    enforce ${1:condition}\n}"),
+                ("enforce", "enforce ${1:condition}"),
+                ("effects", "effects {\n    $0\n}"),
+                ("replace", "replace ${1:input} -> ${2:output} {\n    $0\n}"),
+            ]);
+        }
 
         keywords
             .into_iter()
+            .filter(|(label, _)| edition == crate::CURRENT_EDITION || !matches!(*label, "consume" | "consume_each"))
             .map(|(label, insert)| CompletionItem {
                 label: label.to_string(),
                 kind: CompletionItemKind::Keyword,
@@ -1305,7 +1343,8 @@ impl LspServer {
 
         // 1. Try top-level item hover (existing logic).
         if let (Some(ast), Some(source)) = (self.ast_cache.get(uri), self.documents.get(uri)) {
-            let metadata = crate::compile_metadata(source, crate::CURRENT_EDITION, None).ok();
+            let edition = self.document_edition(uri);
+            let metadata = crate::compile_metadata(source, edition, None).ok();
             if let Some(hover) = ast.items.iter().find_map(|item| {
                 if item_name(item) == Some(symbol.as_str()) {
                     self.item_hover(source, item, metadata.as_ref())
@@ -1991,7 +2030,8 @@ impl LspServer {
                 module.source = content.clone();
                 module.ast = ast.clone();
             } else {
-                modules.push(crate::LoadedModule { path, source: content.clone(), ast: ast.clone(), edition: crate::CURRENT_EDITION });
+                let edition = self.document_edition(uri);
+                modules.push(crate::LoadedModule { path, source: content.clone(), ast: ast.clone(), edition });
             }
         }
 
@@ -2887,7 +2927,7 @@ mod tests {
     #[test]
     fn test_keyword_completions() {
         let server = LspServer::new();
-        let keywords = server.keyword_completions();
+        let keywords = server.keyword_completions("file:///stable.cell");
 
         assert!(keywords.iter().any(|k| k.label == "module"));
         assert!(keywords.iter().any(|k| k.label == "resource"));
@@ -3392,6 +3432,84 @@ action update(amount: u64) -> u64 {
         let edits = server.format_document(&uri);
         assert_eq!(edits.len(), 1);
         assert!(edits[0].new_text.contains("action demo(x: u64) -> u64 {\n    verification"));
+    }
+
+    #[test]
+    fn test_manifest_edition_selects_the_preview_frontend() {
+        let temp = tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("Cell.toml"),
+            "[package]\nedition = \"2027\"\nname = \"preview\"\nversion = \"0.1.0\"\nentry = \"src/main.cell\"\n",
+        )
+        .unwrap();
+        let source = "module preview\naction main(value: u64) -> u64 { verification return value }\n";
+        let source_path = root.join("src/main.cell");
+        std::fs::write(&source_path, source).unwrap();
+
+        let mut server = LspServer::new();
+        let uri = utf8_path_to_file_uri(&source_path);
+        server.open_document(uri.clone(), source.to_string());
+
+        let diagnostics = server.get_diagnostics(&uri);
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic.message.contains("has no explicit source")));
+        let completions = server.completion(&uri, Position { line: 1, character: 64 });
+        assert!(!completions.iter().any(|item| item.label == "consume" || item.label == "consume_each"));
+        assert!(completions.iter().any(|item| item.label == "type_script"));
+        assert!(completions.iter().any(|item| item.label == "lock_script"));
+        assert!(server.keyword_completions(&uri).iter().any(|item| item.label == "effects"));
+
+        let native = r#"module preview
+resource Token has store, replace, relock { owner: Address, amount: u64 }
+type_script TokenTransfer on type_group<Token> {
+    entry transfer(
+        input token: Token from group_input[0],
+        witness recipient: Address from group_witness.input_type,
+        output next: Token from group_output[0],
+    ) {
+        verify { enforce token.amount > 0 }
+        effects {
+            replace token -> next {
+                data { owner = same; amount = same }
+                identity = same
+                type_script = same
+                lock_script = recipient
+                capacity = same
+                cardinality = one_to_one
+            }
+        }
+    }
+}
+"#;
+        std::fs::write(&source_path, native).unwrap();
+        server.update_document(uri.clone(), native.to_string());
+        assert!(server.get_diagnostics(&uri).is_empty());
+        let edits = server.format_document(&uri);
+        assert_eq!(edits.len(), 1);
+        assert!(edits[0].new_text.contains("type_script TokenTransfer on type_group<Token>"));
+
+        let native_lock = r#"module preview
+resource Vault has store { owner: Address }
+lock_script VaultOwner on lock_group {
+    entry unlock(
+        protected vault: Vault from group_input[0],
+        lock_args owner: Address from current_script.args,
+        witness claimed_owner: Address from group_witness.input_type,
+    ) {
+        verify {
+            enforce vault.owner == owner
+            enforce claimed_owner == owner
+        }
+    }
+}
+"#;
+        std::fs::write(&source_path, native_lock).unwrap();
+        server.update_document(uri.clone(), native_lock.to_string());
+        assert!(server.get_diagnostics(&uri).is_empty());
+        let edits = server.format_document(&uri);
+        assert_eq!(edits.len(), 1);
+        assert!(edits[0].new_text.contains("lock_script VaultOwner on lock_group"));
     }
 
     #[test]

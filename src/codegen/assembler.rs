@@ -2457,6 +2457,7 @@ mod tests {
             write_intents: Vec::new(),
             bounded_collection_ops: Vec::new(),
             borrow_regions: Vec::new(),
+            enforced_claims: Vec::new(),
             blocks: Vec::new(),
         };
 
@@ -2814,6 +2815,7 @@ mod tests {
             name: "shape_test".to_string(),
             items: vec![IrItem::Action(IrAction {
                 name: "shape".to_string(),
+                entry_trigger: None,
                 params: vec![],
                 return_type: Some(IrType::U64),
                 state_transition_edges: vec![],
@@ -2828,6 +2830,7 @@ mod tests {
                     write_intents: vec![],
                     bounded_collection_ops: vec![],
                     borrow_regions: vec![],
+                    enforced_claims: vec![],
                     blocks: vec![IrBlock {
                         id: BlockId(0),
                         instructions: vec![],

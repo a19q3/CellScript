@@ -373,6 +373,7 @@ mod tests {
             write_intents: Vec::new(),
             bounded_collection_ops: Vec::new(),
             borrow_regions: Vec::new(),
+            enforced_claims: Vec::new(),
             blocks: Vec::new(),
         }
     }
@@ -402,6 +403,7 @@ mod tests {
             enum_layouts: Default::default(),
             items: vec![IrItem::Action(IrAction {
                 name: "main".to_string(),
+                entry_trigger: None,
                 params: Vec::new(),
                 return_type: Some(crate::ir::IrType::U64),
                 state_transition_edges: Vec::new(),

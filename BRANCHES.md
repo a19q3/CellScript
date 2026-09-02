@@ -1,5 +1,19 @@
 # Branch Context
 
+## 0.26b
+
+`0.26b` is the experimental implementation branch for the post-0.26 semantic
+foundation. It starts from `origin/nightly-0.26` and adds versioned provenance,
+role, disposition, claim, entry-selection, source-map, and layered-identity
+records plus a separately routed Edition 2027 preview frontend and
+`cellc expand`. The branch also implements the bounded
+`cellscript-source-semantics-2027-preview3` native `type_script` and
+`lock_script` surfaces specified in
+`docs/CELLSCRIPT_2027_PREVIEW_GRAMMAR.md`. It is implementation evidence for
+the umbrella RFC, not a
+stable release, accepted grammar, production-equivalence claim, or 1.0
+readiness claim. Edition 2026 remains the stable source-semantics default.
+
 ## nightly-0.26
 
 `nightly-0.26` is the active consensus-runtime development line for bounded

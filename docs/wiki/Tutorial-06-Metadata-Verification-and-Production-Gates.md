@@ -13,19 +13,22 @@ The artifact is executable RISC-V ELF. The metadata sidecar is the explanation:
 source identity, target profile, artifact hash, schema layout, runtime
 requirements, scheduler information, and verifier obligations. The canonical
 lowering record exposes a bounded typed-semantics, CFG, ABI, stack, ProofPlan,
-syscall, runtime exit, and final machine-range contract. The canonical source map binds source
-spans and lowering blocks to final ELF instruction ranges. Assembly output does
-not claim this verified-artifact boundary.
+syscall, runtime exit, and final machine-range contract. The canonical source
+map binds source spans and lowering blocks to final ELF instruction ranges. On
+`0.26b`, source-map v2 also maps semantic node IDs to diagnostic spans, while a
+separate `SourceDigest` identifies source bytes. Assembly output does not claim
+this verified-artifact boundary.
 
-On the 0.25 development line it also carries mandatory `edition = "2026"` and the fully
-resolved compatibility profile. Edition contributes source semantics only.
+It also carries the mandatory package edition and the fully resolved
+compatibility profile. Edition contributes source semantics only.
 The profile combines that with independently versioned target,
 primitive-assurance, entry payload, witness placement, and metadata-schema
 axes. Verification rejects a sidecar whose profile does not resolve from those
-inputs; it never guesses another contract. Current outputs use metadata schema
-60, source schema 2, artifact schema 1, and constraints schema 2. Schema 60
-adds canonical `public_interface` / `interface_hash` and
-`typed_semantics` / `typed_semantics_hash` pairs. Registry,
+inputs; it never guesses another contract. Current `0.26b` outputs use metadata
+schema 63, source schema 2, artifact schema 1, and constraints schema 3.
+Metadata includes canonical `public_interface` / `interface_hash` and
+`typed_semantics` / `typed_semantics_hash` pairs. Typed semantics v4 embeds the
+semantic-foundation v1 record. Registry,
 lock, deployment, receipt, and generated-builder readers require the same
 resolved-profile identity.
 
@@ -68,6 +71,26 @@ cellc metadata src/main.cell --target riscv64-elf --target-profile ckb -o /tmp/m
 Open the metadata when something is unclear. It is often easier to understand a
 compiler decision by reading the emitted facts than by guessing from the source
 alone.
+
+Inspect the canonical semantic foundation separately:
+
+```bash
+cellc expand src/main.cell
+cellc --json expand src/main.cell
+```
+
+The foundation exposes value provenance, artifact entry selection, transaction
+roles, Cell dispositions, enforcement-classified claims, and layered semantic
+IDs. The human rendering is deterministic but is not hashed. Source paths and
+spans are intentionally excluded from `CoreSemanticId`.
+
+For an executable source `require` or Edition 2027 `enforce`, inspect its
+`entry-condition` claim. `evidence_reference` selects the typed
+`branch-condition`; `execution` records the condition-provenance node, ordered
+success and failure blocks, and exact fail-closed runtime-error code. Supporting
+ProofPlan obligations use `proof-plan:<name>` references and no execution
+binding. The independent checker validates these structural links, while still
+making no complete source-to-machine equivalence claim.
 
 ## Verify an Artifact
 
@@ -198,7 +221,7 @@ records the exact `identity(...)` condition declared by the same resource.
 No proof may source authority from a container or another Cell type.
 
 Top-level `enum_layouts` for concrete payload ADTs first appeared in schema 53
-and remain in current metadata schema 62. Audit the
+and remain in current metadata schema 63 on the experimental `0.26b` branch. Audit the
 `packed-tagged-union-v1` layout, one-byte tag, sequential variant tags, packed
 field offsets, encoded size, ownership, storage, and ABI together. A
 `linear-cell-handle` field is exactly eight bytes and forces
@@ -237,7 +260,8 @@ emit runtime error 24 in permissive artifacts and stop at E2105 under the
 production policy; a static `N` alone is never evidence that a scan ran.
 
 The validity record first appeared in schema 55 during the 0.22 line and is
-retained by current metadata schema 62 as `types[].validity_predicates`. Review each predicate's
+retained by current metadata schema 63 on the experimental `0.26b` branch as
+`types[].validity_predicates`. Review each predicate's
 `expression`, `dependencies`, `evidence_tier`,
 `runtime_checked_on_create`, `create_paths_selected`,
 `create_paths_checked`, `update_paths_selected`, `create_path_status`,

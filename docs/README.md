@@ -3,6 +3,9 @@
 This directory is organized by document role. Keep new docs in the smallest
 stable category that matches how readers should use them.
 
+The experimental `0.26b` implementation uses metadata schema 63. The finalized
+0.26 release record below remains the historical schema 62 contract.
+
 ## Stable Tutorials
 
 `docs/wiki/` contains the GitHub Wiki source. These pages are version-neutral,
@@ -65,6 +68,12 @@ matrices.
 
 High-value active references include:
 
+- `CELLSCRIPT_1_0_SEMANTIC_FOUNDATION_RFC.md` for the post-0.26 design agenda,
+  issue/conflict reconciliation, staged acceptance gates, and the experimental
+  `0.26b` implementation boundary
+- `CELLSCRIPT_2027_PREVIEW_GRAMMAR.md` for the exact bounded native grammar,
+  lowering, diagnostics, issue constraints, and deferred surface implemented
+  by `cellscript-source-semantics-2027-preview3`
 - `releases/CELLSCRIPT_0_13_2_RELEASE_NOTES.md` for the final 0.13 syntax
   governance summary
 - `CELLSCRIPT_GATE_POLICY.md`

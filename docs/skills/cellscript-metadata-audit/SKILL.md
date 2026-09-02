@@ -9,6 +9,7 @@ references:
   - docs/CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md
 commands:
   - cellc metadata
+  - cellc expand
   - cellc constraints
   - cellc explain proof
   - cellc audit-bundle
@@ -23,14 +24,25 @@ stream, not consensus truth. ProofPlan rows, TemplateLayout records, receipts,
 constraints, ABI, and builder assumptions explain what the compiler emitted and
 what remains to be checked by builders or CKB nodes.
 
-For the current 0.26 development line, inspect current metadata schema 62 under
-Edition 2026 and the resolved compatibility profile, together with the canonical
-lowering record and source map for CKB ELF builds. Typed transaction views, bounded
+For the 0.26 development line's experimental `0.26b` branch, inspect the
+current metadata schema 63 under Edition 2026 or the separately routed Edition
+2027 preview and the resolved
+compatibility profile, together with typed-semantics v4, semantic-foundation
+v1, lowering-record v5, and source-map v2 for CKB ELF builds. Use
+`cellc expand` for the deterministic diagnostic rendering; do not hash that
+rendering or treat it as a source-equivalence proof. Typed transaction views, bounded
 quantifiers/collections, capability proofs, enum layouts, validity predicates,
 borrow regions, and `fungible-type-group-v1` evidence introduced on the 0.22
 line remain part of that evidence stream. The 0.25 value-generic kernel adds
 `generic_instantiations` with canonical source identities, concrete internal
 names, type arguments, and the closed value-ability registry.
+
+For each executable source `require` or Edition 2027 `enforce`, audit the
+semantic foundation's `entry-condition` claim together with its
+`evidence_reference` and `execution` binding. The binding must identify the
+condition provenance node, ordered typed success/failure blocks, and exact
+fail-closed runtime error. Keep supporting `proof-plan:<name>` claims separate;
+neither claim kind is a complete source-equivalence proof.
 
 Distinguish evidence states precisely: compile-only, metadata-only,
 runtime-required, helper-backed, builder-backed, node dry-run, tx-pool accepted,

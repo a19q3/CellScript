@@ -14,9 +14,14 @@ pub const COMPATIBILITY_PROFILE_SCHEMA: &str = "cellscript-resolved-compatibilit
 pub enum CellScriptEdition {
     #[serde(rename = "2026")]
     Edition2026,
+    /// Experimental semantic-foundation frontend. This edition is accepted on
+    /// the `0.26b` implementation branch but is not the default stable edition.
+    #[serde(rename = "2027")]
+    Edition2027,
 }
 
 pub const CURRENT_EDITION: CellScriptEdition = CellScriptEdition::Edition2026;
+pub const NEXT_EDITION: CellScriptEdition = CellScriptEdition::Edition2027;
 
 impl Default for CellScriptEdition {
     fn default() -> Self {
@@ -28,6 +33,7 @@ impl CellScriptEdition {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Edition2026 => "2026",
+            Self::Edition2027 => "2027",
         }
     }
 
@@ -39,6 +45,7 @@ impl CellScriptEdition {
     pub const fn source_semantics(self) -> &'static str {
         match self {
             Self::Edition2026 => "cellscript-source-semantics-2026",
+            Self::Edition2027 => "cellscript-source-semantics-2027-preview3",
         }
     }
 }
@@ -100,7 +107,11 @@ impl FromStr for CellScriptEdition {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "2026" => Ok(Self::Edition2026),
-            other => Err(CompileError::without_span(format!("unsupported CellScript edition '{}'; expected 2026", other))),
+            "2027" => Ok(Self::Edition2027),
+            other => Err(CompileError::without_span(format!(
+                "unsupported CellScript edition '{}'; expected 2026 or experimental 2027",
+                other
+            ))),
         }
     }
 }
@@ -134,21 +145,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_edition_2026_is_accepted() {
+    fn stable_and_experimental_editions_are_accepted() {
         assert_eq!("2026".parse::<CellScriptEdition>().unwrap(), CellScriptEdition::Edition2026);
-        assert!("unsupported".parse::<CellScriptEdition>().unwrap_err().message.contains("expected 2026"));
+        assert_eq!("2027".parse::<CellScriptEdition>().unwrap(), CellScriptEdition::Edition2027);
+        assert!("unsupported".parse::<CellScriptEdition>().unwrap_err().message.contains("expected 2026 or experimental 2027"));
     }
 
     #[test]
     fn serde_uses_the_manifest_year() {
         assert_eq!(serde_json::to_string(&CURRENT_EDITION).unwrap(), "\"2026\"");
+        assert_eq!(serde_json::to_string(&NEXT_EDITION).unwrap(), "\"2027\"");
         assert_eq!(serde_json::from_str::<CellScriptEdition>("\"2026\"").unwrap(), CURRENT_EDITION);
+        assert_eq!(serde_json::from_str::<CellScriptEdition>("\"2027\"").unwrap(), NEXT_EDITION);
         assert!(serde_json::from_str::<CellScriptEdition>("\"unsupported\"").is_err());
     }
 
     #[test]
     fn edition_owns_source_semantics_only() {
         assert_eq!(CURRENT_EDITION.source_semantics(), "cellscript-source-semantics-2026");
+        assert_eq!(NEXT_EDITION.source_semantics(), "cellscript-source-semantics-2027-preview3");
     }
 
     #[test]

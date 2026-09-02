@@ -250,14 +250,14 @@ fn main() {
     }
 
     if cli.parse {
-        let tokens = match cellscript::lexer::lex(&source) {
-            Ok(t) => t,
-            Err(e) => {
-                terminate_cli_error(&e, message_format, Some(&resolved_input), Some(&source));
+        let edition = match cellscript::source_edition(&resolved_input) {
+            Ok(edition) => edition,
+            Err(error) => {
+                terminate_cli_error(&error, message_format, Some(&resolved_input), Some(&source));
             }
         };
 
-        match cellscript::parser::parse_diagnostics(&tokens) {
+        match cellscript::frontend::parse_diagnostics(&source, edition) {
             Ok(ast) => {
                 if message_format == MessageFormat::Json {
                     print_main_json(&serde_json::json!({

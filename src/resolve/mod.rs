@@ -687,6 +687,7 @@ mod tests {
                         effect: EffectClass::Pure,
                         effect_declared: false,
                         scheduler_hint: None,
+                        next_surface: None,
                         doc_comment: None,
                         span: Span::default(),
                     }),

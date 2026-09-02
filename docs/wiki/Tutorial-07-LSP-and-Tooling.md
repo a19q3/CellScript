@@ -24,7 +24,7 @@ instead of only the message. The same record is available through
 ## What You Will Learn
 
 - what the LSP server supports;
-- how the CLI, LSP, WASM, and playground share Edition 2026;
+- how package-aware CLI, LSP, and WASM entry points select a source edition;
 - how the VS Code extension starts the server;
 - which settings matter for local development;
 - where editor tooling helps;
@@ -64,9 +64,14 @@ In practice you usually let the editor start it for you.
 ## One Edition Across Tooling
 
 The editor is not an edition compatibility layer. Package-backed LSP documents
-take `edition = "2026"` from `Cell.toml` and carry it into the same compiler
-path as `cellc`. A missing or non-2026 value is a package error; the LSP does
-not infer or migrate it.
+take the explicit edition from `Cell.toml` and carry it into the same frontend
+route as `cellc`. Edition 2026 remains stable. The `0.26b` branch additionally
+accepts experimental Edition 2027, reports its explicit-source and disposition
+diagnostics in the editor, and avoids offering ambiguous `consume` completions
+for that edition. A missing or unknown value is a package error; the LSP does
+not infer or migrate it. The native `type_script` and `lock_script`
+completions and formatter follow the bounded contract in
+[`CELLSCRIPT_2027_PREVIEW_GRAMMAR.md`](../CELLSCRIPT_2027_PREVIEW_GRAMMAR.md).
 
 The browser boundary is equally explicit. The WASM metadata exports take an
 edition argument:
@@ -77,9 +82,17 @@ compile_metadata_json_diagnostics(source, edition, target?)
 compile_metadata_json_sources(sources_json, entry_path, edition, target?)
 ```
 
-The only accepted value is `"2026"`. The playground worker passes that value
+The optional larger language-service build also exposes
+`language_service_json_for_edition(source, edition, line, character)` for
+virtual documents that have no `Cell.toml` path. The original
+`language_service_json` remains Edition 2026 for compatibility. The checked-in
+public Playground UI and generated bundle stay on their coordinated stable
+Edition 2026 asset until a product-level preview selector is approved.
+
+The native and WASM APIs on `0.26b` accept stable `"2026"` and experimental
+`"2027"`. The public playground worker continues to pass `"2026"` explicitly
 and records it in compiler-output provenance, so browser metadata cannot
-silently use a different compatibility contract from native builds.
+silently opt into the preview contract.
 
 Introduced on the 0.22 line and retained by the current compiler, qualified
 enum completion includes concrete payload constructors: after `Limit::`,

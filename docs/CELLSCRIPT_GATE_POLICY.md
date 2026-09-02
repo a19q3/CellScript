@@ -245,7 +245,47 @@ artifact worker. A `structurally_verified` checker level records checker
 version, policy, and report hash, but remains distinct from source equivalence,
 CKB-VM execution, deployment, and chain evidence.
 
-### 0.25 language, interface, and typed-semantics evidence
+### 0.26b semantic-foundation evidence
+
+The `0.26b` experimental branch advances compile metadata to schema 63,
+verified lowering records to v5, typed semantics to v4, and source maps to v2.
+Typed semantics embeds `cellscript-semantic-foundation-v1`, whose canonical
+records cover a bounded provenance DAG, entry selection, role binding, Cell
+disposition, enforcement-classified claims, legacy migration nodes, and
+layered semantic IDs. The standalone checker independently recomputes these
+records and their metadata/bundle bindings without loading the frontend.
+Executable `require`/`enforce` claims additionally bind canonical condition
+text to one condition-provenance node, the ordered typed success/failure
+branch, and the exact fail-closed runtime error. Mutation tests reject broken
+node, branch, and error links; differential tests require equivalent Edition
+2026 and Edition 2027 conditions to retain the same semantic projection.
+
+`cellc expand [INPUT]` renders this foundation for review; `--json` emits the
+canonical foundation object. The human rendering is deterministic but is not
+a hash boundary. Source paths and spans live only in source-map v2, while
+source bytes have a separate `SourceDigest`.
+
+The gate treats Edition 2027 as a preview, not a release claim. It must remain
+separately routed from Edition 2026, reject implicit transaction sources and
+ambiguous dispositions, and emit only `SingleEntry` until a versioned dispatch
+ABI is accepted. The implemented `preview3` slice additionally checks the
+native `type_script` or `lock_script` container. It checks exact Type or Lock
+group triggers, explicit provenance, exhaustive one-to-one Type Script
+replacement, and authorization-only Lock scope as described in
+[`CELLSCRIPT_2027_PREVIEW_GRAMMAR.md`](CELLSCRIPT_2027_PREVIEW_GRAMMAR.md).
+Parser, formatter, LSP, checker mutation, cross-frontend identity, WASM-source,
+and syntax-combination checks are part of ordinary `dev`/`ci` closure. These
+checks do not freeze the proposed 1.0 grammar or satisfy the RFC's later
+acceptance and release gates.
+
+The bounded `cellc migrate --to 2027` path is also fail-closed. CLI tests require
+it to preserve source outside the selected final entry, avoid implicit writes,
+reject every unsupported or lossy form before creating an output, and prove
+both `CoreSemanticId` equality and byte-identical RISC-V ELF lowering for each
+emitted candidate. This is local differential evidence, not graph-wide impact,
+builder, CKB-VM, deployment, or chain evidence.
+
+### 0.25/0.26 predecessor language and typed-semantics evidence
 
 The 0.26 implementation advances compile metadata to schema 62 and constraints
 metadata to schema 3. The compiler

@@ -329,6 +329,18 @@ fn validate_metadata_binding(
     let record_hash = canonical_hash(LOWERING_RECORD_SCHEMA, record)?;
     let source_map_hash = canonical_hash(SOURCE_MAP_SCHEMA, source_map)?;
     let comparisons = [
+        (
+            "verified_artifact.boundary_schema",
+            json_string(metadata, &["verified_artifact", "boundary_schema"]),
+            VERIFIED_ARTIFACT_BOUNDARY_SCHEMA,
+        ),
+        ("verified_artifact.state", json_string(metadata, &["verified_artifact", "state"]), "emitted"),
+        (
+            "verified_artifact.lowering_record_schema",
+            json_string(metadata, &["verified_artifact", "lowering_record_schema"]),
+            LOWERING_RECORD_SCHEMA,
+        ),
+        ("verified_artifact.source_map_schema", json_string(metadata, &["verified_artifact", "source_map_schema"]), SOURCE_MAP_SCHEMA),
         ("compiler_version", json_string(metadata, &["compiler_version"]), record.compiler_version.as_str()),
         ("module", json_string(metadata, &["module"]), record.module.as_str()),
         ("edition", json_string(metadata, &["edition"]), record.edition.as_str()),
@@ -355,6 +367,58 @@ fn validate_metadata_binding(
             ));
         }
     }
+    let identities = &record.typed_semantics.foundation.identities;
+    let expected_bundle_id = canonical_hash(
+        "cellscript-verified-bundle-id-v1",
+        &(
+            record.artifact_hash.as_str(),
+            record.typed_semantics_hash.as_str(),
+            record.compatibility_profile_hash.as_str(),
+            record_hash.as_str(),
+            source_map_hash.as_str(),
+            source_map.source_digest.as_str(),
+        ),
+    )?;
+    let identity_comparisons = [
+        (
+            "verified_artifact.source_digest",
+            json_string(metadata, &["verified_artifact", "source_digest"]),
+            source_map.source_digest.as_str(),
+        ),
+        (
+            "verified_artifact.core_semantic_id",
+            json_string(metadata, &["verified_artifact", "core_semantic_id"]),
+            identities.core_semantic_id.as_str(),
+        ),
+        (
+            "verified_artifact.entry_contract_id",
+            json_string(metadata, &["verified_artifact", "entry_contract_id"]),
+            identities.entry_contract_id.as_str(),
+        ),
+        (
+            "verified_artifact.artifact_contract_id",
+            json_string(metadata, &["verified_artifact", "artifact_contract_id"]),
+            identities.artifact_contract_id.as_str(),
+        ),
+        (
+            "verified_artifact.deployable_artifact_id",
+            json_string(metadata, &["verified_artifact", "deployable_artifact_id"]),
+            record.artifact_hash.as_str(),
+        ),
+        (
+            "verified_artifact.verified_bundle_id",
+            json_string(metadata, &["verified_artifact", "verified_bundle_id"]),
+            expected_bundle_id.as_str(),
+        ),
+    ];
+    for (field, actual, expected) in identity_comparisons {
+        if actual != Some(expected) {
+            return Err(CheckerError::new(
+                CheckerRejectionCode::V2410MetadataBindingMismatch,
+                format!("compile metadata field '{field}' does not match the layered artifact identity"),
+            ));
+        }
+    }
     if json_u64(metadata, &["artifact_size_bytes"]) != Some(record.artifact_size_bytes) {
         return Err(CheckerError::new(
             CheckerRejectionCode::V2410MetadataBindingMismatch,
@@ -375,6 +439,19 @@ fn validate_metadata_binding(
             CheckerRejectionCode::V2410MetadataBindingMismatch,
             "compile metadata compatibility profile differs from lowering record",
         ));
+    }
+    for (field, expected) in [
+        ("metadata_schema_version", profile.metadata_schema_version),
+        ("source_metadata_schema_version", profile.source_metadata_schema_version),
+        ("artifact_metadata_schema_version", profile.artifact_metadata_schema_version),
+        ("constraints_metadata_schema_version", profile.constraints_metadata_schema_version),
+    ] {
+        if json_u64(metadata, &[field]) != Some(u64::from(expected)) {
+            return Err(CheckerError::new(
+                CheckerRejectionCode::V2410MetadataBindingMismatch,
+                format!("compile metadata field '{field}' differs from the resolved compatibility profile"),
+            ));
+        }
     }
     let typed_value = metadata.get("typed_semantics").cloned().ok_or_else(|| {
         CheckerError::new(CheckerRejectionCode::V2420TypedMachineBindingInvalid, "compile metadata has no typed_semantics record")
@@ -397,6 +474,7 @@ fn validate_metadata_binding(
     if source_map.lowering_record_hash != record_hash
         || source_map.artifact_hash != record.artifact_hash
         || source_map.source_set_hash != record.source_set_hash
+        || source_map.source_digest != record.source_content_hash
     {
         return Err(CheckerError::new(
             CheckerRejectionCode::V2416SourceMapInvalid,
@@ -421,6 +499,7 @@ fn validate_typed_semantics(record: &VerifiedLoweringRecord) -> Result<(), Check
     ensure_sorted_unique(&typed.types, |item| item.name.as_str(), "typed type")?;
     ensure_sorted_unique(&typed.entries, |item| item.id.as_str(), "typed entry")?;
     ensure_sorted_unique(&typed.instantiations, |item| item.identity.as_str(), "typed instantiation")?;
+    validate_semantic_foundation(typed, record)?;
     let lowering_entries = record.entries.iter().map(|entry| (entry.id.as_str(), entry)).collect::<BTreeMap<_, _>>();
     let typed_types = typed.types.iter().map(|ty| (ty.name.as_str(), ty)).collect::<BTreeMap<_, _>>();
     let typed_entries_by_name = typed.entries.iter().map(|entry| (entry.name.as_str(), entry)).collect::<BTreeMap<_, _>>();
@@ -656,6 +735,470 @@ fn validate_typed_semantics(record: &VerifiedLoweringRecord) -> Result<(), Check
         }
     }
     Ok(())
+}
+
+fn validate_semantic_foundation(typed: &TypedSemanticRecord, record: &VerifiedLoweringRecord) -> Result<(), CheckerError> {
+    let foundation = &typed.foundation;
+    if foundation.schema != SEMANTIC_FOUNDATION_SCHEMA
+        || foundation.version != SEMANTIC_FOUNDATION_VERSION
+        || foundation.provenance.schema != PROVENANCE_GRAPH_SCHEMA
+        || foundation.provenance.version != PROVENANCE_GRAPH_VERSION
+    {
+        return typed_error("semantic foundation or provenance DAG uses an unsupported schema".to_string());
+    }
+    if foundation.provenance.nodes.len() > 65_536 || foundation.provenance.bindings.len() > 262_144 {
+        return typed_error("semantic foundation provenance DAG exceeds its bounded contract".to_string());
+    }
+    ensure_sorted_unique(&foundation.provenance.nodes, |node| node.id.as_str(), "provenance node")?;
+    let node_ids = foundation.provenance.nodes.iter().map(|node| node.id.as_str()).collect::<BTreeSet<_>>();
+    for node in &foundation.provenance.nodes {
+        if node.id != canonical_hash("cellscript-value-provenance-node-v1", &node.provenance)? {
+            return typed_error(format!("provenance node '{}' does not match its canonical contents", node.id));
+        }
+        if let ValueProvenance::Derived { operation, inputs } = &node.provenance
+            && (operation.is_empty() || inputs.iter().any(|input| input == &node.id || !node_ids.contains(input.as_str())))
+        {
+            return typed_error(format!("derived provenance node '{}' has an invalid operation or input", node.id));
+        }
+    }
+    let root_node_ids = foundation
+        .provenance
+        .nodes
+        .iter()
+        .filter(|node| !matches!(node.provenance, ValueProvenance::Derived { .. }))
+        .map(|node| node.id.as_str())
+        .collect::<BTreeSet<_>>();
+    validate_provenance_acyclic(&foundation.provenance.nodes)?;
+    let entry_locals = typed
+        .entries
+        .iter()
+        .flat_map(|entry| entry.locals.iter().map(move |local| ((entry.id.as_str(), local.id), local)))
+        .collect::<BTreeMap<_, _>>();
+    let required_locals =
+        typed
+            .entries
+            .iter()
+            .flat_map(|entry| {
+                let entry_id = entry.id.as_str();
+                entry.params.iter().map(move |param| (entry_id, param.binding_id)).chain(entry.blocks.iter().flat_map(move |block| {
+                    block.operations.iter().flat_map(move |operation| {
+                        operation.destinations.iter().copied().map(move |local_id| (entry_id, local_id)).chain(
+                            operation.operands.iter().filter_map(move |operand| operand.local.map(|local_id| (entry_id, local_id))),
+                        )
+                    })
+                }))
+            })
+            .collect::<BTreeSet<_>>();
+    let mut bound_locals = BTreeSet::new();
+    let mut previous_binding = None::<(&str, u32, &str)>;
+    for binding in &foundation.provenance.bindings {
+        let key = (binding.entry_id.as_str(), binding.local_id, binding.node_id.as_str());
+        if previous_binding.is_some_and(|previous| previous >= key)
+            || !node_ids.contains(binding.node_id.as_str())
+            || !entry_locals.contains_key(&(binding.entry_id.as_str(), binding.local_id))
+        {
+            return typed_error("provenance bindings are not canonical or reference unknown typed locals".to_string());
+        }
+        bound_locals.insert((binding.entry_id.as_str(), binding.local_id));
+        previous_binding = Some(key);
+    }
+    if !required_locals.is_subset(&bound_locals) {
+        let missing = required_locals.difference(&bound_locals).map(|(entry, local)| format!("{entry}:{local}")).collect::<Vec<_>>();
+        return typed_error(format!(
+            "not every value-bearing typed local has at least one provenance binding: {}",
+            missing.join(", ")
+        ));
+    }
+
+    let contract = &foundation.entry_contract;
+    let dispatch_label = match &contract.dispatch {
+        EntryDispatchContract::SingleEntry => "single-entry",
+        EntryDispatchContract::ExplicitVersionedDispatch { selector_node_id, selector_type, variants, unknown_selector } => {
+            if !root_node_ids.contains(selector_node_id.as_str())
+                || selector_type.is_empty()
+                || variants.is_empty()
+                || unknown_selector != "reject"
+                || variants.windows(2).any(|pair| (&pair[0].tag, &pair[0].entry_id) >= (&pair[1].tag, &pair[1].entry_id))
+                || variants
+                    .iter()
+                    .any(|variant| !typed.entries.iter().any(|entry| entry.id == variant.entry_id) || variant.tag.is_empty())
+            {
+                return typed_error("explicit entry dispatch contract is incomplete or non-canonical".to_string());
+            }
+            "explicit-versioned-dispatch"
+        }
+    };
+    let expected_contract_node = canonical_hash(
+        "cellscript-semantic-node-entry-contract-v1",
+        &(
+            contract.script_role.as_str(),
+            contract.trigger.as_str(),
+            contract.exact_entry.as_str(),
+            dispatch_label,
+            contract.entry_payload_abi.as_str(),
+            contract.witness_placement_abi.as_str(),
+            contract.witness_placement_field.as_str(),
+            contract.witness_placement_source.as_str(),
+        ),
+    )?;
+    let trigger_valid = match contract.script_role.as_str() {
+        "type" => {
+            contract.trigger == "type-group"
+                || contract
+                    .trigger
+                    .strip_prefix("type-group<")
+                    .and_then(|trigger| trigger.strip_suffix('>'))
+                    .is_some_and(|trigger| !trigger.is_empty())
+        }
+        "lock" => contract.trigger == "lock-group",
+        "none" => contract.trigger == "none",
+        _ => false,
+    };
+    if contract.semantic_node_id != expected_contract_node
+        || !trigger_valid
+        || (contract.exact_entry != "none" && !typed.entries.iter().any(|entry| entry.id == contract.exact_entry))
+        || contract.entry_payload_abi.is_empty()
+        || contract.witness_placement_abi.is_empty()
+        || contract.witness_placement_field.is_empty()
+        || contract.witness_placement_source.is_empty()
+    {
+        return typed_error("artifact entry-selection contract is invalid".to_string());
+    }
+
+    ensure_sorted_unique(&foundation.roles, |role| role.role_id.as_str(), "semantic role")?;
+    let role_ids = foundation.roles.iter().map(|role| role.role_id.as_str()).collect::<BTreeSet<_>>();
+    let typed_types = typed.types.iter().map(|ty| (ty.name.as_str(), ty)).collect::<BTreeMap<_, _>>();
+    for role in &foundation.roles {
+        let expected_node = canonical_hash(
+            "cellscript-semantic-node-role-v1",
+            &(
+                role.role_id.as_str(),
+                role.entry_id.as_str(),
+                role.binding.as_str(),
+                role.ty.as_str(),
+                role.direction.as_str(),
+                role.source.as_str(),
+                role.selector.as_str(),
+                role.cardinality.as_str(),
+                role.lock_or_type_role.as_str(),
+                role.script_identity_policy.as_str(),
+                role.schema_identity.as_str(),
+                role.correspondence_policy.as_str(),
+            ),
+        )?;
+        let schema_type = role.ty.strip_prefix('&').map(str::trim).unwrap_or(role.ty.as_str());
+        let schema_type = bounded_collection_element(schema_type).unwrap_or(schema_type);
+        if role.semantic_node_id != expected_node
+            || !typed.entries.iter().any(|entry| entry.id == role.entry_id)
+            || role.binding.is_empty()
+            || !matches!(role.direction.as_str(), "input" | "output" | "read-only-dependency")
+            || role.locality != "local"
+            || role.selector.is_empty()
+            || role.cardinality.is_empty()
+            || !matches!(role.lock_or_type_role.as_str(), "lock" | "type")
+            || typed_types.get(schema_type).is_none_or(|layout| layout.layout_hash != role.schema_identity)
+        {
+            return typed_error(format!("semantic role '{}' is incomplete or not schema-bound", role.role_id));
+        }
+    }
+
+    ensure_sorted_unique(&foundation.dispositions, |item| item.id.as_str(), "Cell disposition")?;
+    let mut disposed_roles = BTreeSet::new();
+    for disposition in &foundation.dispositions {
+        let expected_node = canonical_hash(
+            "cellscript-semantic-node-disposition-v1",
+            &(
+                disposition.id.as_str(),
+                disposition.entry_id.as_str(),
+                disposition.input_role.as_deref(),
+                disposition.output_role.as_deref(),
+                &disposition.input,
+                &disposition.output,
+                &disposition.envelope,
+                disposition.enforcement.as_str(),
+            ),
+        )?;
+        let input_shape_valid = match &disposition.input {
+            None => true,
+            Some(InputDisposition::Successor { output_role }) => !output_role.is_empty(),
+            Some(InputDisposition::Pooled { pool_id, accounting_obligation }) => {
+                !pool_id.is_empty() && !accounting_obligation.is_empty()
+            }
+            Some(InputDisposition::Retired { absence_policy }) => !absence_policy.is_empty(),
+            Some(InputDisposition::AuthorizationOnly { disposition_owner }) => !disposition_owner.is_empty(),
+            Some(InputDisposition::LegacyConsumed { operation, migration }) => !operation.is_empty() && !migration.is_empty(),
+        };
+        let output_shape_valid = match &disposition.output {
+            None => true,
+            Some(OutputOrigin::SuccessorOf { input_role }) => !input_role.is_empty(),
+            Some(OutputOrigin::Fresh { identity_policy }) => !identity_policy.is_empty(),
+            Some(OutputOrigin::PoolResult { pool_id, accounting_obligation }) => {
+                !pool_id.is_empty() && !accounting_obligation.is_empty()
+            }
+            Some(OutputOrigin::LegacyCreated { operation }) => !operation.is_empty(),
+        };
+        let schema_role = disposition
+            .output_role
+            .as_ref()
+            .or(disposition.input_role.as_ref())
+            .and_then(|role_id| foundation.roles.iter().find(|role| &role.role_id == role_id));
+        let exhaustive_fields_valid = schema_role.is_none_or(|role| {
+            let schema_type = role.ty.strip_prefix('&').map(str::trim).unwrap_or(role.ty.as_str());
+            let schema_type = bounded_collection_element(schema_type).unwrap_or(schema_type);
+            let expected = typed_types
+                .get(schema_type)
+                .map(|layout| layout.fields.iter().map(|field| field.name.as_str()).collect::<BTreeSet<_>>())
+                .unwrap_or_default();
+            let actual = disposition.envelope.data_fields.iter().map(|field| field.field.as_str()).collect::<BTreeSet<_>>();
+            disposition.envelope.completeness != "exhaustive" || actual == expected
+        });
+        if disposition.semantic_node_id != expected_node
+            || !typed.entries.iter().any(|entry| entry.id == disposition.entry_id)
+            || !input_shape_valid
+            || !output_shape_valid
+            || !exhaustive_fields_valid
+            || disposition.input_role.is_none() != disposition.input.is_none()
+            || disposition.output_role.is_none() != disposition.output.is_none()
+            || disposition
+                .input_role
+                .iter()
+                .chain(disposition.output_role.iter())
+                .any(|role| !role_ids.contains(role.as_str()) || !disposed_roles.insert(role.as_str()))
+            || disposition.envelope.completeness.is_empty()
+            || disposition.envelope.logical_identity.is_empty()
+            || disposition.envelope.lock_script.is_empty()
+            || disposition.envelope.type_script.is_empty()
+            || disposition.envelope.capacity.is_empty()
+            || disposition.envelope.cardinality.is_empty()
+            || disposition.envelope.correspondence.is_empty()
+            || disposition.envelope.data_fields.windows(2).any(|pair| pair[0].field >= pair[1].field)
+            || disposition.envelope.data_fields.iter().any(|field| field.field.is_empty() || field.treatment.is_empty())
+            || !matches!(
+                disposition.enforcement.as_str(),
+                "checked-static"
+                    | "checked-runtime"
+                    | "runtime-helper-required"
+                    | "builder-evidence-required"
+                    | "metadata-only"
+                    | "chain-evidence-required"
+            )
+        {
+            return typed_error(format!("Cell disposition '{}' is incomplete, duplicated, or malformed", disposition.id));
+        }
+        match (&disposition.input, &disposition.output) {
+            (Some(InputDisposition::Successor { output_role }), Some(OutputOrigin::SuccessorOf { input_role }))
+                if disposition.output_role.as_deref() == Some(output_role)
+                    && disposition.input_role.as_deref() == Some(input_role) => {}
+            (Some(InputDisposition::Successor { .. }), _) | (_, Some(OutputOrigin::SuccessorOf { .. })) => {
+                return typed_error(format!("successor disposition '{}' is not bidirectionally linked", disposition.id));
+            }
+            _ => {}
+        }
+    }
+    for role in &foundation.roles {
+        if role.direction != "read-only-dependency" && !disposed_roles.contains(role.role_id.as_str()) {
+            return typed_error(format!("Cell role '{}' has no exhaustive disposition record", role.role_id));
+        }
+    }
+
+    ensure_sorted_unique(&foundation.claims, |claim| claim.id.as_str(), "semantic claim")?;
+    for claim in &foundation.claims {
+        let expected_node = canonical_hash(
+            "cellscript-semantic-node-claim-v1",
+            &(
+                claim.id.as_str(),
+                claim.entry_id.as_str(),
+                claim.category.as_str(),
+                claim.statement.as_str(),
+                claim.enforcement.as_str(),
+                claim.on_chain_checked,
+                claim.evidence_reference.as_str(),
+                &claim.execution,
+            ),
+        )?;
+        let evidence_valid = match &claim.execution {
+            Some(execution) => validate_claim_execution(claim, execution, typed, foundation),
+            None => claim.evidence_reference.starts_with("proof-plan:") && claim.evidence_reference.len() > "proof-plan:".len(),
+        };
+        if claim.semantic_node_id != expected_node
+            || !typed.entries.iter().any(|entry| entry.id == claim.entry_id)
+            || claim.category.is_empty()
+            || claim.statement.is_empty()
+            || claim.evidence_reference.is_empty()
+            || !evidence_valid
+            || !matches!(
+                claim.enforcement.as_str(),
+                "checked-static"
+                    | "checked-runtime"
+                    | "runtime-helper-required"
+                    | "builder-evidence-required"
+                    | "metadata-only"
+                    | "chain-evidence-required"
+            )
+            || (claim.on_chain_checked && !matches!(claim.enforcement.as_str(), "checked-static" | "checked-runtime"))
+        {
+            return typed_error(format!("semantic claim '{}' has an invalid enforcement classification", claim.id));
+        }
+    }
+
+    ensure_sorted_unique(&foundation.legacy_nodes, |legacy| legacy.id.as_str(), "legacy semantic node")?;
+    for legacy in &foundation.legacy_nodes {
+        let expected_node = canonical_hash(
+            "cellscript-semantic-node-legacy-v1",
+            &(legacy.id.as_str(), legacy.kind.as_str(), legacy.meaning.as_str(), legacy.migration.as_str()),
+        )?;
+        if legacy.semantic_node_id != expected_node
+            || legacy.kind.is_empty()
+            || legacy.meaning.is_empty()
+            || legacy.migration.is_empty()
+        {
+            return typed_error(format!("legacy semantic node '{}' is incomplete", legacy.id));
+        }
+    }
+
+    let core_semantic_id = canonical_hash(
+        "cellscript-core-semantic-id-v1",
+        &(&typed.types, &foundation.roles, &foundation.dispositions, &foundation.claims, &foundation.legacy_nodes),
+    )?;
+    let provenance_roots = foundation
+        .provenance
+        .nodes
+        .iter()
+        .filter(|node| !matches!(node.provenance, ValueProvenance::Derived { .. }))
+        .map(|node| node.id.as_str())
+        .collect::<Vec<_>>();
+    let entry_contract_id = canonical_hash(
+        "cellscript-entry-contract-id-v1",
+        &(
+            core_semantic_id.as_str(),
+            &foundation.entry_contract,
+            provenance_roots,
+            foundation.entry_contract.entry_payload_abi.as_str(),
+            foundation.entry_contract.witness_placement_abi.as_str(),
+        ),
+    )?;
+    let artifact_contract_id =
+        canonical_hash("cellscript-artifact-contract-id-v1", &(entry_contract_id.as_str(), &foundation.artifact_contract))?;
+    if foundation.identities.core_semantic_id != core_semantic_id
+        || foundation.identities.entry_contract_id != entry_contract_id
+        || foundation.identities.artifact_contract_id != artifact_contract_id
+        || foundation.artifact_contract.target_profile != record.target_profile
+        || foundation.artifact_contract.artifact_format != record.artifact_format
+        || foundation.artifact_contract.lowering_record_schema != LOWERING_RECORD_SCHEMA
+        || foundation.artifact_contract.typed_semantics_schema != TYPED_SEMANTICS_SCHEMA
+    {
+        return typed_error("layered semantic identities do not match their canonical projections".to_string());
+    }
+    Ok(())
+}
+
+fn validate_claim_execution(
+    claim: &SemanticClaim,
+    execution: &ClaimExecutionBinding,
+    typed: &TypedSemanticRecord,
+    foundation: &SemanticFoundationRecord,
+) -> bool {
+    if claim.category != "entry-condition"
+        || claim.enforcement != "checked-runtime"
+        || !claim.on_chain_checked
+        || !claim.statement.starts_with("require ")
+        || claim.evidence_reference != format!("typed-entry:{}:block:{}:branch-condition", claim.entry_id, execution.condition_block)
+    {
+        return false;
+    }
+    let Some(entry) = typed.entries.iter().find(|entry| entry.id == claim.entry_id) else {
+        return false;
+    };
+    let Some(condition_block) = entry.blocks.iter().find(|block| block.id == execution.condition_block) else {
+        return false;
+    };
+    let Some(success_block) = entry.blocks.iter().find(|block| block.id == execution.success_block) else {
+        return false;
+    };
+    let Some(failure_block) = entry.blocks.iter().find(|block| block.id == execution.failure_block) else {
+        return false;
+    };
+    if condition_block.terminator != "branch"
+        || condition_block.successors != [execution.success_block, execution.failure_block]
+        || success_block.id == failure_block.id
+        || failure_block.terminator != "return"
+        || failure_block
+            .runtime_error
+            .as_ref()
+            .is_none_or(|error| error.code != execution.failure_error_code || error.name != "assertion-failed")
+    {
+        return false;
+    }
+    let Some(condition) = condition_block
+        .operations
+        .iter()
+        .rev()
+        .find(|operation| operation.opcode == "branch-condition")
+        .and_then(|operation| operation.operands.as_slice().first().filter(|_| operation.operands.len() == 1))
+    else {
+        return false;
+    };
+    let node_matches = if let Some(local_id) = condition.local {
+        foundation.provenance.bindings.iter().any(|binding| {
+            binding.entry_id == claim.entry_id && binding.local_id == local_id && binding.node_id == execution.condition_node_id
+        })
+    } else if let Some(constant) = &condition.constant {
+        canonical_hash("cellscript-value-provenance-node-v1", &ValueProvenance::Constant { declaration: format!("{constant:?}") })
+            .is_ok_and(|node_id| node_id == execution.condition_node_id)
+    } else {
+        false
+    };
+    node_matches
+        && foundation.provenance.nodes.iter().any(|node| node.id == execution.condition_node_id)
+        && execution.failure_error_code != 0
+}
+
+fn validate_provenance_acyclic(nodes: &[ProvenanceNode]) -> Result<(), CheckerError> {
+    let edges = nodes
+        .iter()
+        .map(|node| {
+            let inputs = match &node.provenance {
+                ValueProvenance::Derived { inputs, .. } => inputs.iter().map(String::as_str).collect(),
+                _ => Vec::new(),
+            };
+            (node.id.as_str(), inputs)
+        })
+        .collect::<BTreeMap<_, Vec<_>>>();
+    let mut complete = BTreeSet::new();
+    for root in edges.keys() {
+        let mut active = BTreeSet::new();
+        let mut stack = vec![(*root, false, 0usize)];
+        while let Some((node, exiting, depth)) = stack.pop() {
+            if depth > 256 {
+                return typed_error("provenance DAG exceeds the maximum depth of 256".to_string());
+            }
+            if exiting {
+                active.remove(node);
+                complete.insert(node);
+                continue;
+            }
+            if complete.contains(node) {
+                continue;
+            }
+            if !active.insert(node) {
+                return typed_error(format!("provenance DAG contains a cycle at '{node}'"));
+            }
+            stack.push((node, true, depth));
+            if let Some(inputs) = edges.get(node) {
+                for input in inputs.iter().rev() {
+                    stack.push((*input, false, depth + 1));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn bounded_collection_element(ty: &str) -> Option<&str> {
+    ty.strip_prefix("BoundedCellSet<")
+        .and_then(|value| value.strip_suffix('>'))
+        .and_then(|value| value.rsplit_once(','))
+        .map(|(element, _)| element.trim())
 }
 
 fn validate_typed_type(ty: &TypedSemanticType) -> Result<(), CheckerError> {
@@ -2332,6 +2875,7 @@ fn validate_source_map(
         || source_map.version != SOURCE_MAP_VERSION
         || source_map.module != record.module
         || source_map.text_range != record.text_range
+        || source_map.source_digest != record.source_content_hash
         || source_map.coverage_claim.source_semantic_equivalence
         || !source_map.coverage_claim.mapped_instruction_ranges_only
     {
@@ -2377,6 +2921,43 @@ fn validate_source_map(
         elf.bytes_for_range(artifact, interval.machine_range).map_err(map_elf_error)?;
         previous_end = Some(interval.machine_range.end);
         mapped_ranges.push(interval.machine_range);
+    }
+    let foundation = &record.typed_semantics.foundation;
+    let mut semantic_ids = foundation.provenance.nodes.iter().map(|node| node.id.as_str()).collect::<BTreeSet<_>>();
+    semantic_ids.insert(foundation.entry_contract.semantic_node_id.as_str());
+    semantic_ids.extend(foundation.roles.iter().map(|role| role.semantic_node_id.as_str()));
+    semantic_ids.extend(foundation.dispositions.iter().map(|item| item.semantic_node_id.as_str()));
+    semantic_ids.extend(foundation.claims.iter().map(|claim| claim.semantic_node_id.as_str()));
+    semantic_ids.extend(foundation.legacy_nodes.iter().map(|legacy| legacy.semantic_node_id.as_str()));
+    if source_map.semantic_mappings.len() > 262_144
+        || source_map.semantic_mappings.windows(2).any(|pair| {
+            (&pair[0].semantic_node_id, &pair[0].source_path, pair[0].source_start, pair[0].source_end)
+                >= (&pair[1].semantic_node_id, &pair[1].source_path, pair[1].source_start, pair[1].source_end)
+        })
+    {
+        return Err(CheckerError::new(
+            CheckerRejectionCode::V2416SourceMapInvalid,
+            "semantic source mappings exceed their bound or are not canonical",
+        ));
+    }
+    let mut mapped_semantic_ids = BTreeSet::new();
+    for mapping in &source_map.semantic_mappings {
+        if !semantic_ids.contains(mapping.semantic_node_id.as_str())
+            || !safe_source_path(&mapping.source_path)
+            || mapping.source_start > mapping.source_end
+        {
+            return Err(CheckerError::new(
+                CheckerRejectionCode::V2416SourceMapInvalid,
+                format!("semantic source mapping '{}' is malformed or references an unknown node", mapping.semantic_node_id),
+            ));
+        }
+        mapped_semantic_ids.insert(mapping.semantic_node_id.as_str());
+    }
+    if mapped_semantic_ids != semantic_ids {
+        return Err(CheckerError::new(
+            CheckerRejectionCode::V2416SourceMapInvalid,
+            "semantic source mappings do not cover every semantic node",
+        ));
     }
     if source_map.coverage_claim.complete_text_coverage {
         let mut expected = record.text_range.start;
@@ -2515,8 +3096,10 @@ mod tests {
             artifact_hash: "h".to_string(),
             lowering_record_hash: "r".to_string(),
             source_set_hash: "s".to_string(),
+            source_digest: "d".to_string(),
             text_range: MachineRange { start: 1, end: 2 },
             intervals: Vec::new(),
+            semantic_mappings: Vec::new(),
             coverage_claim: SourceMapCoverageClaim {
                 mapped_instruction_ranges_only: true,
                 complete_text_coverage: false,

@@ -585,7 +585,28 @@ pub struct ActionDef {
     pub effect: EffectClass,
     pub effect_declared: bool,
     pub scheduler_hint: Option<SchedulerHint>,
+    /// Edition 2027 source-only structure retained for canonical formatting.
+    /// Semantic lowering consumes the generated body plus `trigger_type`; the
+    /// surface record is never a second verifier authority.
+    pub next_surface: Option<NextEntrySurface>,
     pub doc_comment: Option<String>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct NextEntrySurface {
+    pub container_name: String,
+    pub trigger_type: String,
+    pub verify: Vec<Expr>,
+    pub replacements: Vec<NextReplacement>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NextReplacement {
+    pub input: String,
+    pub output: String,
+    pub data_fields: Vec<String>,
+    pub lock_script: Expr,
     pub span: Span,
 }
 
@@ -624,7 +645,16 @@ pub struct LockDef {
     pub params: Vec<Param>,
     pub return_type: Type,
     pub body: Vec<Stmt>,
+    /// Source-only marker retained by the Edition 2027 preview frontend.
+    /// Semantic lowering continues through the shared checked Lock path.
+    pub next_surface: Option<NextLockSurface>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct NextLockSurface {
+    pub container_name: String,
+    pub verify: Vec<Expr>,
 }
 
 #[derive(Debug, Clone)]

@@ -21,6 +21,7 @@ pub mod error;
 pub mod executable_surface;
 pub mod flow;
 pub mod fmt;
+pub mod frontend;
 mod generics;
 #[cfg(not(feature = "wasm"))]
 pub mod incremental;
@@ -36,6 +37,8 @@ pub mod proof_plan;
 pub mod repl;
 pub mod resolve;
 pub mod runtime_errors;
+#[cfg(not(feature = "wasm"))]
+pub mod semantic_expansion;
 pub mod simulate;
 pub mod stdlib;
 #[cfg(not(feature = "wasm"))]
@@ -46,11 +49,13 @@ pub mod wasm;
 
 pub use assumptions::{BuilderAssumptionMetadata, TxValidationReport, TxValidationViolation};
 pub use cellscript_artifact_checker::{
-    CheckerBudgets, CheckerReport, SourceArtifactMap, VerifiedArtifactMetadata, VerifiedArtifactState, VerifiedLoweringRecord,
-    CHECKER_POLICY_SCHEMA, CHECKER_VERSION, LOWERING_RECORD_SCHEMA, SOURCE_MAP_SCHEMA,
+    CheckerBudgets, CheckerReport, LayeredSemanticIdentities, SemanticFoundationRecord, SourceArtifactMap, VerifiedArtifactMetadata,
+    VerifiedArtifactState, VerifiedLoweringRecord, CHECKER_POLICY_SCHEMA, CHECKER_VERSION, LOWERING_RECORD_SCHEMA,
+    PROVENANCE_GRAPH_SCHEMA, SEMANTIC_FOUNDATION_SCHEMA, SOURCE_MAP_SCHEMA, TYPED_SEMANTICS_SCHEMA, VERIFIED_ARTIFACT_BOUNDARY_SCHEMA,
 };
 pub use edition::{
     resolve_compatibility_profile, CellScriptEdition, ResolvedCompatibilityProfile, COMPATIBILITY_PROFILE_SCHEMA, CURRENT_EDITION,
+    NEXT_EDITION,
 };
 pub use proof_plan::soundness::{ProofPlanSoundnessIssue, ProofPlanSoundnessReport};
 pub use proof_plan::{EvidenceTier, ProofPlanDiagnosticMetadata, ProofPlanMetadata, ProofPlanSourceSpanMetadata};
@@ -215,8 +220,8 @@ fn strict_capability_name(capability: ast::Capability) -> &'static str {
 
 const DEFAULT_TARGET: &str = "riscv64-asm";
 const DEFAULT_TARGET_PROFILE: &str = "ckb";
-const ARTIFACT_CACHE_VERSION: &str = "project-source-set-v15-typed-semantics-v3";
-pub const METADATA_SCHEMA_VERSION: u32 = 62;
+const ARTIFACT_CACHE_VERSION: &str = "project-source-set-v19-edition-2027-preview3";
+pub const METADATA_SCHEMA_VERSION: u32 = 63;
 pub const SOURCE_METADATA_SCHEMA_VERSION: u32 = 2;
 pub const ARTIFACT_METADATA_SCHEMA_VERSION: u32 = 1;
 pub const CONSTRAINTS_METADATA_SCHEMA_VERSION: u32 = 3;
@@ -5677,8 +5682,7 @@ fn read_module_source(path: &Utf8Path) -> Result<String> {
 }
 
 fn parse_loaded_module(path: Utf8PathBuf, source: String, edition: CellScriptEdition) -> Result<LoadedModule> {
-    let tokens = lexer::lex(&source).map_err(|e| e.with_file(path.clone()))?;
-    let ast = parser::parse(&tokens).map_err(|e| e.with_file(path.clone()))?;
+    let ast = frontend::parse(&source, edition).map_err(|e| e.with_file(path.clone()))?;
     Ok(LoadedModule { path, source, ast, edition })
 }
 
@@ -5687,8 +5691,7 @@ fn parse_loaded_module_diagnostics(
     source: String,
     edition: CellScriptEdition,
 ) -> std::result::Result<LoadedModule, Vec<CompileError>> {
-    let tokens = lexer::lex(&source).map_err(|e| vec![e.with_file(path.clone())])?;
-    let ast = parser::parse_diagnostics(&tokens)
+    let ast = frontend::parse_diagnostics(&source, edition)
         .map_err(|errors| errors.into_iter().map(|error| error.with_file(path.clone())).collect::<Vec<_>>())?;
     Ok(LoadedModule { path, source, ast, edition })
 }
@@ -5838,7 +5841,11 @@ fn monomorphize_loaded_project_diagnostics(
     Ok(())
 }
 
-fn source_edition(path: &Utf8Path) -> Result<CellScriptEdition> {
+/// Resolve the source edition for a file from its containing package manifest.
+///
+/// Standalone files use the stable current edition. Package-backed tooling
+/// should call this instead of bypassing the edition-routed frontend.
+pub fn source_edition(path: &Utf8Path) -> Result<CellScriptEdition> {
     find_package_root(path)?
         .map(|root| load_manifest(&root).map(|manifest| manifest.package.edition))
         .transpose()
@@ -5923,11 +5930,7 @@ pub fn compile_with_executable_surface_policy(
     options: CompileOptions,
     policy: ExecutableSurfacePolicy,
 ) -> Result<CompileResult> {
-    // 1. Lexical analysis
-    let tokens = lexer::lex(source)?;
-
-    // 2. Parse
-    let ast = generics::monomorphize(&parser::parse(&tokens)?)?;
+    let ast = generics::monomorphize(&frontend::parse(source, options.edition)?)?;
 
     let mut result = compile_ast_with_build(&ast, &options, None, None, None, policy)?;
     bind_compile_result_source_metadata(&mut result, vec![source_unit_from_bytes("<memory>", "memory", source.as_bytes())])?;
@@ -5938,8 +5941,7 @@ pub fn compile_with_executable_surface_policy(
 /// Compile the unique structurally eligible fungible Type Script invariant
 /// from in-memory source as the payload-free `fungible-type-group-v1` entry.
 pub fn compile_fungible_type_group_entry(source: &str, options: CompileOptions) -> Result<CompileResult> {
-    let tokens = lexer::lex(source)?;
-    let ast = generics::monomorphize(&parser::parse(&tokens)?)?;
+    let ast = generics::monomorphize(&frontend::parse(source, options.edition)?)?;
     let mut result = compile_ast_with_build(
         &ast,
         &options,
@@ -5960,8 +5962,7 @@ pub fn compile_fungible_type_group_entry_for(
     options: CompileOptions,
     type_name: impl Into<String>,
 ) -> Result<CompileResult> {
-    let tokens = lexer::lex(source)?;
-    let ast = generics::monomorphize(&parser::parse(&tokens)?)?;
+    let ast = generics::monomorphize(&frontend::parse(source, options.edition)?)?;
     let scope = CompileEntryScope::FungibleTypeGroupV1For(type_name.into());
     let mut result = compile_ast_with_build(&ast, &options, None, None, Some(&scope), ExecutableSurfacePolicy::AllowFailClosed)?;
     bind_compile_result_source_metadata(&mut result, vec![source_unit_from_bytes("<memory>", "memory", source.as_bytes())])?;
@@ -5971,8 +5972,7 @@ pub fn compile_fungible_type_group_entry_for(
 
 /// Only generate compile metadata, without asm/elf artifact.
 pub fn compile_metadata(source: &str, edition: CellScriptEdition, target: Option<String>) -> Result<CompileMetadata> {
-    let tokens = lexer::lex(source)?;
-    let ast = generics::monomorphize(&parser::parse(&tokens)?)?;
+    let ast = generics::monomorphize(&frontend::parse(source, edition)?)?;
     let artifact_format = ArtifactFormat::from_target(target.as_deref().unwrap_or(DEFAULT_TARGET))?;
     let target_profile = TargetProfile::Ckb;
     types::check(&ast)?;
@@ -6016,11 +6016,7 @@ pub fn compile_metadata_with_diagnostics(
     edition: CellScriptEdition,
     target: Option<String>,
 ) -> CompileMetadataDiagnosticReport {
-    let tokens = match lexer::lex(source) {
-        Ok(tokens) => tokens,
-        Err(error) => return CompileMetadataDiagnosticReport { metadata: None, diagnostics: vec![error] },
-    };
-    let ast = match parser::parse_diagnostics(&tokens) {
+    let ast = match frontend::parse_diagnostics(source, edition) {
         Ok(ast) => ast,
         Err(diagnostics) => return CompileMetadataDiagnosticReport { metadata: None, diagnostics },
     };
@@ -6703,7 +6699,7 @@ fn compile_ast_with_build(
     }
 
     let verified_artifact_draft =
-        generated.machine_layout.map(|layout| verified_artifact::VerifiedArtifactDraft::new(layout, lowering_ast));
+        generated.machine_layout.map(|layout| verified_artifact::VerifiedArtifactDraft::new(layout, lowering_ast, ir));
     Ok(CompileResult {
         artifact_bytes,
         artifact_format,
@@ -8258,6 +8254,7 @@ fn scope_ir_to_fungible_type_group_v1(ir: &ir::IrModule, selected_type: Option<&
         .ok_or_else(|| CompileError::without_span("selected fungible invariant disappeared during entry scoping"))?;
     let entry = ir::IrItem::Action(ir::IrAction {
         name: FUNGIBLE_TYPE_GROUP_V1_ENTRY_ACTION.to_string(),
+        entry_trigger: None,
         params: Vec::new(),
         return_type: None,
         state_transition_edges: Vec::new(),
@@ -8270,6 +8267,7 @@ fn scope_ir_to_fungible_type_group_v1(ir: &ir::IrModule, selected_type: Option<&
             write_intents: Vec::new(),
             bounded_collection_ops: Vec::new(),
             borrow_regions: Vec::new(),
+            enforced_claims: Vec::new(),
             blocks: vec![ir::IrBlock {
                 id: ir::BlockId(0),
                 instructions: vec![ir::IrInstruction::Call {

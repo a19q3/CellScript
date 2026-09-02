@@ -155,8 +155,10 @@ impl Formatter {
                 self.push_line("}");
                 Ok(())
             }
+            Item::Action(action) if action.next_surface.is_some() => self.format_next_type_script(action),
             Item::Action(action) => self.format_action_like("action", action),
             Item::Function(function) => self.format_function(function),
+            Item::Lock(lock) if lock.next_surface.is_some() => self.format_next_lock_script(lock),
             Item::Lock(lock) => self.format_lock(lock),
             Item::Use(use_stmt) => {
                 let module_path = use_stmt.module_path.join("::");
@@ -409,6 +411,76 @@ impl Formatter {
         Ok(())
     }
 
+    fn format_next_type_script(&mut self, action: &ActionDef) -> Result<()> {
+        let surface = action.next_surface.as_ref().expect("guarded by format_item");
+        self.push_line(&format!("type_script {} on type_group<{}> {{", surface.container_name, surface.trigger_type));
+        self.indent_level += 1;
+        self.push_line(&format!("entry {}(", action.name));
+        self.indent_level += 1;
+        let mut input_ordinal = 0usize;
+        for param in &action.params {
+            let source = match param.source {
+                ParamSource::Input => {
+                    let source = format!("group_input[{input_ordinal}]");
+                    input_ordinal += 1;
+                    source
+                }
+                ParamSource::Witness => "group_witness.input_type".to_string(),
+                ParamSource::Protected => "lock_group.input".to_string(),
+                ParamSource::LockArgs => "script.args".to_string(),
+                ParamSource::Default | ParamSource::Output => "unresolved".to_string(),
+            };
+            self.push_line(&format!(
+                "{} {}: {} from {},",
+                format_param_source(param.source),
+                param.name,
+                format_type(&param.ty),
+                source
+            ));
+        }
+        for (ordinal, output) in action.outputs.iter().enumerate() {
+            self.push_line(&format!("output {}: {} from group_output[{}],", output.name, format_type(&output.ty), ordinal));
+        }
+        self.indent_level -= 1;
+        self.push_line(") {");
+        self.indent_level += 1;
+        self.push_line("verify {");
+        self.indent_level += 1;
+        for expression in &surface.verify {
+            self.push_line(&format!("enforce {}", self.format_expr(expression)));
+        }
+        self.indent_level -= 1;
+        self.push_line("}");
+        self.push_line("");
+        self.push_line("effects {");
+        self.indent_level += 1;
+        for replacement in &surface.replacements {
+            self.push_line(&format!("replace {} -> {} {{", replacement.input, replacement.output));
+            self.indent_level += 1;
+            self.push_line("data {");
+            self.indent_level += 1;
+            for field in &replacement.data_fields {
+                self.push_line(&format!("{field} = same"));
+            }
+            self.indent_level -= 1;
+            self.push_line("}");
+            self.push_line("identity = same");
+            self.push_line("type_script = same");
+            self.push_line(&format!("lock_script = {}", self.format_expr(&replacement.lock_script)));
+            self.push_line("capacity = same");
+            self.push_line("cardinality = one_to_one");
+            self.indent_level -= 1;
+            self.push_line("}");
+        }
+        self.indent_level -= 1;
+        self.push_line("}");
+        self.indent_level -= 1;
+        self.push_line("}");
+        self.indent_level -= 1;
+        self.push_line("}");
+        Ok(())
+    }
+
     fn format_function(&mut self, function: &FnDef) -> Result<()> {
         if let Some(doc) = &function.doc_comment {
             for line in doc.lines() {
@@ -444,6 +516,47 @@ impl Formatter {
             self.format_stmt(stmt);
         }
         self.indent_level -= 1;
+        self.indent_level -= 1;
+        self.push_line("}");
+        Ok(())
+    }
+
+    fn format_next_lock_script(&mut self, lock: &LockDef) -> Result<()> {
+        let surface = lock.next_surface.as_ref().expect("guarded by format_item");
+        self.push_line(&format!("lock_script {} on lock_group {{", surface.container_name));
+        self.indent_level += 1;
+        self.push_line(&format!("entry {}(", lock.name));
+        self.indent_level += 1;
+        let mut protected_ordinal = 0usize;
+        for param in &lock.params {
+            let source = match param.source {
+                ParamSource::Protected => {
+                    let source = format!("group_input[{protected_ordinal}]");
+                    protected_ordinal += 1;
+                    source
+                }
+                ParamSource::Witness => "group_witness.input_type".to_string(),
+                ParamSource::LockArgs => "current_script.args".to_string(),
+                ParamSource::Default | ParamSource::Input | ParamSource::Output => "unresolved".to_string(),
+            };
+            let ty = match (&param.source, &param.ty) {
+                (ParamSource::Protected, Type::Ref(inner)) => inner.as_ref(),
+                _ => &param.ty,
+            };
+            self.push_line(&format!("{} {}: {} from {},", format_param_source(param.source), param.name, format_type(ty), source));
+        }
+        self.indent_level -= 1;
+        self.push_line(") {");
+        self.indent_level += 1;
+        self.push_line("verify {");
+        self.indent_level += 1;
+        for expression in &surface.verify {
+            self.push_line(&format!("enforce {}", self.format_expr(expression)));
+        }
+        self.indent_level -= 1;
+        self.push_line("}");
+        self.indent_level -= 1;
+        self.push_line("}");
         self.indent_level -= 1;
         self.push_line("}");
         Ok(())
@@ -889,6 +1002,17 @@ fn format_param(param: &Param) -> String {
     rendered
 }
 
+fn format_param_source(source: ParamSource) -> &'static str {
+    match source {
+        ParamSource::Input => "input",
+        ParamSource::Output => "output",
+        ParamSource::Protected => "protected",
+        ParamSource::Witness => "witness",
+        ParamSource::LockArgs => "lock_args",
+        ParamSource::Default => "unresolved",
+    }
+}
+
 fn format_action_outputs(outputs: &[ActionOutput]) -> String {
     if outputs.len() == 1 {
         format!("{}: {}", outputs[0].name, format_type(&outputs[0].ty))
@@ -1098,6 +1222,15 @@ action add(x: u64, y: u64) -> u64 {
         assert!(formatted.contains("action add(x: u64, y: u64) -> u64 {\n    verification"));
         assert!(formatted.contains("let z = x + y"));
         assert!(formatted.contains("return z"));
+    }
+
+    #[test]
+    fn format_round_trips_the_explicit_source_preview_frontend() {
+        let source = "module preview\naction main(witness value:u64)->u64 {\nverification\nreturn value\n}\n";
+        let module = crate::frontend::parse(source, crate::NEXT_EDITION).unwrap();
+        let formatted = format_default(&module).unwrap();
+        crate::frontend::parse(&formatted, crate::NEXT_EDITION).unwrap();
+        assert!(formatted.contains("action main(witness value: u64) -> u64"));
     }
 
     #[test]

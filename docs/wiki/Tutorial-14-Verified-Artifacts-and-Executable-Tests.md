@@ -5,13 +5,23 @@ CKB ELF bundles, and package scenarios that must name and run an execution
 backend. Together they make more compiler claims independently inspectable
 without calling local execution chain evidence.
 
-The 0.25 line extends the same four-file bundle with
-`cellscript-typed-semantics-v3` inside lowering record v4. The checker now
+The experimental `0.26b` line extends the same four-file bundle with
+`cellscript-typed-semantics-v4` inside lowering record v5 and semantic source
+mapping in source-map v2. The checker now
 independently validates the IR-shaped typed record, recomputes its layout,
 identity, operation, dataflow, ownership, and borrow invariants, and checks its
 connection to entry ABI and final machine blocks; failures use stable `V2419`
 and `V2420` codes. It does not reconstruct the record from source and still keeps
 `semantic_equivalence_claimed = false`.
+
+Typed semantics v4 embeds `cellscript-semantic-foundation-v1`. The independent
+checker validates its hash-consed provenance DAG, artifact entry-selection
+contract, transaction roles, exhaustive Cell dispositions, claim enforcement
+classes, executable-claim links to the condition provenance node, ordered typed
+success/failure branch, and fail-closed runtime error, plus legacy migration
+nodes and layered semantic IDs. `SourceDigest` and semantic-node-to-span
+mappings remain distinct from `CoreSemanticId`, so formatting changes do not
+silently change core meaning while a changed enforced condition does.
 
 ## Build the Four-File Bundle
 
@@ -37,7 +47,28 @@ locals, operations, calls, effects, ownership and borrows; entries, basic
 blocks, CFG and call edges; ABI and stack declarations; ProofPlan links,
 syscalls, runtime-error exits, and final machine ranges. The source map connects
 source spans and lowering blocks to those final instruction ranges. All four
-files bind the same source, resolved compatibility profile, and artifact.
+files bind the same source, resolved compatibility profile, semantic layers,
+and artifact.
+
+Inspect the semantic projection directly:
+
+```bash
+cellc expand .
+cellc --json expand .
+```
+
+The first command is a deterministic human review view. The second emits the
+canonical semantic-foundation JSON. Neither command claims source-to-machine
+semantic equivalence.
+
+On the experimental `0.26b` branch, an Edition 2027 native `type_script`
+records an exact trigger such as `type-group<Token>` rather than the legacy
+generic `type-group`. A native `lock_script` records the exact `lock-group`
+entry and an authorization-only disposition instead of claiming Type Script
+lifecycle policy. The independent checker validates both entry contracts and
+recomputes their hashes. See the
+[`Edition 2027 preview grammar`](../CELLSCRIPT_2027_PREVIEW_GRAMMAR.md) for the
+bounded source and lowering contract.
 
 Assembly output does not emit or claim this boundary.
 

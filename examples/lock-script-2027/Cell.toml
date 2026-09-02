@@ -1,0 +1,6 @@
+[package]
+edition = "2027"
+name = "lock-script-2027"
+version = "0.1.0"
+
+[dependencies]

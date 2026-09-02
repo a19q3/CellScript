@@ -274,11 +274,37 @@ knows:
 
 ```bash
 cellc metadata . --target riscv64-elf --target-profile ckb -o build/main.metadata.json
+cellc expand . --target riscv64-elf --target-profile ckb --json -o build/main.semantic.json
 cellc constraints . --target riscv64-elf --target-profile ckb -o build/main.constraints.json
 cellc abi . --target-profile ckb
 cellc scheduler-plan . --target-profile ckb --json
 cellc opt-report . --target riscv64-elf --target-profile ckb --json
 ```
+
+`cellc expand` exposes the canonical semantic foundation used by the 0.26b
+checker boundary. Its JSON form is machine-checkable; the default text form is
+only a diagnostic rendering and is not a semantic hash input.
+
+To request a bounded, non-mutating Edition 2027 candidate from an Edition 2026
+package:
+
+```bash
+cellc migrate . --to 2027
+cellc --json migrate . --to 2027 -o build/migration-report.json
+```
+
+The preview recognizes only a self-contained module with one final entry. A
+Type Script must already be an exact sequence of source `require` conditions,
+exhaustive `std::lifecycle::transfer`, and matching
+`std::cell::preserve_capacity`; a Lock Script must contain only source
+`require` conditions and explicit `protected`, `lock_args`, or `witness`
+parameters. The command preserves every byte outside the entry and emits
+nothing until the old and candidate `CoreSemanticId` values and generated
+RISC-V ELF bytes match. It does not edit `Cell.toml`, `Cell.lock`, source,
+deployment state, or dependencies. Unsupported input stops with a diagnostic;
+there is no partial migration. Explicit visibility and mutable/reference role
+forms also stop until the native container can preserve those interface
+semantics exactly.
 
 For CKB-specific builder and deployment review:
 

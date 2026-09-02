@@ -8,9 +8,8 @@
 //! Those records and the optional semantic language service would inflate the
 //! default bundle beyond the 600 KB budget.
 //!
-//! The single exported function `compile_metadata_json` takes source text, a
-//! mandatory edition, and an optional target profile, and returns a JSON
-//! string.
+//! The primary `compile_metadata_json` function takes source text, a mandatory
+//! edition, and an optional target profile, and returns a JSON string.
 //! On success the string is the serialized browser metadata summary; on
 //! failure it is `{"error": "..."}` so the playground can parse it
 //! uniformly and render diagnostics.
@@ -85,7 +84,9 @@ struct LanguageServiceResult {
 /// consume_set / create_set / estimated_cycles, etc.). On error it
 /// is `{"error": "<message>"}`.
 ///
-/// `edition` is mandatory and currently only accepts `"2026"`.
+/// `edition` is mandatory and accepts stable `"2026"` or experimental
+/// `"2027"`. Edition 2027 remains a bounded preview rather than a stable
+/// browser-language contract.
 /// The `target` argument is optional; pass `None` for the default target.
 #[wasm_bindgen]
 pub fn compile_metadata_json(source: &str, edition: &str, target: Option<String>) -> String {
@@ -165,13 +166,27 @@ pub fn compile_metadata_json_sources(sources_json: &str, entry_path: &str, editi
 #[cfg(feature = "language-service")]
 #[wasm_bindgen]
 pub fn language_service_json(source: &str, line: u32, character: u32) -> String {
+    language_service_json_for_edition(source, "2026", line, character)
+}
+
+/// Query the in-process language service under an explicit source edition.
+///
+/// This is the virtual-document counterpart of native LSP manifest edition
+/// resolution. It keeps the original Edition 2026 entry point compatible.
+#[cfg(feature = "language-service")]
+#[wasm_bindgen]
+pub fn language_service_json_for_edition(source: &str, edition: &str, line: u32, character: u32) -> String {
     if source.len() > cellscript::MAX_SOURCE_BYTES {
         return error_json(&format!("source exceeds the {} byte compiler limit", cellscript::MAX_SOURCE_BYTES));
     }
+    let edition = match edition.parse::<cellscript::CellScriptEdition>() {
+        Ok(edition) => edition,
+        Err(error) => return error_json(&error.to_string()),
+    };
     let uri = "file:///playground.cell";
     let position = cellscript::lsp::Position { line, character };
     let mut server = cellscript::lsp::LspServer::new();
-    server.open_document(uri.to_string(), source.to_string());
+    server.open_document_with_edition(uri.to_string(), source.to_string(), edition);
     let result = LanguageServiceResult {
         completions: server.completion(uri, position),
         hover: server.hover(uri, position),
@@ -344,6 +359,72 @@ mod tests {
         }));
         assert!(result.get("public_interface").is_none());
         assert!(result.get("typed_semantics").is_none());
+    }
+
+    #[test]
+    fn wasm_accepts_the_bounded_edition_2027_type_script_surface() {
+        let source = r#"
+module demo
+resource Token has store, replace, relock { owner: Address, amount: u64 }
+type_script TokenTransfer on type_group<Token> {
+    entry transfer(
+        input token: Token from group_input[0],
+        witness recipient: Address from group_witness.input_type,
+        output next: Token from group_output[0],
+    ) {
+        verify { enforce token.amount > 0 }
+        effects {
+            replace token -> next {
+                data { owner = same; amount = same }
+                identity = same
+                type_script = same
+                lock_script = recipient
+                capacity = same
+                cardinality = one_to_one
+            }
+        }
+    }
+}
+"#;
+        let result: serde_json::Value = serde_json::from_str(&compile_metadata_json(source, "2027", None)).unwrap();
+        assert_eq!(result["edition"], "2027");
+        assert_eq!(result["actions"][0]["name"], "transfer");
+
+        #[cfg(feature = "language-service")]
+        {
+            let language: serde_json::Value = serde_json::from_str(&language_service_json_for_edition(source, "2027", 3, 0)).unwrap();
+            assert_eq!(language["diagnostics"].as_array().map(Vec::len), Some(0));
+            assert!(language["completions"].as_array().is_some_and(|items| items.iter().any(|item| item["label"] == "type_script")));
+        }
+    }
+
+    #[test]
+    fn wasm_accepts_the_bounded_edition_2027_lock_script_surface() {
+        let source = r#"
+module demo
+resource Vault has store { owner: Address }
+lock_script VaultOwner on lock_group {
+    entry unlock(
+        protected vault: Vault from group_input[0],
+        lock_args owner: Address from current_script.args,
+        witness claimed_owner: Address from group_witness.input_type,
+    ) {
+        verify {
+            enforce vault.owner == owner
+            enforce claimed_owner == owner
+        }
+    }
+}
+"#;
+        let result: serde_json::Value = serde_json::from_str(&compile_metadata_json(source, "2027", None)).unwrap();
+        assert_eq!(result["edition"], "2027");
+
+        #[cfg(feature = "language-service")]
+        {
+            let language: serde_json::Value = serde_json::from_str(&language_service_json_for_edition(source, "2027", 3, 0)).unwrap();
+            assert_eq!(language["diagnostics"].as_array().map(Vec::len), Some(0));
+            assert!(language["completions"].as_array().is_some_and(|items| items.iter().any(|item| item["label"] == "lock_script")));
+        }
     }
 
     #[test]

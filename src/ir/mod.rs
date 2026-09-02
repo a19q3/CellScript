@@ -236,6 +236,9 @@ pub enum IrType {
 #[derive(Debug, Clone)]
 pub struct IrAction {
     pub name: String,
+    /// Exact Script Group trigger selected by an Edition 2027 artifact
+    /// container. Legacy actions leave this unset and retain `type-group`.
+    pub entry_trigger: Option<String>,
     pub params: Vec<IrParam>,
     pub return_type: Option<IrType>,
     pub state_transition_edges: Vec<IrStateTransitionEdge>,
@@ -285,7 +288,21 @@ pub struct IrBody {
     pub write_intents: Vec<WriteIntent>,
     pub bounded_collection_ops: Vec<IrBoundedCollectionOp>,
     pub borrow_regions: Vec<IrBorrowRegion>,
+    /// Source-level `require`/Edition 2027 `enforce` conditions that were
+    /// lowered to an explicit fail-closed branch. These bindings let the
+    /// semantic foundation distinguish the claim itself from auxiliary
+    /// ProofPlan/runtime obligations.
+    pub enforced_claims: Vec<IrEnforcedClaim>,
     pub blocks: Vec<IrBlock>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IrEnforcedClaim {
+    pub statement: String,
+    pub condition_block: BlockId,
+    pub success_block: BlockId,
+    pub failure_block: BlockId,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -760,6 +777,7 @@ pub struct IrGenerator {
     call_target_labels: HashMap<String, String>,
     lowering_lock_entry: bool,
     borrow_regions: Vec<IrBorrowRegion>,
+    enforced_claims: Vec<IrEnforcedClaim>,
     loop_targets: Vec<LoopTarget>,
     errors: Vec<CompileError>,
 }
@@ -1001,6 +1019,7 @@ impl IrGenerator {
             call_target_labels: HashMap::new(),
             lowering_lock_entry: false,
             borrow_regions: Vec::new(),
+            enforced_claims: Vec::new(),
             loop_targets: Vec::new(),
             errors: Vec::new(),
         }
@@ -1720,6 +1739,7 @@ impl IrGenerator {
 
         IrAction {
             name: action.name.clone(),
+            entry_trigger: action.next_surface.as_ref().map(|surface| format!("type-group<{}>", surface.trigger_type)),
             params,
             return_type,
             state_transition_edges: self.action_state_transition_edges(action),
@@ -2187,6 +2207,7 @@ impl IrGenerator {
         core_input_bindings: &HashSet<String>,
     ) -> (Vec<IrParam>, IrBody) {
         self.borrow_regions.clear();
+        self.enforced_claims.clear();
         self.loop_targets.clear();
         let mut vars = HashMap::new();
         let mut ir_params = params
@@ -2245,12 +2266,23 @@ impl IrGenerator {
             }
         }
         let borrow_regions = std::mem::take(&mut self.borrow_regions);
+        let enforced_claims = std::mem::take(&mut self.enforced_claims);
         self.transition_param_ids.clear();
         self.transition_coverable_value_ids.clear();
 
         (
             ir_params,
-            IrBody { consume_set, read_refs, create_set, mutate_set, write_intents, bounded_collection_ops, borrow_regions, blocks },
+            IrBody {
+                consume_set,
+                read_refs,
+                create_set,
+                mutate_set,
+                write_intents,
+                bounded_collection_ops,
+                borrow_regions,
+                enforced_claims,
+                blocks,
+            },
         )
     }
 
@@ -3845,9 +3877,23 @@ impl IrGenerator {
 
         let ok_block = self.push_block(blocks);
         let fail_block = self.push_block(blocks);
-        self.block_mut(blocks, active).terminator = IrTerminator::Branch { cond, then_block: ok_block, else_block: fail_block };
+        self.block_mut(blocks, active).terminator =
+            IrTerminator::Branch { cond: cond.clone(), then_block: ok_block, else_block: fail_block };
         self.block_mut(blocks, fail_block).terminator = IrTerminator::Return(Some(self.fail_closed_return_operand()));
         self.block_mut(blocks, fail_block).runtime_error = Some(CellScriptRuntimeError::AssertionFailed);
+        let condition_span = require_expr.condition.span();
+        let claim_span = if condition_span.end > require_expr.span.start {
+            Span::new(require_expr.span.start, condition_span.end, require_expr.span.line, require_expr.span.column)
+        } else {
+            require_expr.span
+        };
+        self.enforced_claims.push(IrEnforcedClaim {
+            statement: crate::fmt::format_expression(&require_expr.condition),
+            condition_block: active,
+            success_block: ok_block,
+            failure_block: fail_block,
+            span: claim_span,
+        });
 
         LoweredExpr { operand: IrOperand::Const(IrConst::Bool(true)), current: Some(ok_block) }
     }
@@ -3929,8 +3975,17 @@ impl IrGenerator {
 
             let ok_block = self.push_block(blocks);
             let fail_block = self.push_block(blocks);
-            self.block_mut(blocks, next).terminator = IrTerminator::Branch { cond, then_block: ok_block, else_block: fail_block };
+            self.block_mut(blocks, next).terminator =
+                IrTerminator::Branch { cond: cond.clone(), then_block: ok_block, else_block: fail_block };
             self.block_mut(blocks, fail_block).terminator = IrTerminator::Return(Some(self.fail_closed_return_operand()));
+            self.block_mut(blocks, fail_block).runtime_error = Some(CellScriptRuntimeError::AssertionFailed);
+            self.enforced_claims.push(IrEnforcedClaim {
+                statement: crate::fmt::format_expression(expr),
+                condition_block: next,
+                success_block: ok_block,
+                failure_block: fail_block,
+                span: if expr.span().end > expr.span().start { expr.span() } else { require_block.span },
+            });
             active = ok_block;
         }
         LoweredExpr { operand: IrOperand::Const(IrConst::Bool(true)), current: Some(active) }

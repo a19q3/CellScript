@@ -90,6 +90,8 @@ pub enum Command {
     Repl,
     Check(CheckArgs),
     Metadata(MetadataArgs),
+    Expand(ExpandArgs),
+    Migrate(MigrateArgs),
     Interface(InterfaceArgs),
     InterfaceDiff(InterfaceDiffArgs),
     Constraints(ConstraintsArgs),
@@ -291,6 +293,23 @@ pub struct MetadataArgs {
     pub output: Option<PathBuf>,
     pub target: Option<String>,
     pub target_profile: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct ExpandArgs {
+    pub input: Option<PathBuf>,
+    pub output: Option<PathBuf>,
+    pub target: Option<String>,
+    pub target_profile: Option<String>,
+    pub json: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct MigrateArgs {
+    pub input: Option<PathBuf>,
+    pub output: Option<PathBuf>,
+    pub to: String,
+    pub json: bool,
 }
 
 #[derive(Debug, Default)]
@@ -902,6 +921,8 @@ impl CommandExecutor {
             Command::Repl => Self::repl(),
             Command::Check(args) => Self::check(args),
             Command::Metadata(args) => Self::metadata(args),
+            Command::Expand(args) => Self::expand(args),
+            Command::Migrate(args) => Self::migrate(args),
             Command::Interface(args) => Self::interface(args),
             Command::InterfaceDiff(args) => Self::interface_diff(args),
             Command::Constraints(args) => Self::constraints(args),
@@ -2050,6 +2071,127 @@ impl CommandExecutor {
             println!("  Output: {}", output_path.display());
         } else {
             println!("{}", json);
+        }
+        Ok(())
+    }
+
+    fn expand(args: ExpandArgs) -> Result<()> {
+        let input_path = args.input.unwrap_or_else(|| PathBuf::from("."));
+        let input = Utf8Path::from_path(&input_path)
+            .ok_or_else(|| crate::error::CompileError::without_span(format!("path '{}' is not valid UTF-8", input_path.display())))?;
+        let options = CompileOptions {
+            edition: crate::CURRENT_EDITION,
+            opt_level: 0,
+            output: None,
+            debug: false,
+            target: args.target,
+            target_profile: args.target_profile,
+            primitive_compat: None,
+        };
+        let result = match compile_path(input, options.clone()) {
+            Ok(result) => result,
+            Err(error) => return Err(diagnostics_to_error(&compile_failure_diagnostics(input, options, error))),
+        };
+        let rendered = if args.json {
+            serde_json::to_string_pretty(&result.metadata.typed_semantics.foundation)
+                .map_err(|error| CompileError::without_span(format!("failed to serialize semantic foundation: {error}")))?
+        } else {
+            crate::semantic_expansion::render(&result.metadata)?
+        };
+        if let Some(output_path) = args.output.as_ref() {
+            if let Some(parent) = output_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(output_path, rendered)?;
+            if !args.json {
+                println!("{}", "Canonical semantic expansion generated".green());
+                println!("  Output: {}", output_path.display());
+            }
+        } else {
+            println!("{}", rendered);
+        }
+        Ok(())
+    }
+
+    fn migrate(args: MigrateArgs) -> Result<()> {
+        if args.to != "2027" {
+            return Err(CompileError::without_span(format!(
+                "unsupported migration target '{}'; the experimental migration target is 2027",
+                args.to
+            )));
+        }
+        let input_path = args.input.unwrap_or_else(|| PathBuf::from("."));
+        let input = Utf8Path::from_path(&input_path)
+            .ok_or_else(|| CompileError::without_span(format!("path '{}' is not valid UTF-8", input_path.display())))?;
+        let resolved = resolve_input_path(input)?;
+        let source_edition = crate::source_edition(&resolved)?;
+        if source_edition != crate::CellScriptEdition::Edition2026 {
+            return Err(CompileError::without_span(format!(
+                "source migration requires an Edition 2026 input, found Edition {}",
+                source_edition.as_str()
+            )));
+        }
+        let source = std::fs::read_to_string(&resolved)
+            .map_err(|error| CompileError::without_span(format!("failed to read migration input '{}': {error}", resolved)))?;
+        let candidate = crate::frontend::migrate_source_to_2027(&source)?;
+        let legacy = crate::compile(
+            &source,
+            CompileOptions {
+                edition: crate::CellScriptEdition::Edition2026,
+                target: Some("riscv64-elf".to_string()),
+                ..CompileOptions::default()
+            },
+        )?;
+        let migrated = crate::compile(
+            &candidate.source,
+            CompileOptions {
+                edition: crate::CellScriptEdition::Edition2027,
+                target: Some("riscv64-elf".to_string()),
+                ..CompileOptions::default()
+            },
+        )?;
+        let legacy_ids = &legacy.metadata.typed_semantics.foundation.identities;
+        let migrated_ids = &migrated.metadata.typed_semantics.foundation.identities;
+        if legacy_ids.core_semantic_id != migrated_ids.core_semantic_id {
+            return Err(CompileError::without_span("migration candidate changed CoreSemanticId; no candidate was emitted"));
+        }
+        if legacy.artifact_bytes != migrated.artifact_bytes {
+            return Err(CompileError::without_span(
+                "migration candidate changed generated RISC-V ELF bytes; no candidate was emitted",
+            ));
+        }
+
+        let rendered = if args.json {
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema": candidate.schema,
+                "source_edition": candidate.source_edition,
+                "target_edition": candidate.target_edition,
+                "kind": candidate.kind,
+                "core_semantic_id": migrated_ids.core_semantic_id,
+                "source_entry_contract_id": legacy_ids.entry_contract_id,
+                "target_entry_contract_id": migrated_ids.entry_contract_id,
+                "artifact_byte_identical": true,
+                "source": candidate.source,
+            }))
+            .map_err(|error| CompileError::without_span(format!("failed to serialize migration report: {error}")))?
+        } else {
+            candidate.source
+        };
+        if let Some(output_path) = args.output.as_ref() {
+            if let Some(parent) = output_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(output_path, rendered)?;
+            if !args.json {
+                println!("{}", "Edition 2027 migration candidate generated".green());
+                println!("  Output: {}", output_path.display());
+                println!("  Evidence: CoreSemanticId matched; RISC-V ELF byte-identical");
+            }
+        } else {
+            print!("{}", rendered);
+            if !rendered.ends_with('\n') {
+                println!();
+            }
         }
         Ok(())
     }
@@ -14259,8 +14401,38 @@ impl CliParser {
                     .arg(Arg::new("target-profile").long("target-profile").value_name("PROFILE").help("Target profile: ckb")),
             )
             .subcommand(
-                ClapCommand::new("interface")
+                ClapCommand::new("expand")
                     .display_order(31)
+                    .about("Render the canonical typed semantic foundation; the rendering is not a hash boundary")
+                    .arg(Arg::new("input").value_name("INPUT").help("Input .cell file, package directory, or Cell.toml"))
+                    .arg(Arg::new("output").long("output").short('o').value_name("FILE").help("Write the expansion to a file"))
+                    .arg(Arg::new("target").long("target").short('t').value_name("TARGET").help("Target architecture"))
+                    .arg(Arg::new("target-profile").long("target-profile").value_name("PROFILE").help("Target profile: ckb")),
+            )
+            .subcommand(
+                ClapCommand::new("migrate")
+                    .display_order(31)
+                    .about("Generate a review-only, differentially verified Edition 2027 source candidate")
+                    .arg(Arg::new("input").value_name("INPUT").help("Edition 2026 .cell file, package directory, or Cell.toml"))
+                    .arg(
+                        Arg::new("to")
+                            .long("to")
+                            .value_name("EDITION")
+                            .default_value("2027")
+                            .value_parser(["2027"])
+                            .help("Target source edition"),
+                    )
+                    .arg(
+                        Arg::new("output")
+                            .long("output")
+                            .short('o')
+                            .value_name("FILE")
+                            .help("Write the candidate source, or the report with --json, to a file"),
+                    ),
+            )
+            .subcommand(
+                ClapCommand::new("interface")
+                    .display_order(32)
                     .about("Emit the canonical public package interface and its CKB hash")
                     .arg(Arg::new("input").value_name("INPUT").help("Input .cell file, package directory, or Cell.toml"))
                     .arg(Arg::new("output").long("output").short('o').value_name("FILE").help("Write the interface JSON to a file"))
@@ -15787,6 +15959,19 @@ impl CliParser {
                 output: m.get_one::<String>("output").map(PathBuf::from),
                 target: m.get_one::<String>("target").cloned(),
                 target_profile: m.get_one::<String>("target-profile").cloned(),
+            }),
+            Some(("expand", m)) => Command::Expand(ExpandArgs {
+                input: m.get_one::<String>("input").map(PathBuf::from),
+                output: m.get_one::<String>("output").map(PathBuf::from),
+                target: m.get_one::<String>("target").cloned(),
+                target_profile: m.get_one::<String>("target-profile").cloned(),
+                json: json_output(m),
+            }),
+            Some(("migrate", m)) => Command::Migrate(MigrateArgs {
+                input: m.get_one::<String>("input").map(PathBuf::from),
+                output: m.get_one::<String>("output").map(PathBuf::from),
+                to: m.get_one::<String>("to").cloned().unwrap_or_else(|| "2027".to_string()),
+                json: json_output(m),
             }),
             Some(("interface", m)) => Command::Interface(InterfaceArgs {
                 input: m.get_one::<String>("input").map(PathBuf::from),

@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.26b - Experimental semantic-foundation branch
+
+- Add the parser-independent `cellscript-semantic-foundation-v1` record with a
+  hash-consed value-provenance DAG, explicit artifact entry contract, typed
+  transaction roles, exhaustive Cell dispositions, enforcement-classified
+  claims, legacy migration nodes, and layered `CoreSemanticId`,
+  `EntryContractId`, and `ArtifactContractId` identities. Keep source spans in
+  source-map v2 and source bytes under a separate `SourceDigest`; neither is a
+  core semantic hash input.
+- Bind every executable source `require` or Edition 2027 `enforce` claim to its
+  canonical condition, condition-provenance node, ordered typed
+  success/failure branch, and exact fail-closed runtime error. Keep supporting
+  ProofPlan claims distinct, make changed conditions change `CoreSemanticId`,
+  and reject broken condition, branch, or error links in the independent
+  checker. Map each executable claim node to its originating condition or
+  generated-sugar range in source-map v2 without including that moving span in
+  the semantic hash.
+- Advance compile metadata to schema 63, typed semantics to v4, verified
+  lowering records to v5, source maps to v2, and the verified-artifact metadata
+  carrier to v2. Extend the independent
+  artifact checker and mutation corpus across the new schemas and bind
+  deployable-artifact and verified-bundle identities separately.
+- Add `cellc expand`, an experimental Edition 2027 frontend selected through
+  `Cell.toml`, formatter/LSP coverage, and cross-edition identity tests. The
+  preview requires explicit transaction parameter sources, rejects ambiguous
+  `consume`/`consume_each`, and initially emits only `SingleEntry`; the shared
+  schema and checker also represent `ExplicitVersionedDispatch`. This does not
+  freeze the proposed 1.0 surface grammar or change the stable Edition 2026
+  meaning.
+- Add review-only `cellc migrate --to 2027` for the exact legacy Type Script
+  and Lock Script subset already covered by the native preview. It preserves
+  every source byte outside the final entry, writes nothing unless `--output`
+  is explicit, and emits a candidate only after `CoreSemanticId` equality and
+  byte-identical RISC-V ELF lowering succeed. Imports, multiple entries,
+  custom require messages, ambiguous lifecycle operations, incomplete Cell
+  envelopes, and every non-total mapping fail before output creation.
+- Implement the bounded `cellscript-source-semantics-2027-preview3` native
+  surface: one final native container; either one exact `type-group<T>` Type
+  Script entry with exhaustive one-to-one `replace` dispositions, or one exact
+  `lock-group` Lock Script entry with explicit protected Cell, current Script
+  arguments, witness provenance, and `AuthorizationOnly` scope. Lower both
+  through the existing checked semantic paths, retain the source form for
+  canonical formatting, validate it in the independent checker, and cover it through
+  CLI, LSP, WASM-source API, editor, syntax-combination, differential-semantic,
+  example-package, differential ELF, and negative tests. Keep the public
+  website Playground on its coordinated stable Edition 2026 asset until a
+  separate preview selector and bundle publication are approved.
+
 ## 0.26.0 - Unreleased
 
 - Implement the first bounded consensus-runtime contracts. Fixed-width
