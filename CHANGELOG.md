@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.25.0 - Unreleased
+## 0.25.0 - 2026-09-02
 
 - Rebase the 0.25 development line on the complete 0.24 trust boundary,
   including the lock-authoritative package graph, standalone artifact checker,
@@ -10,8 +10,8 @@
   the 0.25 development identity. Preserve the independently deployed Registry
   Type Script as the byte-identical 0.24.0 artifact whose package version and
   CKB data hash are already part of its published trust identity. Keep the
-  website's public release badge on stable `v0.24.0` while giving the 0.25
-  Playground compiler its own asset identity
+  website's public release badge on stable `v0.25.0` and bind the 0.25
+  Playground compiler to its release asset identity
   (`20260824-v0.25.0-32dc571c`, SHA-256
   `32dc571c2e8e32134460cb45e2329ddd29d754959d9cfe4478c638aa5fc4c7d7`).
 

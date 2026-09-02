@@ -17,13 +17,13 @@ syscall, runtime exit, and final machine-range contract. The canonical source ma
 spans and lowering blocks to final ELF instruction ranges. Assembly output does
 not claim this verified-artifact boundary.
 
-On the 0.25 development line it also carries mandatory `edition = "2026"` and the fully
+On the 0.25 line it also carries mandatory `edition = "2026"` and the fully
 resolved compatibility profile. Edition contributes source semantics only.
 The profile combines that with independently versioned target,
 primitive-assurance, entry payload, witness placement, and metadata-schema
 axes. Verification rejects a sidecar whose profile does not resolve from those
 inputs; it never guesses another contract. Current outputs use metadata schema
-60, source schema 2, artifact schema 1, and constraints schema 2. Schema 60
+61, source schema 2, artifact schema 1, and constraints schema 2. Schema 61
 adds canonical `public_interface` / `interface_hash` and
 `typed_semantics` / `typed_semantics_hash` pairs. Registry,
 lock, deployment, receipt, and generated-builder readers require the same

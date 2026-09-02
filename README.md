@@ -4,7 +4,7 @@
 </p>
 
 [![CellScript CI](https://github.com/CellScript-Labs/CellScript/actions/workflows/ci.yml/badge.svg)](https://github.com/CellScript-Labs/CellScript/actions/workflows/ci.yml)
-[![Release: v0.24.0](https://img.shields.io/badge/release-v0.24.0-2f6f4e.svg)](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.24.0)
+[![Release: v0.25.0](https://img.shields.io/badge/release-v0.25.0-2f6f4e.svg)](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.25.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE-MIT)
 [![Rust 1.97.1](https://img.shields.io/badge/rust-1.97.1-orange.svg)](Cargo.toml)
 [![Targets: CKB](https://img.shields.io/badge/targets-CKB-2f6f4e.svg)](#target-profiles)
@@ -20,10 +20,10 @@ artifacts, together with typed metadata for auditing, policy checks, schema
 binding, and scheduler-aware execution.
 
 The current stable release is
-[CellScript v0.24.0](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.24.0).
-The [0.24 release notes](docs/releases/CELLSCRIPT_0_24_RELEASE_NOTES.md)
-describe its verified-artifact, executable-test, integration, and explicitly
-deferred ecosystem boundaries.
+[CellScript v0.25.0](https://github.com/CellScript-Labs/CellScript/releases/tag/v0.25.0).
+The [0.25 release notes](docs/releases/CELLSCRIPT_0_25_RELEASE_NOTES.md)
+describe its language-completeness, independently checked typed-semantics,
+verified-artifact, integration, and explicitly deferred ecosystem boundaries.
 
 In this README, metadata means machine-readable semantic facts emitted by the
 compiler: schema layout, Cell effects, access summaries, source hashes,
@@ -117,7 +117,7 @@ curl -fsSL https://raw.githubusercontent.com/CellScript-Labs/CellScript/main/scr
 Or pin a specific version:
 
 ```bash
-CELLSCRIPT_VERSION=0.24.0 curl -fsSL https://raw.githubusercontent.com/CellScript-Labs/CellScript/main/scripts/install.sh | sh
+CELLSCRIPT_VERSION=0.25.0 curl -fsSL https://raw.githubusercontent.com/CellScript-Labs/CellScript/main/scripts/install.sh | sh
 ```
 
 The release page publishes `SHA256SUMS` alongside all four platform archives.
@@ -125,7 +125,7 @@ The release page publishes `SHA256SUMS` alongside all four platform archives.
 Build the exact published source instead:
 
 ```bash
-git clone --branch v0.24.0 --depth 1 https://github.com/CellScript-Labs/CellScript.git
+git clone --branch v0.25.0 --depth 1 https://github.com/CellScript-Labs/CellScript.git
 cd CellScript
 cargo install --locked --path .
 ```

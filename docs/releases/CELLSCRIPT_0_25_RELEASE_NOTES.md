@@ -1,7 +1,14 @@
-# CellScript 0.25 Development Release Notes
+# CellScript 0.25 Release Notes
 
-**Status**: implementation candidate on `nightly-0.25`; final release gates
-remain required
+**Status**: stable release identified by `refs/tags/v0.25.0`.
+
+**Release date**: 2026-09-02
+
+**Source edition**: 2026
+
+**Metadata schemas**: 61 / 2 / 1 / 2
+
+**Rust toolchain**: 1.97.1
 
 CellScript 0.25 concentrates on language completeness where it matters for CKB:
 reusable fixed values, explicit package contracts, complete executable
@@ -22,10 +29,9 @@ identity, as do their lockfiles and exact internal dependency pins. The VS Code
 extension follows the same 0.25 authoring surface. The independently deployed
 Registry Type Script remains versioned as 0.24.0: its byte-for-byte reproducible
 artifact and CKB data hash are an already published trust identity, not a
-workspace package to relabel. The website continues to advertise `v0.24.0` as
-the latest stable release while its development Playground loads the separately
-identified 0.25 metadata compiler. A nightly compiler bundle is not presented
-as a stable release. The development bundle uses asset identity
+workspace package to relabel. The release website promotes `v0.25.0` and loads
+the separately identified 0.25 metadata compiler. The canonical browser bundle
+uses asset identity
 `20260824-v0.25.0-32dc571c`, SHA-256
 `32dc571c2e8e32134460cb45e2329ddd29d754959d9cfe4478c638aa5fc4c7d7`,
 and is 590,724 bytes under standard gzip.
@@ -165,17 +171,20 @@ an ordinary compile into a write outside the cache.
 
 ## Release Validation
 
-The final 0.25 candidate is closed with the repository's complete development,
-CI, and backend gates:
+The exact 0.25 release source identified by `refs/tags/v0.25.0` passed all five
+canonical gates before publication:
 
 ```bash
 ./scripts/cellscript_gate.sh dev
 ./scripts/cellscript_gate.sh ci
 ./scripts/cellscript_gate.sh backend
+./scripts/cellscript_gate.sh release-quick --ckb-repo /path/to/pinned/ckb
+./scripts/cellscript_gate.sh release --ckb-repo /path/to/pinned/ckb
 git diff --check
 ```
 
 Focused compiler, checker, Registry and CKB-VM tests, the VS Code extension
 validation, the website production/testnet build, and a complete security diff
-review are part of that closure. These checks establish merge readiness for
-the nightly line. Release and chain evidence remain separate from local gates.
+review are part of that closure. The full `release` run additionally binds the
+pinned CKB source and stateful production acceptance evidence; compile-only or
+nightly evidence does not substitute for it.
