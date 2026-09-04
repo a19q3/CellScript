@@ -218,10 +218,16 @@ fn build_semantic_foundation(
     let mut legacy_nodes = Vec::new();
 
     for item in &module.items {
-        let (kind, name, params, body) = match item {
-            ir::IrItem::Action(entry) => ("action", entry.name.as_str(), entry.params.as_slice(), &entry.body),
-            ir::IrItem::Lock(entry) => ("lock", entry.name.as_str(), entry.params.as_slice(), &entry.body),
-            ir::IrItem::PureFn(entry) => ("helper", entry.name.as_str(), entry.params.as_slice(), &entry.body),
+        let (kind, name, params, body, source_dispositions) = match item {
+            ir::IrItem::Action(entry) => {
+                ("action", entry.name.as_str(), entry.params.as_slice(), &entry.body, entry.source_dispositions.as_slice())
+            }
+            ir::IrItem::Lock(entry) => {
+                ("lock", entry.name.as_str(), entry.params.as_slice(), &entry.body, &[] as &[ir::IrSourceDisposition])
+            }
+            ir::IrItem::PureFn(entry) => {
+                ("helper", entry.name.as_str(), entry.params.as_slice(), &entry.body, &[] as &[ir::IrSourceDisposition])
+            }
             ir::IrItem::TypeDef(_) | ir::IrItem::Invariant(_) => continue,
         };
         let entry_id = format!("{kind}:{name}");
@@ -236,6 +242,7 @@ fn build_semantic_foundation(
             kind,
             params,
             body,
+            source_dispositions,
             &type_layouts,
             &metadata.runtime.proof_plan,
             metadata.edition.as_str(),
@@ -664,6 +671,179 @@ fn make_role(
     }
 }
 
+fn append_source_dispositions(
+    dispositions: &mut Vec<CellDisposition>,
+    entry_id: &str,
+    params: &[ir::IrParam],
+    body: &ir::IrBody,
+    source_dispositions: &[ir::IrSourceDisposition],
+    types: &BTreeMap<&str, &TypedSemanticType>,
+) {
+    for source in source_dispositions {
+        let input_role = source.input_binding.as_ref().map(|binding| format!("role:{entry_id}:input:{binding}"));
+        let output_role = source.output_binding.as_ref().map(|binding| format!("role:{entry_id}:output:{binding}"));
+        match &source.kind {
+            ir::IrSourceDispositionKind::Successor => {
+                let input_binding = source.input_binding.as_deref().expect("validated native successor input");
+                let output_binding = source.output_binding.as_deref().expect("validated native successor output");
+                let input_ordinal = source_role_ordinal(params, input_binding, crate::ast::ParamSource::Input);
+                let output_ordinal = source_role_ordinal(params, output_binding, crate::ast::ParamSource::Output);
+                let lock_expression = source.lock_expression.as_deref().expect("validated native successor lock expression");
+                dispositions.push(make_disposition(
+                    ir::source_disposition_id(entry_id, source),
+                    entry_id,
+                    input_role.clone(),
+                    output_role.clone(),
+                    Some(InputDisposition::Successor { output_role: output_role.expect("successor output role") }),
+                    Some(OutputOrigin::SuccessorOf { input_role: input_role.expect("successor input role") }),
+                    CellEnvelopeDisposition {
+                        completeness: "exhaustive".to_string(),
+                        data_fields: source
+                            .data_fields
+                            .iter()
+                            .map(|(field, treatment)| FieldDisposition { field: field.clone(), treatment: treatment.clone() })
+                            .collect(),
+                        logical_identity: "preserve-and-check".to_string(),
+                        lock_script: format!("set-and-check-exact-hash:{lock_expression}"),
+                        type_script: "preserve-and-check".to_string(),
+                        capacity: "builder-set-and-chain-checked".to_string(),
+                        cardinality: "one-input-to-one-output".to_string(),
+                        correspondence: format!("group-input[{input_ordinal}]->group-output[{output_ordinal}]"),
+                    },
+                    "checked-runtime",
+                ));
+            }
+            ir::IrSourceDispositionKind::PooledInput { pool_id, accounting_obligation } => {
+                dispositions.push(make_disposition(
+                    ir::source_disposition_id(entry_id, source),
+                    entry_id,
+                    input_role,
+                    None,
+                    Some(InputDisposition::Pooled { pool_id: pool_id.clone(), accounting_obligation: accounting_obligation.clone() }),
+                    None,
+                    CellEnvelopeDisposition {
+                        completeness: "exhaustive".to_string(),
+                        data_fields: source
+                            .data_fields
+                            .iter()
+                            .map(|(field, treatment)| FieldDisposition { field: field.clone(), treatment: treatment.clone() })
+                            .collect(),
+                        logical_identity: format!("pool:{pool_id}"),
+                        lock_script: "released-with-consumed-input".to_string(),
+                        type_script: "checked-type-group-member".to_string(),
+                        capacity: "released-to-transaction-balance".to_string(),
+                        cardinality: "declared-pool-input-role".to_string(),
+                        correspondence: pool_id.clone(),
+                    },
+                    "checked-runtime",
+                ));
+            }
+            ir::IrSourceDispositionKind::PoolResult { pool_id, accounting_obligation } => {
+                let lock_expression = source.lock_expression.as_deref().expect("validated native pool result lock expression");
+                dispositions.push(make_disposition(
+                    ir::source_disposition_id(entry_id, source),
+                    entry_id,
+                    None,
+                    output_role,
+                    None,
+                    Some(OutputOrigin::PoolResult { pool_id: pool_id.clone(), accounting_obligation: accounting_obligation.clone() }),
+                    CellEnvelopeDisposition {
+                        completeness: "exhaustive".to_string(),
+                        data_fields: source
+                            .data_fields
+                            .iter()
+                            .map(|(field, treatment)| FieldDisposition { field: field.clone(), treatment: treatment.clone() })
+                            .collect(),
+                        logical_identity: format!("pool:{pool_id}"),
+                        lock_script: format!("set-and-check-exact-hash:{lock_expression}"),
+                        type_script: "checked-type-group-member".to_string(),
+                        capacity: "builder-computed-and-chain-checked".to_string(),
+                        cardinality: "declared-pool-output-role".to_string(),
+                        correspondence: pool_id.clone(),
+                    },
+                    "checked-runtime",
+                ));
+            }
+            ir::IrSourceDispositionKind::Retired { absence_policy } => {
+                let input_binding = source.input_binding.as_deref().expect("validated native retirement input");
+                let ty = source_binding_type(params, body, input_binding).unwrap_or_default();
+                dispositions.push(make_disposition(
+                    ir::source_disposition_id(entry_id, source),
+                    entry_id,
+                    input_role,
+                    None,
+                    Some(InputDisposition::Retired { absence_policy: absence_policy.clone() }),
+                    None,
+                    CellEnvelopeDisposition {
+                        completeness: "exhaustive".to_string(),
+                        data_fields: type_fields(types, &ty)
+                            .into_iter()
+                            .map(|field| FieldDisposition {
+                                field: field.to_string(),
+                                treatment: "decoded-then-discarded".to_string(),
+                            })
+                            .collect(),
+                        logical_identity: format!("retire:{absence_policy}"),
+                        lock_script: "no-successor".to_string(),
+                        type_script: "absence-checked".to_string(),
+                        capacity: "released-with-consumed-input".to_string(),
+                        cardinality: "exactly-one".to_string(),
+                        correspondence: "absence-policy".to_string(),
+                    },
+                    "checked-runtime",
+                ));
+            }
+            ir::IrSourceDispositionKind::Fresh { identity_policy } => {
+                let output_binding = source.output_binding.as_deref().expect("validated native fresh output");
+                let lock_expression = source.lock_expression.as_deref().expect("validated native fresh lock expression");
+                let output_ordinal = source_role_ordinal(params, output_binding, crate::ast::ParamSource::Output);
+                dispositions.push(make_disposition(
+                    ir::source_disposition_id(entry_id, source),
+                    entry_id,
+                    None,
+                    output_role,
+                    None,
+                    Some(OutputOrigin::Fresh { identity_policy: identity_policy.clone() }),
+                    CellEnvelopeDisposition {
+                        completeness: "exhaustive".to_string(),
+                        data_fields: source
+                            .data_fields
+                            .iter()
+                            .map(|(field, expression)| FieldDisposition {
+                                field: field.clone(),
+                                treatment: format!("set-from-expression:{expression}"),
+                            })
+                            .collect(),
+                        logical_identity: format!("create:{identity_policy}"),
+                        lock_script: format!("set-and-check-exact-hash:{lock_expression}"),
+                        type_script: "set-to-declared-resource-type".to_string(),
+                        capacity: "builder-computed-and-chain-checked".to_string(),
+                        cardinality: "exactly-one".to_string(),
+                        correspondence: format!("group-output[{output_ordinal}]"),
+                    },
+                    "checked-runtime",
+                ));
+            }
+        }
+    }
+}
+
+fn source_role_ordinal(params: &[ir::IrParam], binding: &str, source: crate::ast::ParamSource) -> usize {
+    params
+        .iter()
+        .filter(|param| param.source == source)
+        .position(|param| param.name == binding)
+        .expect("validated native role remains in the lowered signature")
+}
+
+fn source_binding_type(params: &[ir::IrParam], body: &ir::IrBody, binding: &str) -> Option<String> {
+    params
+        .iter()
+        .find(|param| param.name == binding)
+        .map(|param| strip_semantic_reference(&render_type(&param.ty)).to_string())
+        .or_else(|| body.create_set.iter().find(|pattern| pattern.binding == binding).map(|pattern| pattern.ty.clone()))
+}
+
 fn append_dispositions(
     dispositions: &mut Vec<CellDisposition>,
     legacy_nodes: &mut Vec<LegacySemanticNode>,
@@ -671,6 +851,7 @@ fn append_dispositions(
     entry_kind: &str,
     params: &[ir::IrParam],
     body: &ir::IrBody,
+    source_dispositions: &[ir::IrSourceDisposition],
     types: &BTreeMap<&str, &TypedSemanticType>,
     proof_plan: &[crate::ProofPlanMetadata],
     edition: &str,
@@ -708,6 +889,10 @@ fn append_dispositions(
                 "checked-runtime",
             ));
         }
+        return;
+    }
+    if !source_dispositions.is_empty() {
+        append_source_dispositions(dispositions, entry_id, params, body, source_dispositions, types);
         return;
     }
     let mutated = body.mutate_set.iter().map(|pattern| pattern.binding.as_str()).collect::<BTreeSet<_>>();
@@ -782,7 +967,10 @@ fn append_dispositions(
                 completeness: "exhaustive".to_string(),
                 data_fields: fields,
                 logical_identity: "preserve-and-check".to_string(),
-                lock_script: if pair.output_has_lock { "set-and-check" } else { "preserve-and-check" }.to_string(),
+                lock_script: pair
+                    .lock_expression
+                    .as_ref()
+                    .map_or_else(|| "preserve-and-check".to_string(), |expression| format!("set-and-check-exact-hash:{expression}")),
                 type_script: "preserve-and-check".to_string(),
                 capacity: "builder-set-and-chain-checked".to_string(),
                 cardinality: "one-input-to-one-output".to_string(),
@@ -948,7 +1136,7 @@ struct CheckedSuccessorPair {
     ty: String,
     input_index: usize,
     output_index: usize,
-    output_has_lock: bool,
+    lock_expression: Option<String>,
 }
 
 fn checked_successor_pairs(
@@ -986,11 +1174,18 @@ fn checked_successor_pairs(
                 ty,
                 input_index: inputs[0].0,
                 output_index: outputs[0].0,
-                output_has_lock: outputs[0].1.lock.is_some(),
+                lock_expression: outputs[0].1.lock.as_ref().map(render_ir_operand_semantic),
             });
         }
     }
     pairs
+}
+
+fn render_ir_operand_semantic(operand: &ir::IrOperand) -> String {
+    match operand {
+        ir::IrOperand::Var(variable) => variable.name.clone(),
+        ir::IrOperand::Const(constant) => format!("{constant:?}"),
+    }
 }
 
 fn make_disposition(
@@ -1065,10 +1260,10 @@ fn build_claims(
         .collect::<Vec<_>>();
 
     for item in &module.items {
-        let (kind, name, body) = match item {
-            ir::IrItem::Action(entry) => ("action", entry.name.as_str(), &entry.body),
-            ir::IrItem::Lock(entry) => ("lock", entry.name.as_str(), &entry.body),
-            ir::IrItem::PureFn(entry) => ("helper", entry.name.as_str(), &entry.body),
+        let (kind, name, body, audit_claims) = match item {
+            ir::IrItem::Action(entry) => ("action", entry.name.as_str(), &entry.body, entry.audit_claims.as_slice()),
+            ir::IrItem::Lock(entry) => ("lock", entry.name.as_str(), &entry.body, entry.audit_claims.as_slice()),
+            ir::IrItem::PureFn(entry) => ("helper", entry.name.as_str(), &entry.body, &[] as &[ir::IrAuditClaim]),
             ir::IrItem::TypeDef(_) | ir::IrItem::Invariant(_) => continue,
         };
         let entry_id = format!("{kind}:{name}");
@@ -1099,6 +1294,18 @@ fn build_claims(
                 true,
                 evidence_reference,
                 Some(ClaimExecutionBinding { condition_block, condition_node_id, success_block, failure_block, failure_error_code }),
+            ));
+        }
+        for audit in audit_claims {
+            claims.push(make_claim(
+                format!("claim:{entry_id}:audit:{}", audit.name),
+                entry_id.clone(),
+                "audit".to_string(),
+                format!("expected external policy evidence for {}", audit.subject),
+                "metadata-only".to_string(),
+                false,
+                format!("audit:{}", audit.evidence),
+                None,
             ));
         }
     }

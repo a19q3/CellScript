@@ -585,9 +585,10 @@ pub struct ActionDef {
     pub effect: EffectClass,
     pub effect_declared: bool,
     pub scheduler_hint: Option<SchedulerHint>,
-    /// Edition 2027 source-only structure retained for canonical formatting.
-    /// Semantic lowering consumes the generated body plus `trigger_type`; the
-    /// surface record is never a second verifier authority.
+    /// Edition 2027 structure retained for canonical formatting and explicit
+    /// semantic intent. The generated body remains executable authority, while
+    /// the typed foundation binds these dispositions and audits so lowering
+    /// cannot re-infer a weaker legacy meaning.
     pub next_surface: Option<NextEntrySurface>,
     pub doc_comment: Option<String>,
     pub span: Span,
@@ -598,7 +599,29 @@ pub struct NextEntrySurface {
     pub container_name: String,
     pub trigger_type: String,
     pub verify: Vec<Expr>,
-    pub replacements: Vec<NextReplacement>,
+    pub audits: Vec<NextAudit>,
+    pub dispositions: Vec<NextDisposition>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NextAudit {
+    pub name: String,
+    pub evidence: NextAuditEvidence,
+    pub subject: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NextAuditEvidence {
+    ExternalPolicy,
+}
+
+#[derive(Debug, Clone)]
+pub enum NextDisposition {
+    Replace(NextReplacement),
+    Pool(NextPool),
+    Retire(NextRetirement),
+    Fresh(NextFreshOutput),
 }
 
 #[derive(Debug, Clone)]
@@ -606,6 +629,49 @@ pub struct NextReplacement {
     pub input: String,
     pub output: String,
     pub data_fields: Vec<String>,
+    pub lock_script: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct NextPool {
+    pub name: String,
+    pub ty: String,
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+    pub data_fields: Vec<NextPoolField>,
+    pub output_locks: Vec<(String, Expr)>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct NextPoolField {
+    pub field: String,
+    pub treatment: NextPoolFieldTreatment,
+}
+
+#[derive(Debug, Clone)]
+pub enum NextPoolFieldTreatment {
+    /// Require the sum of this numeric field over all declared inputs to equal
+    /// the sum over all declared outputs.
+    Conserve,
+    /// Check an exact initializer expression for every declared output.
+    Set(Vec<(String, Expr)>),
+}
+
+#[derive(Debug, Clone)]
+pub struct NextRetirement {
+    pub input: String,
+    pub absence_policy: DestructionPolicy,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct NextFreshOutput {
+    pub output: String,
+    pub ty: String,
+    pub data_fields: Vec<(String, Expr)>,
+    pub identity: IdentityPolicy,
     pub lock_script: Expr,
     pub span: Span,
 }
@@ -655,6 +721,7 @@ pub struct LockDef {
 pub struct NextLockSurface {
     pub container_name: String,
     pub verify: Vec<Expr>,
+    pub audits: Vec<NextAudit>,
 }
 
 #[derive(Debug, Clone)]
@@ -1226,6 +1293,10 @@ pub struct SchedulerHint {
 /// Identity-aware cell creation that enforces TYPE_ID or other identity rules.
 #[derive(Debug, Clone)]
 pub struct CreateUniqueExpr {
+    /// Optional declared action-output binding selected by the native
+    /// Edition 2027 frontend. Legacy `create_unique` expressions leave this
+    /// unset and retain their historical create-order correspondence.
+    pub target: Option<String>,
     pub ty: String,
     pub fields: Vec<(String, Expr)>,
     pub lock: Option<Box<Expr>>,

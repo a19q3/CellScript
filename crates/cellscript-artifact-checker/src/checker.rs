@@ -1000,6 +1000,35 @@ fn validate_semantic_foundation(typed: &TypedSemanticRecord, record: &VerifiedLo
             return typed_error(format!("Cell role '{}' has no exhaustive disposition record", role.role_id));
         }
     }
+    let mut pooled_inputs = BTreeMap::new();
+    let mut pooled_outputs = BTreeMap::new();
+    for disposition in &foundation.dispositions {
+        if let Some(InputDisposition::Pooled { pool_id, accounting_obligation }) = &disposition.input {
+            if !valid_pool_accounting_contract(pool_id, accounting_obligation) {
+                return typed_error(format!("pooled input '{}' has a malformed accounting contract", pool_id));
+            }
+            if pooled_inputs
+                .insert(pool_id.as_str(), accounting_obligation.as_str())
+                .is_some_and(|existing| existing != accounting_obligation.as_str())
+            {
+                return typed_error(format!("pooled input '{}' changes its accounting obligation", pool_id));
+            }
+        }
+        if let Some(OutputOrigin::PoolResult { pool_id, accounting_obligation }) = &disposition.output {
+            if !valid_pool_accounting_contract(pool_id, accounting_obligation) {
+                return typed_error(format!("pooled output '{}' has a malformed accounting contract", pool_id));
+            }
+            if pooled_outputs
+                .insert(pool_id.as_str(), accounting_obligation.as_str())
+                .is_some_and(|existing| existing != accounting_obligation.as_str())
+            {
+                return typed_error(format!("pooled output '{}' changes its accounting obligation", pool_id));
+            }
+        }
+    }
+    if pooled_inputs != pooled_outputs {
+        return typed_error("pooled dispositions must have matching input/output pools and accounting obligations");
+    }
 
     ensure_sorted_unique(&foundation.claims, |claim| claim.id.as_str(), "semantic claim")?;
     for claim in &foundation.claims {
@@ -1018,6 +1047,14 @@ fn validate_semantic_foundation(typed: &TypedSemanticRecord, record: &VerifiedLo
         )?;
         let evidence_valid = match &claim.execution {
             Some(execution) => validate_claim_execution(claim, execution, typed, foundation),
+            None if claim.category == "audit" => {
+                let prefix = "expected external policy evidence for ";
+                claim.enforcement == "metadata-only"
+                    && !claim.on_chain_checked
+                    && claim.evidence_reference == "audit:external-policy"
+                    && claim.statement.starts_with(prefix)
+                    && claim.statement.len() > prefix.len()
+            }
             None => claim.evidence_reference.starts_with("proof-plan:") && claim.evidence_reference.len() > "proof-plan:".len(),
         };
         if claim.semantic_node_id != expected_node
@@ -1090,6 +1127,15 @@ fn validate_semantic_foundation(typed: &TypedSemanticRecord, record: &VerifiedLo
         return typed_error("layered semantic identities do not match their canonical projections".to_string());
     }
     Ok(())
+}
+
+fn valid_pool_accounting_contract(pool_id: &str, accounting_obligation: &str) -> bool {
+    let pool_parts = pool_id.split(':').collect::<Vec<_>>();
+    if pool_parts.len() != 3 || pool_parts[0] != "pool" || pool_parts[1..].iter().any(|part| part.is_empty()) {
+        return false;
+    }
+    let prefix = "checked-u128-field-sum-equality:";
+    accounting_obligation.split('+').all(|obligation| obligation.strip_prefix(prefix).is_some_and(|field| !field.is_empty()))
 }
 
 fn validate_claim_execution(

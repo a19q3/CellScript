@@ -36,13 +36,17 @@
   byte-identical RISC-V ELF lowering succeed. Imports, multiple entries,
   custom require messages, ambiguous lifecycle operations, incomplete Cell
   envelopes, and every non-total mapping fail before output creation.
-- Implement the bounded `cellscript-source-semantics-2027-preview3` native
+- Implement the bounded `cellscript-source-semantics-2027-preview4` native
   surface: one final native container; either one exact `type-group<T>` Type
-  Script entry with exhaustive one-to-one `replace` dispositions, or one exact
+  Script entry with exhaustive `replace`, fixed-role checked `pool`, exact
+  `retire`, and explicit-identity `fresh` dispositions, or one exact
   `lock-group` Lock Script entry with explicit protected Cell, current Script
-  arguments, witness provenance, and `AuthorizationOnly` scope. Lower both
+  arguments, witness provenance, and `AuthorizationOnly` scope. Add pure,
+  type-checked `audit ... external_policy(...)` declarations that remain
+  metadata-only and cannot authorize acceptance. Lower executable effects
   through the existing checked semantic paths, retain the source form for
-  canonical formatting, validate it in the independent checker, and cover it through
+  canonical formatting, retain exact disposition intent in shared IR and
+  `CoreSemanticId`, validate it in the independent checker, and cover it through
   CLI, LSP, WASM-source API, editor, syntax-combination, differential-semantic,
   example-package, differential ELF, and negative tests. Keep the public
   website Playground on its coordinated stable Edition 2026 asset until a

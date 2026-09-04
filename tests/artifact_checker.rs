@@ -140,9 +140,87 @@ type_script TokenTransfer on type_group<Token> {
                 }
                 identity = same
                 type_script = same
-                lock_script = recipient
+                lock_script = exact_hash(recipient)
                 capacity = same
                 cardinality = one_to_one
+            }
+        }
+    }
+}
+"#;
+
+const NATIVE_FRESH_AUDIT_EDITION_2027_SOURCE: &str = r#"
+module artifact_checker_native_fresh_2027
+#[type_id("artifact-checker::Token:v1")]
+resource Token has store, create, burn identity(ckb_type_id) { amount: u64 }
+type_script TokenMint on type_group<Token> {
+    entry mint(
+        witness amount: u64 from group_witness.input_type,
+        witness recipient: Address from group_witness.input_type,
+        output next: Token from group_output[0],
+    ) {
+        verify { enforce amount > 0 }
+        audit issuance_policy {
+            expected_evidence = external_policy(recipient)
+        }
+        effects {
+            fresh next {
+                data { amount = amount }
+                identity = ckb_type_id
+                type_script = declared
+                lock_script = exact_hash(recipient)
+                capacity = builder_computed
+                cardinality = one
+            }
+        }
+    }
+}
+"#;
+
+const NATIVE_RETIRE_EDITION_2027_SOURCE: &str = r#"
+module artifact_checker_native_retire_2027
+resource Note has store, consume, burn identity(field(note_id)) { note_id: u64, amount: u64 }
+type_script NoteRetirement on type_group<Note> {
+    entry retire_note(input note: Note from group_input[0]) {
+        verify { enforce note.amount == 0 }
+        effects {
+            retire note {
+                absence = field(note_id)
+                data = discarded
+                lock_script = none
+                type_script = absent
+                capacity = released
+                cardinality = one
+            }
+        }
+    }
+}
+"#;
+
+const NATIVE_POOL_EDITION_2027_SOURCE: &str = r#"
+module artifact_checker_native_pool_2027
+resource Token has store, create, consume { owner: Address, amount: u64 }
+type_script TokenPool on type_group<Token> {
+    entry merge(
+        input left: Token from group_input[0],
+        input right: Token from group_input[1],
+        witness recipient: Address from group_witness.input_type,
+        output merged: Token from group_output[0],
+    ) {
+        verify { enforce left.amount > 0 }
+        effects {
+            pool value_flow {
+                inputs { left, right }
+                outputs { merged }
+                data {
+                    owner { merged = recipient }
+                    amount = conserve
+                }
+                identity = pooled
+                type_script = same
+                lock_script { merged = exact_hash(recipient) }
+                capacity = builder_computed
+                cardinality = declared
             }
         }
     }
@@ -277,6 +355,138 @@ fn checker_accepts_native_edition_2027_type_script_trigger_and_disposition() {
         .find_map(|claim| claim.execution.as_mut())
         .expect("native enforce execution binding")
         .failure_error_code = 1;
+    invalid.rebind_typed_semantics();
+    assert_code(&invalid, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+}
+
+#[test]
+fn checker_accepts_fresh_retire_and_audit_but_rejects_reclassified_evidence() {
+    let fresh = compile(
+        NATIVE_FRESH_AUDIT_EDITION_2027_SOURCE,
+        CompileOptions { edition: NEXT_EDITION, target: Some("riscv64-elf".to_string()), ..CompileOptions::default() },
+    )
+    .unwrap();
+    let fixture = Fixture::from_result(fresh);
+    let foundation = &fixture.record.typed_semantics.foundation;
+    assert!(matches!(
+        foundation.dispositions[0].output,
+        Some(cellscript_artifact_checker::OutputOrigin::Fresh { ref identity_policy }) if identity_policy == "ckb-type-id"
+    ));
+    let fresh_mapping = fixture
+        .source_map
+        .semantic_mappings
+        .iter()
+        .find(|mapping| mapping.semantic_node_id == foundation.dispositions[0].semantic_node_id)
+        .expect("fresh disposition source mapping");
+    assert!(NATIVE_FRESH_AUDIT_EDITION_2027_SOURCE[fresh_mapping.source_start as usize..fresh_mapping.source_end as usize]
+        .starts_with("fresh next"));
+    let audit = foundation.claims.iter().find(|claim| claim.category == "audit").expect("audit claim");
+    assert_eq!(audit.enforcement, "metadata-only");
+    assert!(!audit.on_chain_checked);
+    assert!(audit.execution.is_none());
+    let audit_mapping = fixture
+        .source_map
+        .semantic_mappings
+        .iter()
+        .find(|mapping| mapping.semantic_node_id == audit.semantic_node_id)
+        .expect("audit claim source mapping");
+    assert!(NATIVE_FRESH_AUDIT_EDITION_2027_SOURCE[audit_mapping.source_start as usize..audit_mapping.source_end as usize]
+        .starts_with("audit issuance_policy"));
+
+    let mut invalid = fixture.clone();
+    invalid.record.typed_semantics.foundation.claims.iter_mut().find(|claim| claim.category == "audit").unwrap().evidence_reference =
+        "proof-plan:pretend-on-chain".to_string();
+    invalid.rebind_typed_semantics();
+    assert_code(&invalid, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut invalid = fixture;
+    invalid.record.typed_semantics.foundation.claims.iter_mut().find(|claim| claim.category == "audit").unwrap().on_chain_checked =
+        true;
+    invalid.rebind_typed_semantics();
+    assert_code(&invalid, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let retired = compile(
+        NATIVE_RETIRE_EDITION_2027_SOURCE,
+        CompileOptions { edition: NEXT_EDITION, target: Some("riscv64-elf".to_string()), ..CompileOptions::default() },
+    )
+    .unwrap();
+    let fixture = Fixture::from_result(retired);
+    assert!(matches!(
+        fixture.record.typed_semantics.foundation.dispositions[0].input,
+        Some(cellscript_artifact_checker::InputDisposition::Retired { ref absence_policy })
+            if absence_policy == "same-field-identity-output-absent:note_id"
+    ));
+
+    let mut invalid = fixture;
+    invalid.record.typed_semantics.foundation.dispositions[0].envelope.completeness = "partial".to_string();
+    invalid.rebind_typed_semantics();
+    assert_code(&invalid, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+}
+
+#[test]
+fn checker_accepts_checked_pool_and_rejects_divergent_accounting() {
+    let result = compile(
+        NATIVE_POOL_EDITION_2027_SOURCE,
+        CompileOptions { edition: NEXT_EDITION, target: Some("riscv64-elf".to_string()), ..CompileOptions::default() },
+    )
+    .unwrap();
+    let fixture = Fixture::from_result(result);
+    let foundation = &fixture.record.typed_semantics.foundation;
+    assert_eq!(
+        foundation
+            .dispositions
+            .iter()
+            .filter(|disposition| matches!(disposition.input, Some(cellscript_artifact_checker::InputDisposition::Pooled { .. })))
+            .count(),
+        2
+    );
+    assert!(foundation.dispositions.iter().any(|disposition| {
+        matches!(
+            disposition.output,
+            Some(cellscript_artifact_checker::OutputOrigin::PoolResult {
+                ref accounting_obligation,
+                ..
+            }) if accounting_obligation == "checked-u128-field-sum-equality:amount"
+        )
+    }));
+    let pool_result = foundation
+        .dispositions
+        .iter()
+        .find(|disposition| matches!(disposition.output, Some(cellscript_artifact_checker::OutputOrigin::PoolResult { .. })))
+        .unwrap();
+    let pool_mapping = fixture
+        .source_map
+        .semantic_mappings
+        .iter()
+        .find(|mapping| mapping.semantic_node_id == pool_result.semantic_node_id)
+        .expect("pool disposition source mapping");
+    assert!(NATIVE_POOL_EDITION_2027_SOURCE[pool_mapping.source_start as usize..pool_mapping.source_end as usize]
+        .starts_with("pool value_flow"));
+    assert!(foundation.claims.iter().any(|claim| {
+        claim.statement == "require left.amount as u128 + right.amount as u128 == merged.amount as u128"
+            && claim.on_chain_checked
+            && claim.execution.is_some()
+    }));
+
+    let mut invalid = fixture.clone();
+    let Some(cellscript_artifact_checker::OutputOrigin::PoolResult { accounting_obligation, .. }) =
+        invalid.record.typed_semantics.foundation.dispositions.iter_mut().find_map(|disposition| disposition.output.as_mut())
+    else {
+        panic!("pool result disposition");
+    };
+    *accounting_obligation = "checked-u128-field-sum-equality:forged".to_string();
+    invalid.rebind_typed_semantics();
+    assert_code(&invalid, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut invalid = fixture;
+    for disposition in &mut invalid.record.typed_semantics.foundation.dispositions {
+        if let Some(cellscript_artifact_checker::InputDisposition::Pooled { accounting_obligation, .. }) = &mut disposition.input {
+            accounting_obligation.clear();
+        }
+        if let Some(cellscript_artifact_checker::OutputOrigin::PoolResult { accounting_obligation, .. }) = &mut disposition.output {
+            accounting_obligation.clear();
+        }
+    }
     invalid.rebind_typed_semantics();
     assert_code(&invalid, CheckerRejectionCode::V2419TypedSemanticsInvalid);
 }

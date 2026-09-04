@@ -404,6 +404,8 @@ mod tests {
             items: vec![IrItem::Action(IrAction {
                 name: "main".to_string(),
                 entry_trigger: None,
+                source_dispositions: Vec::new(),
+                audit_claims: Vec::new(),
                 params: Vec::new(),
                 return_type: Some(crate::ir::IrType::U64),
                 state_transition_edges: Vec::new(),

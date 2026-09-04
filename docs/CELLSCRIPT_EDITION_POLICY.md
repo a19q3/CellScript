@@ -16,7 +16,7 @@ edition = "2026"
 
 `edition` is mandatory in every package manifest. A missing or unknown value is
 an error. The `0.26b` implementation branch also recognizes `edition = "2027"`
-as `cellscript-source-semantics-2027-preview3`. That preview is deliberately not
+as `cellscript-source-semantics-2027-preview4`. That preview is deliberately not
 the current default, accepted grammar, migration promise, or 1.0 release
 contract. It has a separately routed frontend, requires explicit sources for
 transaction-facing parameters, rejects ambiguous `consume`/`consume_each`, and
@@ -25,7 +25,7 @@ specified in [the Edition 2027 preview grammar](CELLSCRIPT_2027_PREVIEW_GRAMMAR.
 
 `cellc migrate --to 2027` is a bounded review tool, not a migration promise.
 It recognizes only the self-contained legacy Type/Lock shapes with a total
-mapping to preview3, preserves source outside the final entry, and emits no
+mapping to preview4, preserves source outside the final entry, and emits no
 candidate unless `CoreSemanticId` and RISC-V ELF bytes match. It never changes
 `Cell.toml`, `Cell.lock`, deployment state, or source files by default.
 
@@ -41,11 +41,13 @@ An edition owns rules that can change the meaning of the same source text:
 
 Edition 2026 identifies those rules as `cellscript-source-semantics-2026` and
 keeps its legacy frontend path frozen. Edition 2027 preview uses the distinct
-`cellscript-source-semantics-2027-preview3` route. Both currently lower through
+`cellscript-source-semantics-2027-preview4` route. Both currently lower through
 the shared checked AST/IR into typed-semantics v4 and may have identical
-`CoreSemanticId` values for the explicitly equivalent subset. Preview3 admits
+`CoreSemanticId` values for the explicitly equivalent subset. Preview4 admits
 one final native `type_script` or `lock_script` container; it does not admit
-both in one source module.
+both in one source module. Its bounded Type Script surface distinguishes
+successor, fixed-role pooled accounting, retirement, and fresh output origin,
+and its `audit` surface is metadata-only by construction.
 
 Additive syntax, diagnostics, formatter improvements, and optimizer changes do
 not require a new edition when existing source keeps its meaning. A new edition
@@ -63,7 +65,7 @@ resolved compatibility profile:
 | Axis | Current `0.26b` value |
 |---|---|
 | Source edition | stable `2026`; experimental `2027` |
-| Source semantics | `cellscript-source-semantics-2026` or `cellscript-source-semantics-2027-preview3` |
+| Source semantics | `cellscript-source-semantics-2026` or `cellscript-source-semantics-2027-preview4` |
 | Compiler release | workspace SemVer (`0.x.y`), recorded separately |
 | Target profile | selected independently, normally `ckb` |
 | Primitive assurance | selected independently, or `default` |

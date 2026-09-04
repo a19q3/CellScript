@@ -54,6 +54,7 @@ pub(crate) const EXPECTED_LANGUAGE_EXAMPLES: &[&str] = &[
     "ckb/multi_step_pipeline.cell",
     "ckb/witness_source.cell",
     "ownership/identity_lifecycle.cell",
+    "ownership/semantic_foundation.cell",
     "ownership/borrow.cell",
     "verification/scoped_invariant.cell",
     "verification/transaction_views.cell",

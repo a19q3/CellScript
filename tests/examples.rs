@@ -36,15 +36,16 @@ const BUNDLED_EXAMPLE_ELF_SIZE_BUDGETS: [(&str, usize); 9] = [
 
 const ARTIFACT_SIZE_EXPERIMENT_EXAMPLES: [&str; 4] = ["amm_pool.cell", "nft.cell", "token.cell", "vesting.cell"];
 
-// The 0.25 metadata envelope carries the canonical typed-semantic record that
-// the standalone artifact checker binds to the machine lowering. These caps
-// include that security boundary while remaining close to measured compact
-// full-package and entry-scoped outputs.
+// The 0.26 metadata envelope carries both the canonical typed-semantic record
+// and its independently checked semantic foundation (provenance, roles,
+// dispositions, claims, and layered identities). These caps include that
+// security boundary while remaining within roughly 5-7% of measured compact
+// full-package outputs; they must not be raised for unrelated feature growth.
 const FULL_METADATA_SIZE_BUDGETS: [(&str, FullMetadataSizeBudget); 4] = [
     (
         "amm_pool.cell",
         FullMetadataSizeBudget {
-            max_compact_metadata_bytes: 288 * 1024,
+            max_compact_metadata_bytes: 448 * 1024,
             max_proof_plan_records: 42,
             max_compact_proof_plan_bytes: 36 * 1024,
             max_source_units: 2,
@@ -54,7 +55,7 @@ const FULL_METADATA_SIZE_BUDGETS: [(&str, FullMetadataSizeBudget); 4] = [
     (
         "nft.cell",
         FullMetadataSizeBudget {
-            max_compact_metadata_bytes: 464 * 1024,
+            max_compact_metadata_bytes: 704 * 1024,
             max_proof_plan_records: 90,
             max_compact_proof_plan_bytes: 80 * 1024,
             max_source_units: 2,
@@ -64,7 +65,7 @@ const FULL_METADATA_SIZE_BUDGETS: [(&str, FullMetadataSizeBudget); 4] = [
     (
         "token.cell",
         FullMetadataSizeBudget {
-            max_compact_metadata_bytes: 136 * 1024,
+            max_compact_metadata_bytes: 192 * 1024,
             max_proof_plan_records: 30,
             max_compact_proof_plan_bytes: 24 * 1024,
             max_source_units: 1,
@@ -74,7 +75,7 @@ const FULL_METADATA_SIZE_BUDGETS: [(&str, FullMetadataSizeBudget); 4] = [
     (
         "vesting.cell",
         FullMetadataSizeBudget {
-            max_compact_metadata_bytes: 260 * 1024,
+            max_compact_metadata_bytes: 368 * 1024,
             max_proof_plan_records: 50,
             max_compact_proof_plan_bytes: 48 * 1024,
             max_source_units: 2,
@@ -90,12 +91,15 @@ const FULL_METADATA_ENTRY_COUNTS: [(&str, FullMetadataEntryCounts); 4] = [
     ("vesting.cell", FullMetadataEntryCounts { actions: 5, locks: 1 }),
 ];
 
+// Entry scoping removes unrelated executable entries, but retains the
+// complete checker-facing foundation for the selected entry and any required
+// helpers. Keep these caps within roughly 5-10% of the largest measured entry.
 const ENTRY_ARTIFACT_SIZE_BUDGETS: [(&str, EntryArtifactSizeBudget); 4] = [
     (
         "amm_pool.cell",
         EntryArtifactSizeBudget {
             max_elf_bytes: 40 * 1024,
-            max_compact_metadata_bytes: 112 * 1024,
+            max_compact_metadata_bytes: 156 * 1024,
             max_proof_plan_records: 11,
             max_compact_proof_plan_bytes: 10 * 1024,
             max_actions: 2,
@@ -106,7 +110,7 @@ const ENTRY_ARTIFACT_SIZE_BUDGETS: [(&str, EntryArtifactSizeBudget); 4] = [
         "nft.cell",
         EntryArtifactSizeBudget {
             max_elf_bytes: 48 * 1024,
-            max_compact_metadata_bytes: 136 * 1024,
+            max_compact_metadata_bytes: 192 * 1024,
             max_proof_plan_records: 30,
             max_compact_proof_plan_bytes: 32 * 1024,
             max_actions: 1,
@@ -117,7 +121,7 @@ const ENTRY_ARTIFACT_SIZE_BUDGETS: [(&str, EntryArtifactSizeBudget); 4] = [
         "token.cell",
         EntryArtifactSizeBudget {
             max_elf_bytes: 12 * 1024,
-            max_compact_metadata_bytes: 68 * 1024,
+            max_compact_metadata_bytes: 84 * 1024,
             max_proof_plan_records: 10,
             max_compact_proof_plan_bytes: 9 * 1024,
             max_actions: 1,
@@ -128,7 +132,7 @@ const ENTRY_ARTIFACT_SIZE_BUDGETS: [(&str, EntryArtifactSizeBudget); 4] = [
         "vesting.cell",
         EntryArtifactSizeBudget {
             max_elf_bytes: 28 * 1024,
-            max_compact_metadata_bytes: 100 * 1024,
+            max_compact_metadata_bytes: 136 * 1024,
             max_proof_plan_records: 20,
             max_compact_proof_plan_bytes: 20 * 1024,
             max_actions: 1,
@@ -464,7 +468,7 @@ fn all_checked_in_cell_examples_compile() {
     let files = checked_in_example_cell_files();
     assert_eq!(
         files.len(),
-        BUNDLED_EXAMPLES.len() + 1 + 19,
+        BUNDLED_EXAMPLES.len() + 1 + 20,
         "expected bundled examples, top-level registry.cell, and language examples"
     );
 

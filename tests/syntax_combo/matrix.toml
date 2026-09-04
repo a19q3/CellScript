@@ -4,8 +4,8 @@
 
 [mode.quick]
 budget = 64
-min_cases = 21
-min_accept = 11
+min_cases = 23
+min_accept = 13
 min_reject = 10
 required_origins = [
     "generated",
@@ -33,6 +33,8 @@ required_origins = [
     "tests/syntax_combo/seeds/explicit-borrow-cross-consume-reject.cell",
     "tests/syntax_combo/seeds/edition-2027-type-script.cell",
     "tests/syntax_combo/seeds/edition-2027-lock-script.cell",
+    "tests/syntax_combo/seeds/edition-2027-pool.cell",
+    "tests/syntax_combo/seeds/edition-2027-retire-fresh.cell",
     "tests/syntax_combo/seeds/field-commas-canonical.cell",
     "tests/syntax_combo/seeds/field-commas-compatibility.cell",
     "tests/syntax_combo/seeds/capability-entailment.cell",
@@ -50,8 +52,8 @@ description = "Local smoke: deterministic generated cases plus regression seeds.
 
 [mode.ci]
 budget = 1000
-min_cases = 43
-min_accept = 25
+min_cases = 45
+min_accept = 27
 min_reject = 18
 required_origins = [
     "generated",
@@ -89,6 +91,8 @@ required_origins = [
     "tests/syntax_combo/seeds/explicit-borrow-cross-consume-reject.cell",
     "tests/syntax_combo/seeds/edition-2027-type-script.cell",
     "tests/syntax_combo/seeds/edition-2027-lock-script.cell",
+    "tests/syntax_combo/seeds/edition-2027-pool.cell",
+    "tests/syntax_combo/seeds/edition-2027-retire-fresh.cell",
     "tests/syntax_combo/seeds/field-commas-canonical.cell",
     "tests/syntax_combo/seeds/field-commas-compatibility.cell",
     "tests/syntax_combo/seeds/capability-entailment.cell",
@@ -106,8 +110,8 @@ description = "PR gate: pairwise generated cases plus regression seeds."
 
 [mode.deep]
 budget = 5000
-min_cases = 46
-min_accept = 25
+min_cases = 48
+min_accept = 27
 min_reject = 21
 required_origins = [
     "generated",
@@ -148,6 +152,8 @@ required_origins = [
     "tests/syntax_combo/seeds/explicit-borrow-cross-consume-reject.cell",
     "tests/syntax_combo/seeds/edition-2027-type-script.cell",
     "tests/syntax_combo/seeds/edition-2027-lock-script.cell",
+    "tests/syntax_combo/seeds/edition-2027-pool.cell",
+    "tests/syntax_combo/seeds/edition-2027-retire-fresh.cell",
     "tests/syntax_combo/seeds/field-commas-canonical.cell",
     "tests/syntax_combo/seeds/field-commas-compatibility.cell",
     "tests/syntax_combo/seeds/capability-entailment.cell",

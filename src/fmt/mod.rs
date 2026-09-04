@@ -451,26 +451,120 @@ impl Formatter {
         }
         self.indent_level -= 1;
         self.push_line("}");
+        for audit in &surface.audits {
+            self.push_line("");
+            self.push_line(&format!("audit {} {{", audit.name));
+            self.indent_level += 1;
+            let evidence = match audit.evidence {
+                NextAuditEvidence::ExternalPolicy => "external_policy",
+            };
+            self.push_line(&format!("expected_evidence = {evidence}({})", self.format_expr(&audit.subject)));
+            self.indent_level -= 1;
+            self.push_line("}");
+        }
         self.push_line("");
         self.push_line("effects {");
         self.indent_level += 1;
-        for replacement in &surface.replacements {
-            self.push_line(&format!("replace {} -> {} {{", replacement.input, replacement.output));
-            self.indent_level += 1;
-            self.push_line("data {");
-            self.indent_level += 1;
-            for field in &replacement.data_fields {
-                self.push_line(&format!("{field} = same"));
+        for disposition in &surface.dispositions {
+            match disposition {
+                NextDisposition::Replace(replacement) => {
+                    self.push_line(&format!("replace {} -> {} {{", replacement.input, replacement.output));
+                    self.indent_level += 1;
+                    self.push_line("data {");
+                    self.indent_level += 1;
+                    for field in &replacement.data_fields {
+                        self.push_line(&format!("{field} = same"));
+                    }
+                    self.indent_level -= 1;
+                    self.push_line("}");
+                    self.push_line("identity = same");
+                    self.push_line("type_script = same");
+                    self.push_line(&format!("lock_script = exact_hash({})", self.format_expr(&replacement.lock_script)));
+                    self.push_line("capacity = same");
+                    self.push_line("cardinality = one_to_one");
+                    self.indent_level -= 1;
+                    self.push_line("}");
+                }
+                NextDisposition::Pool(pool) => {
+                    self.push_line(&format!("pool {} {{", pool.name));
+                    self.indent_level += 1;
+                    self.push_line("inputs {");
+                    self.indent_level += 1;
+                    for input in &pool.inputs {
+                        self.push_line(input);
+                    }
+                    self.indent_level -= 1;
+                    self.push_line("}");
+                    self.push_line("outputs {");
+                    self.indent_level += 1;
+                    for output in &pool.outputs {
+                        self.push_line(output);
+                    }
+                    self.indent_level -= 1;
+                    self.push_line("}");
+                    self.push_line("data {");
+                    self.indent_level += 1;
+                    for field in &pool.data_fields {
+                        match &field.treatment {
+                            NextPoolFieldTreatment::Conserve => self.push_line(&format!("{} = conserve", field.field)),
+                            NextPoolFieldTreatment::Set(assignments) => {
+                                self.push_line(&format!("{} {{", field.field));
+                                self.indent_level += 1;
+                                for (output, expression) in assignments {
+                                    self.push_line(&format!("{output} = {}", self.format_expr(expression)));
+                                }
+                                self.indent_level -= 1;
+                                self.push_line("}");
+                            }
+                        }
+                    }
+                    self.indent_level -= 1;
+                    self.push_line("}");
+                    self.push_line("identity = pooled");
+                    self.push_line("type_script = same");
+                    self.push_line("lock_script {");
+                    self.indent_level += 1;
+                    for (output, expression) in &pool.output_locks {
+                        self.push_line(&format!("{output} = exact_hash({})", self.format_expr(expression)));
+                    }
+                    self.indent_level -= 1;
+                    self.push_line("}");
+                    self.push_line("capacity = builder_computed");
+                    self.push_line("cardinality = declared");
+                    self.indent_level -= 1;
+                    self.push_line("}");
+                }
+                NextDisposition::Retire(retirement) => {
+                    self.push_line(&format!("retire {} {{", retirement.input));
+                    self.indent_level += 1;
+                    self.push_line(&format!("absence = {}", format_next_absence_policy(&retirement.absence_policy)));
+                    self.push_line("data = discarded");
+                    self.push_line("lock_script = none");
+                    self.push_line("type_script = absent");
+                    self.push_line("capacity = released");
+                    self.push_line("cardinality = one");
+                    self.indent_level -= 1;
+                    self.push_line("}");
+                }
+                NextDisposition::Fresh(fresh) => {
+                    self.push_line(&format!("fresh {} {{", fresh.output));
+                    self.indent_level += 1;
+                    self.push_line("data {");
+                    self.indent_level += 1;
+                    for (field, value) in &fresh.data_fields {
+                        self.push_line(&format!("{field} = {}", self.format_expr(value)));
+                    }
+                    self.indent_level -= 1;
+                    self.push_line("}");
+                    self.push_line(&format!("identity = {}", format_identity_policy(&fresh.identity)));
+                    self.push_line("type_script = declared");
+                    self.push_line(&format!("lock_script = exact_hash({})", self.format_expr(&fresh.lock_script)));
+                    self.push_line("capacity = builder_computed");
+                    self.push_line("cardinality = one");
+                    self.indent_level -= 1;
+                    self.push_line("}");
+                }
             }
-            self.indent_level -= 1;
-            self.push_line("}");
-            self.push_line("identity = same");
-            self.push_line("type_script = same");
-            self.push_line(&format!("lock_script = {}", self.format_expr(&replacement.lock_script)));
-            self.push_line("capacity = same");
-            self.push_line("cardinality = one_to_one");
-            self.indent_level -= 1;
-            self.push_line("}");
         }
         self.indent_level -= 1;
         self.push_line("}");
@@ -555,6 +649,17 @@ impl Formatter {
         }
         self.indent_level -= 1;
         self.push_line("}");
+        for audit in &surface.audits {
+            self.push_line("");
+            self.push_line(&format!("audit {} {{", audit.name));
+            self.indent_level += 1;
+            let evidence = match audit.evidence {
+                NextAuditEvidence::ExternalPolicy => "external_policy",
+            };
+            self.push_line(&format!("expected_evidence = {evidence}({})", self.format_expr(&audit.subject)));
+            self.indent_level -= 1;
+            self.push_line("}");
+        }
         self.indent_level -= 1;
         self.push_line("}");
         self.indent_level -= 1;
@@ -916,6 +1021,17 @@ fn format_identity_policy(policy: &IdentityPolicy) -> String {
         IdentityPolicy::Field(path) => format!("field({})", path),
         IdentityPolicy::ScriptArgs => "script_args".to_string(),
         IdentityPolicy::SingletonType => "singleton_type".to_string(),
+    }
+}
+
+fn format_next_absence_policy(policy: &DestructionPolicy) -> String {
+    match policy {
+        DestructionPolicy::SingletonType => "singleton_type".to_string(),
+        DestructionPolicy::Unique { .. } => "ckb_type_id".to_string(),
+        DestructionPolicy::Instance { identity_field } => format!("field({identity_field})"),
+        DestructionPolicy::Default | DestructionPolicy::BurnAmount { .. } => {
+            unreachable!("Edition 2027 retire accepts only explicit absence policies")
+        }
     }
 }
 

@@ -228,7 +228,7 @@ type_script TokenTransfer on type_group<Token> {
                 data { owner = same; amount = same }
                 identity = same
                 type_script = same
-                lock_script = recipient
+                lock_script = exact_hash(recipient)
                 capacity = same
                 cardinality = one_to_one
             }
@@ -304,5 +304,174 @@ action transfer(input token: Token, witness recipient: Address) -> next: Token {
         assert_eq!(dispositions.len(), 1);
         assert!(matches!(dispositions[0].input, Some(cellscript_artifact_checker::InputDisposition::Successor { .. })));
         assert!(matches!(dispositions[0].output, Some(cellscript_artifact_checker::OutputOrigin::SuccessorOf { .. })));
+    }
+
+    #[test]
+    fn native_fresh_output_and_audit_are_explicit_and_identity_bound() {
+        let first = r#"
+module demo
+#[type_id("demo::Token:v1")]
+resource Token has store, create, burn identity(ckb_type_id) { amount: u64 }
+type_script TokenMint on type_group<Token> {
+    entry mint(
+        witness amount: u64 from group_witness.input_type,
+        witness recipient: Address from group_witness.input_type,
+        output next: Token from group_output[0],
+    ) {
+        verify { enforce amount > 0 }
+        audit issuance_policy {
+            expected_evidence = external_policy(recipient)
+        }
+        effects {
+            fresh next {
+                data { amount = amount }
+                identity = ckb_type_id
+                type_script = declared
+                lock_script = exact_hash(recipient)
+                capacity = builder_computed
+                cardinality = one
+            }
+        }
+    }
+}
+"#;
+        let second = first.replace("data { amount = amount }", "data { amount = amount + 1 }");
+        let audit_changed = first.replace("external_policy(recipient)", "external_policy(amount)");
+        let linear_audit = first.replace("external_policy(recipient)", "external_policy(next)");
+        let metadata = compile_metadata(first, CellScriptEdition::Edition2027, None).unwrap();
+        let changed = compile_metadata(&second, CellScriptEdition::Edition2027, None).unwrap();
+        let audit_changed = compile_metadata(&audit_changed, CellScriptEdition::Edition2027, None).unwrap();
+
+        let dispositions = &metadata.typed_semantics.foundation.dispositions;
+        assert_eq!(dispositions.len(), 1);
+        assert!(matches!(
+            dispositions[0].output,
+            Some(cellscript_artifact_checker::OutputOrigin::Fresh { ref identity_policy }) if identity_policy == "ckb-type-id"
+        ));
+        assert!(metadata.typed_semantics.foundation.legacy_nodes.is_empty());
+        let audit =
+            metadata.typed_semantics.foundation.claims.iter().find(|claim| claim.category == "audit").expect("native audit claim");
+        assert_eq!(audit.enforcement, "metadata-only");
+        assert!(!audit.on_chain_checked);
+        assert!(audit.execution.is_none());
+        assert_eq!(audit.evidence_reference, "audit:external-policy");
+        assert_ne!(
+            metadata.typed_semantics.foundation.identities.core_semantic_id,
+            changed.typed_semantics.foundation.identities.core_semantic_id,
+            "changing a fresh-output field expression must change the core semantic identity"
+        );
+        assert_ne!(
+            metadata.typed_semantics.foundation.identities.core_semantic_id,
+            audit_changed.typed_semantics.foundation.identities.core_semantic_id,
+            "changing an external-policy audit subject must change the core semantic identity"
+        );
+        assert!(compile_metadata(&linear_audit, CellScriptEdition::Edition2027, None)
+            .unwrap_err()
+            .message
+            .contains("cannot capture a Cell-backed linear value"));
+    }
+
+    #[test]
+    fn native_retirement_has_no_legacy_ambiguity_node() {
+        let source = r#"
+module demo
+resource Note has store, consume, burn identity(field(note_id)) { note_id: u64, amount: u64 }
+type_script NoteRetirement on type_group<Note> {
+    entry retire_note(
+        input note: Note from group_input[0],
+    ) {
+        verify { enforce note.amount == 0 }
+        effects {
+            retire note {
+                absence = field(note_id)
+                data = discarded
+                lock_script = none
+                type_script = absent
+                capacity = released
+                cardinality = one
+            }
+        }
+    }
+}
+"#;
+        let metadata = compile_metadata(source, CellScriptEdition::Edition2027, None).unwrap();
+        let dispositions = &metadata.typed_semantics.foundation.dispositions;
+        assert_eq!(dispositions.len(), 1);
+        assert!(matches!(
+            dispositions[0].input,
+            Some(cellscript_artifact_checker::InputDisposition::Retired { ref absence_policy })
+                if absence_policy == "same-field-identity-output-absent:note_id"
+        ));
+        assert_eq!(dispositions[0].envelope.completeness, "exhaustive");
+        assert!(metadata.typed_semantics.foundation.legacy_nodes.is_empty());
+    }
+
+    #[test]
+    fn native_pool_has_checked_many_to_many_accounting_and_explicit_results() {
+        let source = r#"
+module demo
+resource Token has store, create, consume { owner: Address, amount: u64 }
+type_script TokenPool on type_group<Token> {
+    entry merge(
+        input left: Token from group_input[0],
+        input right: Token from group_input[1],
+        witness recipient: Address from group_witness.input_type,
+        output merged: Token from group_output[0],
+    ) {
+        verify { enforce left.amount > 0 }
+        effects {
+            pool value_flow {
+                inputs { left, right }
+                outputs { merged }
+                data {
+                    owner { merged = recipient }
+                    amount = conserve
+                }
+                identity = pooled
+                type_script = same
+                lock_script { merged = exact_hash(recipient) }
+                capacity = builder_computed
+                cardinality = declared
+            }
+        }
+    }
+}
+"#;
+        let metadata = compile_metadata(source, CellScriptEdition::Edition2027, None).unwrap();
+        let foundation = &metadata.typed_semantics.foundation;
+        assert_eq!(foundation.dispositions.len(), 3);
+        assert_eq!(
+            foundation
+                .dispositions
+                .iter()
+                .filter(|disposition| matches!(disposition.input, Some(cellscript_artifact_checker::InputDisposition::Pooled { .. })))
+                .count(),
+            2
+        );
+        assert_eq!(
+            foundation
+                .dispositions
+                .iter()
+                .filter(|disposition| matches!(disposition.output, Some(cellscript_artifact_checker::OutputOrigin::PoolResult { .. })))
+                .count(),
+            1
+        );
+        assert!(foundation.claims.iter().any(|claim| {
+            claim.on_chain_checked
+                && claim.statement == "require left.amount as u128 + right.amount as u128 == merged.amount as u128"
+                && claim.execution.is_some()
+        }));
+        assert!(foundation.legacy_nodes.is_empty());
+
+        let changed = source.replace("owner { merged = recipient }", "owner { merged = left.owner }");
+        let changed = compile_metadata(&changed, CellScriptEdition::Edition2027, None).unwrap();
+        assert_ne!(
+            foundation.identities.core_semantic_id, changed.typed_semantics.foundation.identities.core_semantic_id,
+            "changing a pool-result field expression must change CoreSemanticId"
+        );
+
+        let non_numeric = source.replace("amount: u64", "amount: bool").replace("verify { enforce left.amount > 0 }", "verify { }");
+        let error = compile_metadata(&non_numeric, CellScriptEdition::Edition2027, None).unwrap_err();
+        assert!(error.message.contains("cast") || error.message.contains("numeric"), "unexpected diagnostic: {}", error.message);
     }
 }

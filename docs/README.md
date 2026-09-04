@@ -73,7 +73,7 @@ High-value active references include:
   `0.26b` implementation boundary
 - `CELLSCRIPT_2027_PREVIEW_GRAMMAR.md` for the exact bounded native grammar,
   lowering, diagnostics, issue constraints, and deferred surface implemented
-  by `cellscript-source-semantics-2027-preview3`
+  by `cellscript-source-semantics-2027-preview4`
 - `releases/CELLSCRIPT_0_13_2_RELEASE_NOTES.md` for the final 0.13 syntax
   governance summary
 - `CELLSCRIPT_GATE_POLICY.md`

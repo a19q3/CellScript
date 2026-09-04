@@ -1590,6 +1590,9 @@ impl<'a> TypeChecker<'a> {
 
             self.bind_callable_params_with_non_linear(&mut env, &action.params, "action", &action.name, &core_evidence_bindings)?;
             self.bind_action_outputs(&mut env, action)?;
+            if let Some(surface) = &action.next_surface {
+                self.check_next_audits(&env, &surface.audits)?;
+            }
             self.validate_action_state_edges(action, &env)?;
             self.validate_action_create_targets(action)?;
             self.validate_action_branch_obligations(action)?;
@@ -1629,6 +1632,9 @@ impl<'a> TypeChecker<'a> {
             self.bind_callable_params_with_non_linear(&mut env, &action.params, "action", &action.name, &core_evidence_bindings),
         );
         push_diagnostic(&mut diagnostics, self.bind_action_outputs(&mut env, action));
+        if let Some(surface) = &action.next_surface {
+            push_diagnostic(&mut diagnostics, self.check_next_audits(&env, &surface.audits));
+        }
         push_diagnostic(&mut diagnostics, self.validate_action_state_edges(action, &env));
         push_diagnostic(&mut diagnostics, self.validate_action_create_targets(action));
         push_diagnostic(&mut diagnostics, self.validate_action_branch_obligations(action));
@@ -1694,6 +1700,21 @@ impl<'a> TypeChecker<'a> {
                 ));
             }
             env.bind_new(output.name.clone(), output.ty.clone(), false, false, output.span)?;
+        }
+        Ok(())
+    }
+
+    fn check_next_audits(&mut self, env: &TypeEnv, audits: &[NextAudit]) -> Result<()> {
+        for audit in audits {
+            Self::validate_require_condition_is_pure(&audit.subject, "audit evidence subject")?;
+            let mut audit_env = env.clone();
+            let subject_ty = self.infer_expr(&mut audit_env, &audit.subject)?;
+            if self.is_linear_type(&subject_ty) {
+                return Err(CompileError::new(
+                    format!("audit '{}' cannot capture a Cell-backed linear value; select immutable evidence fields", audit.name),
+                    audit.span,
+                ));
+            }
         }
         Ok(())
     }
@@ -2010,6 +2031,23 @@ impl<'a> TypeChecker<'a> {
             Expr::Claim(claim) => self.validate_create_targets_in_expr(&claim.receipt, outputs)?,
             Expr::Settle(settle) => self.validate_create_targets_in_expr(&settle.expr, outputs)?,
             Expr::CreateUnique(create) => {
+                if let Some(target) = &create.target {
+                    let Some(binding) = outputs.get(target) else {
+                        return Err(CompileError::new(
+                            format!("create_unique target '{}' must be declared as an action output binding", target),
+                            create.span,
+                        ));
+                    };
+                    if binding.type_name != create.ty {
+                        return Err(CompileError::new(
+                            format!(
+                                "create_unique target '{}' has type '{}', but initializer constructs '{}'",
+                                target, binding.type_name, create.ty
+                            ),
+                            create.span,
+                        ));
+                    }
+                }
                 for (_, value) in &create.fields {
                     self.validate_create_targets_in_expr(value, outputs)?;
                 }
@@ -2300,6 +2338,9 @@ impl<'a> TypeChecker<'a> {
             let mut env = self.env.child();
 
             self.bind_callable_params(&mut env, &lock.params, "lock", &lock.name)?;
+            if let Some(surface) = &lock.next_surface {
+                self.check_next_audits(&env, &surface.audits)?;
+            }
             self.check_no_unreachable_stmts(&lock.body)?;
             self.validate_spawn_ipc_fd_usage(&lock.body)?;
 
@@ -2334,6 +2375,9 @@ impl<'a> TypeChecker<'a> {
 
         let mut env = self.env.child();
         push_diagnostic(&mut diagnostics, self.bind_callable_params(&mut env, &lock.params, "lock", &lock.name));
+        if let Some(surface) = &lock.next_surface {
+            push_diagnostic(&mut diagnostics, self.check_next_audits(&env, &surface.audits));
+        }
         push_diagnostic(&mut diagnostics, self.check_no_unreachable_stmts(&lock.body));
         push_diagnostic(&mut diagnostics, self.validate_spawn_ipc_fd_usage(&lock.body));
 
@@ -3932,6 +3976,29 @@ impl<'a> TypeChecker<'a> {
                 self.check_field_initializer(env, &cu.ty, &cu.fields, cu.span, "create_unique")?;
                 self.validate_unique_identity_policy(&cu.ty, &cu.identity, cu.span, "create_unique")?;
                 self.require_declared_identity_match(&cu.ty, &cu.identity, cu.span, "create_unique")?;
+                if let Some(target) = &cu.target {
+                    let Some(target_ty) = env.lookup(target).cloned() else {
+                        return Err(CompileError::new(
+                            format!("create_unique target '{}' is not declared as an action output binding", target),
+                            cu.span,
+                        ));
+                    };
+                    let Type::Named(target_type_name) = target_ty else {
+                        return Err(CompileError::new(
+                            format!("create_unique target '{}' must be a named Cell output binding", target),
+                            cu.span,
+                        ));
+                    };
+                    if target_type_name.split('<').next().unwrap_or(target_type_name.as_str()) != cu.ty {
+                        return Err(CompileError::new(
+                            format!(
+                                "create_unique target '{}' has type '{}', but initializer constructs '{}'",
+                                target, target_type_name, cu.ty
+                            ),
+                            cu.span,
+                        ));
+                    }
+                }
                 if let Some(lock) = &cu.lock {
                     let lock_ty = self.infer_expr(env, lock)?;
                     if !Self::is_address_like_type(&lock_ty) {

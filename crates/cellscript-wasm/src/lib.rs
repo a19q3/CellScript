@@ -378,7 +378,7 @@ type_script TokenTransfer on type_group<Token> {
                 data { owner = same; amount = same }
                 identity = same
                 type_script = same
-                lock_script = recipient
+                lock_script = exact_hash(recipient)
                 capacity = same
                 cardinality = one_to_one
             }
@@ -395,7 +395,43 @@ type_script TokenTransfer on type_group<Token> {
             let language: serde_json::Value = serde_json::from_str(&language_service_json_for_edition(source, "2027", 3, 0)).unwrap();
             assert_eq!(language["diagnostics"].as_array().map(Vec::len), Some(0));
             assert!(language["completions"].as_array().is_some_and(|items| items.iter().any(|item| item["label"] == "type_script")));
+            assert!(language["completions"].as_array().is_some_and(|items| items.iter().any(|item| item["label"] == "pool")));
+            assert!(language["completions"].as_array().is_some_and(|items| items.iter().any(|item| item["label"] == "audit")));
         }
+    }
+
+    #[test]
+    fn wasm_accepts_checked_pool_and_metadata_only_audit_source() {
+        let source = r#"
+module demo
+resource Token has store, create, consume { owner: Address, amount: u64 }
+type_script TokenPool on type_group<Token> {
+    entry merge(
+        input left: Token from group_input[0],
+        input right: Token from group_input[1],
+        witness recipient: Address from group_witness.input_type,
+        output merged: Token from group_output[0],
+    ) {
+        verify { enforce left.amount > 0 }
+        audit settlement_policy { expected_evidence = external_policy(recipient) }
+        effects {
+            pool value_flow {
+                inputs { left, right }
+                outputs { merged }
+                data { owner { merged = recipient } amount = conserve }
+                identity = pooled
+                type_script = same
+                lock_script { merged = exact_hash(recipient) }
+                capacity = builder_computed
+                cardinality = declared
+            }
+        }
+    }
+}
+"#;
+        let result: serde_json::Value = serde_json::from_str(&compile_metadata_json(source, "2027", None)).unwrap();
+        assert_eq!(result["edition"], "2027");
+        assert_eq!(result["actions"][0]["name"], "merge");
     }
 
     #[test]

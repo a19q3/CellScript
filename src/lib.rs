@@ -220,7 +220,7 @@ fn strict_capability_name(capability: ast::Capability) -> &'static str {
 
 const DEFAULT_TARGET: &str = "riscv64-asm";
 const DEFAULT_TARGET_PROFILE: &str = "ckb";
-const ARTIFACT_CACHE_VERSION: &str = "project-source-set-v19-edition-2027-preview3";
+const ARTIFACT_CACHE_VERSION: &str = "project-source-set-v20-edition-2027-preview4";
 pub const METADATA_SCHEMA_VERSION: u32 = 63;
 pub const SOURCE_METADATA_SCHEMA_VERSION: u32 = 2;
 pub const ARTIFACT_METADATA_SCHEMA_VERSION: u32 = 1;
@@ -8255,6 +8255,8 @@ fn scope_ir_to_fungible_type_group_v1(ir: &ir::IrModule, selected_type: Option<&
     let entry = ir::IrItem::Action(ir::IrAction {
         name: FUNGIBLE_TYPE_GROUP_V1_ENTRY_ACTION.to_string(),
         entry_trigger: None,
+        source_dispositions: Vec::new(),
+        audit_claims: Vec::new(),
         params: Vec::new(),
         return_type: None,
         state_transition_edges: Vec::new(),

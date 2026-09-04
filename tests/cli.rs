@@ -8386,7 +8386,7 @@ type_script TokenTransfer on type_group<Token> {
                 }
                 identity = same
                 type_script = same
-                lock_script = recipient
+                lock_script = exact_hash(recipient)
                 capacity = same
                 cardinality = one_to_one
             }
@@ -8421,6 +8421,59 @@ type_script TokenTransfer on type_group<Token> {
     assert!(format.status.success(), "stderr: {}", String::from_utf8_lossy(&format.stderr));
     let checked = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).args(["fmt", "--check"]).output().unwrap();
     assert!(checked.status.success(), "stderr: {}", String::from_utf8_lossy(&checked.stderr));
+}
+
+#[test]
+fn cellc_expand_reports_native_pool_and_metadata_only_audit() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("Cell.toml"), "[package]\nedition = \"2027\"\nname = \"native-pool-preview\"\nversion = \"0.1.0\"\n")
+        .unwrap();
+    std::fs::write(
+        root.join("src/main.cell"),
+        r#"
+module native_pool_preview
+resource Token has store, create, consume { owner: Address, amount: u64 }
+type_script TokenPool on type_group<Token> {
+    entry merge(
+        input left: Token from group_input[0],
+        input right: Token from group_input[1],
+        witness recipient: Address from group_witness.input_type,
+        output merged: Token from group_output[0],
+    ) {
+        verify { enforce left.amount > 0 }
+        audit settlement_policy { expected_evidence = external_policy(recipient) }
+        effects {
+            pool value_flow {
+                inputs { left, right }
+                outputs { merged }
+                data { owner { merged = recipient } amount = conserve }
+                identity = pooled
+                type_script = same
+                lock_script { merged = exact_hash(recipient) }
+                capacity = builder_computed
+                cardinality = declared
+            }
+        }
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).args(["--json", "expand"]).output().unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let foundation: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        foundation["dispositions"].as_array().unwrap().iter().filter(|disposition| disposition["input"]["kind"] == "pooled").count(),
+        2
+    );
+    assert!(foundation["dispositions"].as_array().unwrap().iter().any(|disposition| disposition["output"]["kind"] == "pool-result"));
+    let audit = foundation["claims"].as_array().unwrap().iter().find(|claim| claim["category"] == "audit").expect("audit claim");
+    assert_eq!(audit["enforcement"], "metadata-only");
+    assert_eq!(audit["on_chain_checked"], false);
+    assert!(audit["execution"].is_null());
 }
 
 #[test]

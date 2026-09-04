@@ -2816,6 +2816,8 @@ mod tests {
             items: vec![IrItem::Action(IrAction {
                 name: "shape".to_string(),
                 entry_trigger: None,
+                source_dispositions: vec![],
+                audit_claims: vec![],
                 params: vec![],
                 return_type: Some(IrType::U64),
                 state_transition_edges: vec![],

@@ -449,7 +449,7 @@ fixed-width handle need not carry Cell lifecycle authority.
 ## Implemented Bounded Preview Surface
 
 The following spelling is implemented by
-`cellscript-source-semantics-2027-preview3`. It remains experimental and does
+`cellscript-source-semantics-2027-preview4`. It remains experimental and does
 not freeze the complete grammar or select a new payload ABI. The exact bounded
 contract and EBNF are specified in the
 [Edition 2027 preview grammar](CELLSCRIPT_2027_PREVIEW_GRAMMAR.md).
@@ -474,7 +474,7 @@ type_script TokenTransfer on type_group<Token> {
 
                 identity = same
                 type_script = same
-                lock_script = recipient
+                lock_script = exact_hash(recipient)
                 capacity = same
                 cardinality = one_to_one
             }
@@ -485,10 +485,19 @@ type_script TokenTransfer on type_group<Token> {
 
 The disposition's `owner = same` and `amount = same` clauses generate their
 own verifier obligations. Repeating them in `verify` would create two sources
-of truth. The example intentionally omits provisional `audit` syntax until the
-grammar RFC decides between a visibly declarative spelling and omitting the
-surface entirely. The semantic foundation permits only type-checked,
-metadata-only audit declarations, never ignored runtime assertions.
+of truth. Preview4 also implements the bounded `pool`, `retire`, and `fresh`
+variants of the disposition algebra. Pools bind non-empty explicit local role
+sets and generate an overflow-checked `u128` numeric field-sum equality for every
+`field = conserve`; non-conserved output fields and output locks are checked
+exactly. Retirement requires a field, CKB Type ID, or singleton absence policy,
+and fresh output creation requires an explicit identity policy and exhaustive
+output plan.
+
+Preview4 selects one deliberately narrow `audit` contract:
+`expected_evidence = external_policy(subject)`. Its subject is pure and
+type-checked, cannot directly capture a Cell-backed linear value, and enters
+`CoreSemanticId` as metadata-only, off-chain evidence with no execution
+binding. It is never an ignored runtime assertion or an accepting condition.
 
 The canonical typed expansion must additionally identify the exact entry and
 placement ABI, group-relative indexes, output correspondence, capacity evidence
@@ -504,7 +513,8 @@ change must never silently change entry bytes.
 The same preview now implements one native `lock_script ... on lock_group`
 container with one exact `lock:...` entry, one Cell-backed protected role at
 `group_input[0]`, explicit `current_script.args` and
-`group_witness.input_type` provenance, and a verify-only body. It lowers through
+`group_witness.input_type` provenance, a verify body, and optional metadata-only
+audits. It lowers through
 the existing checked Lock path and emits `AuthorizationOnly`; it does not
 invent Type Script lifecycle policy. See the preview grammar for the canonical
 spelling, differential identity and ELF evidence, and deliberately deferred
@@ -716,14 +726,14 @@ unless a gate below explicitly says otherwise.
 | Issue | Markers | Reconciliation and required action |
 |---|---|---|
 | [#1 Internal assembler branch relaxation](https://github.com/CellScript-Labs/CellScript/issues/1) | **[ORTHOGONAL]**, closed | No language-design conflict. Preserve the fixed assembler behavior and existing regression evidence. |
-| [#7 Executable bounded Cell-group consumption](https://github.com/CellScript-Labs/CellScript/issues/7) | **[ALIGNED] [CONFLICT] [PREREQUISITE]**, implemented in 0.26 | Source selection, runtime cardinality, exact decode, and per-element linear coverage now exist for the bounded 0.26 shape. `consume_each` remains a legacy terminal linear discharge without distinguishing pooled use from logical retirement. The canonical record therefore preserves it as `LegacyConsumed`; next-edition migration requires an explicit `Successor`, `Pooled`, or `Retired` choice where intent cannot be proven. |
-| [#8 Executable bounded output-plan correspondence](https://github.com/CellScript-Labs/CellScript/issues/8) | **[ALIGNED] [CONFLICT] [PREREQUISITE]**, implemented in 0.26 | The 0.26 implementation resolves the immediate witness-ownership ambiguity: `CSBPLv1` is the inner byte value of one length-prefixed `BoundedList` argument inside the surrounding `CSARGv1` payload placed in `WitnessArgs.input_type`. One conflict remains: the next edition must decide whether the existing canonical plan-relative GroupOutput order is a sufficient explicit contract or whether source selectors are mandatory. Source, typed expansion, builder schema, and runtime lowering must use the same decision. |
+| [#7 Executable bounded Cell-group consumption](https://github.com/CellScript-Labs/CellScript/issues/7) | **[ALIGNED] [CONFLICT] [PREREQUISITE]**, bounded runtime implemented in 0.26; fixed-role preview implemented on `0.26b` | Source selection, runtime cardinality, exact decode, and per-element linear coverage exist for the bounded 0.26 collection shape. Preview4 separately implements explicit fixed local-role `Pooled`/`PoolResult` accounting and `Retired` absence policies. `consume_each` remains a legacy terminal discharge, so migration to variable-cardinality native pools is still non-mechanical and must diagnose rather than guess. |
+| [#8 Executable bounded output-plan correspondence](https://github.com/CellScript-Labs/CellScript/issues/8) | **[ALIGNED] [CONFLICT] [PREREQUISITE]**, bounded runtime implemented in 0.26; explicit fixed ordinals implemented on `0.26b` | The 0.26 implementation resolves the immediate witness-ownership ambiguity: `CSBPLv1` is the inner byte value of one length-prefixed `BoundedList` argument inside the surrounding `CSARGv1` payload placed in `WitnessArgs.input_type`. Preview4 requires explicit group-relative ordinals for every fixed native role. One conflict remains for variable-cardinality native roles: whether canonical plan-relative order is itself the source selector or an additional selector declaration is mandatory. Source, typed expansion, builder schema, and runtime lowering must use the same decision. |
 | [#9 Artifact-only multi-Script ProtocolBundle](https://github.com/CellScript-Labs/CellScript/issues/9) | **[ALIGNED] [OVERLAP] [PREREQUISITE]** | This issue is the correct owner of off-chain composition. A future `.celltx` file must be a frontend over `cellscript-protocol-bundle-v1` or its accepted successor, not a competing transaction graph. Follow #9's phase order: artifact-only format and conflict handling before source choreography. |
 | [#10 Typed cross-Script transaction roles](https://github.com/CellScript-Labs/CellScript/issues/10) | **[ALIGNED] [PREREQUISITE] [SCOPE]** | The proposed `RoleBinding` should be shared with #10. Stabilize local roles first. Closed and open foreign roles remain later phases built on #9 and #11; they must not be smuggled into ordinary entry parameters or imply runtime linkage. |
 | [#11 Interface-bound runtime Script handles](https://github.com/CellScript-Labs/CellScript/issues/11) | **[ALIGNED] [PREREQUISITE]** | Exact `ScriptHandle`/`VerifierHandle` identity is the correct basis for open roles and dependency provenance. Preserve the distinction among raw Script, artifact, interface, and deployment identity. Its fixed-width handle must remain an ordinary non-linear value; `fixed` itself must not imply non-Cell or grant lifecycle authority. |
 | [#12 Typed CKB temporal and Since domains](https://github.com/CellScript-Labs/CellScript/issues/12) | **[ALIGNED] [PREREQUISITE]** | This is a concrete example of a safe new-edition semantic break. Do not change `current_timepoint()` or raw-`u64` meaning inside Edition 2026. The next-edition inventory and migration must include the typed temporal APIs, exact wire compatibility, and explicit old-edition interoperation. |
 | [#13 Typed openings for digest-committed substate](https://github.com/CellScript-Labs/CellScript/issues/13) | **[ALIGNED] [CONFLICT]** | Its explicit witness provenance, authenticated opening, and successor correspondence align. It also gives `commit` a precise cryptographic meaning, strengthening the decision not to use `commit` as a general Cell-disposition section. Reserve `commit` for commitment construction and use `DispositionPlan` plus a provisional `effects` source label for transaction relations. Its opening witness must also compose inside the entry envelope rather than independently claiming `WitnessArgs.input_type`. |
-| [#14 Executable-surface versus capability completeness](https://github.com/CellScript-Labs/CellScript/issues/14) | **[ALIGNED] [PREREQUISITE]** | This RFC is a capability/design agenda, not evidence of executable-surface closure. Register the new-edition work in the capability ledger as `research` or `absent` until implementation is complete. Every future use of "complete" must name its compiler, artifact, builder, evidence, or product universe. |
+| [#14 Executable-surface versus capability completeness](https://github.com/CellScript-Labs/CellScript/issues/14) | **[ALIGNED] [PREREQUISITE]** | Preview4 supplies compiler, artifact, checker, LSP, WASM-source, and syntax-matrix evidence only for its enumerated fixed-role slice. It is not builder, variable-cardinality, website-product, ecosystem-migration, or production closure. Every use of "complete" must name its universe. |
 | [#15 Canonical workspace graph](https://github.com/CellScript-Labs/CellScript/issues/15) | **[PREREQUISITE]** | Not a grammar blocker, but required before graph-wide mixed-edition builds or migrations are reliable. Do not let a 1.0 migration rely on synthetic workspace locks or declaration-order member builds. |
 | [#16 Package instance and unification semantics](https://github.com/CellScript-Labs/CellScript/issues/16) | **[PREREQUISITE] [CONFLICT]** | The proposed conservative single-version-per-coordinate model may conflict with an incremental ecosystem migration that needs both old and new major versions of one dependency. Decide whether mixed editions work within one selected package version or whether package-qualified multi-version identity is required. Do not discover this conflict after 1.0 publication. |
 | [#17 Chain-identity-safe dependency selection](https://github.com/CellScript-Labs/CellScript/issues/17) | **[PREREQUISITE]** | This P0 correctness issue must be closed before migration, ProtocolBundle resolution, or next-edition build evidence can make chain-specific claims. Environment labels must never substitute for chain identity. |

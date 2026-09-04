@@ -268,10 +268,11 @@ source bytes have a separate `SourceDigest`.
 The gate treats Edition 2027 as a preview, not a release claim. It must remain
 separately routed from Edition 2026, reject implicit transaction sources and
 ambiguous dispositions, and emit only `SingleEntry` until a versioned dispatch
-ABI is accepted. The implemented `preview3` slice additionally checks the
+ABI is accepted. The implemented `preview4` slice additionally checks the
 native `type_script` or `lock_script` container. It checks exact Type or Lock
-group triggers, explicit provenance, exhaustive one-to-one Type Script
-replacement, and authorization-only Lock scope as described in
+group triggers, explicit provenance, exhaustive successor/pool/retirement/fresh
+Type Script dispositions, metadata-only audit classification, and
+authorization-only Lock scope as described in
 [`CELLSCRIPT_2027_PREVIEW_GRAMMAR.md`](CELLSCRIPT_2027_PREVIEW_GRAMMAR.md).
 Parser, formatter, LSP, checker mutation, cross-frontend identity, WASM-source,
 and syntax-combination checks are part of ordinary `dev`/`ci` closure. These

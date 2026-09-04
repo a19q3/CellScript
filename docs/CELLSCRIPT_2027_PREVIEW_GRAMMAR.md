@@ -7,7 +7,7 @@
 commitment.**
 
 This document is the source contract for the bounded native syntax implemented
-by `cellscript-source-semantics-2027-preview3`. It records what the compiler
+by `cellscript-source-semantics-2027-preview4`. It records what the compiler
 accepts now so parser, formatter, lowering, metadata, LSP, editor tooling,
 examples, and tests can agree while the broader 1.0 design remains under
 review.
@@ -32,7 +32,7 @@ entry = "src/main.cell"
 Edition 2026 remains the stable default semantic epoch. Edition 2026 rejects
 the native `type_script` and `lock_script` surfaces. An Edition 2027 package
 uses a separately routed frontend and records
-`cellscript-source-semantics-2027-preview3` in its resolved compatibility
+`cellscript-source-semantics-2027-preview4` in its resolved compatibility
 profile.
 
 The compiler release, source edition, payload ABI, witness placement ABI,
@@ -68,7 +68,7 @@ type_script TokenTransfer on type_group<Token> {
                 }
                 identity = same
                 type_script = same
-                lock_script = recipient
+                lock_script = exact_hash(recipient)
                 capacity = same
                 cardinality = one_to_one
             }
@@ -81,6 +81,38 @@ The runnable Type Script package is
 [`examples/semantic-foundation-2027`](../examples/semantic-foundation-2027/README.md).
 Use `cellc expand` to inspect the canonical provenance, role, disposition,
 claim, entry-contract, and layered-identity records generated from the source.
+
+The same Type Script container may instead account for explicit many-to-many,
+retirement, and creation roles. A bounded pooled relation uses the following
+total spelling:
+
+```cellscript
+audit settlement_policy {
+    expected_evidence = external_policy(recipient)
+}
+
+effects {
+    pool value_flow {
+        inputs { left, right }
+        outputs { merged }
+        data {
+            owner { merged = recipient }
+            amount = conserve
+        }
+        identity = pooled
+        type_script = same
+        lock_script { merged = exact_hash(recipient) }
+        capacity = builder_computed
+        cardinality = declared
+    }
+}
+```
+
+`amount = conserve` generates an on-chain checked sum relation; the `audit`
+does not. Retirement uses `retire role` plus an exact `field(...)`,
+`ckb_type_id`, or `singleton_type` absence policy. Creation uses `fresh role`
+with exhaustive field expressions, an explicit identity policy, declared Type
+Script, exact lock hash, builder-computed capacity, and one declared output.
 
 ### Native Lock Script
 
@@ -129,7 +161,7 @@ type-script          = "type_script", identifier,
                        "{", type-entry, "}" ;
 
 type-entry           = "entry", identifier, "(", type-port-list?, ")",
-                       "{", verify-block, effects-block, "}" ;
+                       "{", verify-block, audit-declaration*, effects-block, "}" ;
 
 type-port-list       = type-port, (",", type-port)*, ","? ;
 type-port            = input-port | output-port | witness-port ;
@@ -143,7 +175,7 @@ witness-port         = "witness", identifier, ":", type,
 lock-script          = "lock_script", identifier, "on", "lock_group",
                        "{", lock-entry, "}" ;
 lock-entry           = "entry", identifier, "(", lock-port-list, ")",
-                       "{", verify-block, "}" ;
+                       "{", verify-block, audit-declaration*, "}" ;
 lock-port-list       = lock-port, (",", lock-port)*, ","? ;
 lock-port            = protected-port | witness-port | lock-args-port ;
 protected-port       = "protected", identifier, ":", cell-type,
@@ -153,19 +185,67 @@ lock-args-port       = "lock_args", identifier, ":", type,
 
 verify-block         = "verify", "{", enforce-statement*, "}" ;
 enforce-statement    = "enforce", expression, separator? ;
+audit-declaration    = "audit", identifier, "{",
+                       "expected_evidence", "=", "external_policy",
+                       "(", expression, ")", separator?, "}" ;
 
-effects-block        = "effects", "{", replacement+, "}" ;
+effects-block        = "effects", "{", disposition+, "}" ;
+disposition          = replacement | pool | retirement | fresh-output ;
 replacement          = "replace", identifier, "->", identifier, "{",
                          data-plan,
                          "identity", "=", "same", separator,
                          "type_script", "=", "same", separator,
-                         "lock_script", "=", expression, separator,
+                         "lock_script", "=", "exact_hash", "(", expression, ")", separator,
                          "capacity", "=", "same", separator,
                          "cardinality", "=", "one_to_one", separator?,
                        "}" ;
 
 data-plan            = "data", "{", field-preservation+, "}" ;
 field-preservation   = identifier, "=", "same", (separator | ",")? ;
+
+pool                 = "pool", identifier, "{",
+                         "inputs", name-block,
+                         "outputs", name-block,
+                         pool-data-plan,
+                         "identity", "=", "pooled", separator,
+                         "type_script", "=", "same", separator,
+                         "lock_script", "{", output-lock+, "}", separator?,
+                         "capacity", "=", "builder_computed", separator,
+                         "cardinality", "=", "declared", separator?,
+                       "}" ;
+name-block           = "{", identifier,
+                       ((separator | ","), identifier)*,
+                       (separator | ",")?, "}" ;
+pool-data-plan       = "data", "{", pool-field-plan+, "}" ;
+pool-field-plan      = identifier, "=", "conserve", separator?
+                     | identifier, "{", output-field+, "}", separator? ;
+output-field         = identifier, "=", expression, separator? ;
+output-lock          = identifier, "=", "exact_hash", "(", expression, ")", separator? ;
+
+retirement           = "retire", identifier, "{",
+                         "absence", "=", absence-policy, separator,
+                         "data", "=", "discarded", separator,
+                         "lock_script", "=", "none", separator,
+                         "type_script", "=", "absent", separator,
+                         "capacity", "=", "released", separator,
+                         "cardinality", "=", "one", separator?,
+                       "}" ;
+absence-policy       = "field", "(", identifier, ")"
+                     | "ckb_type_id" | "singleton_type" ;
+
+fresh-output         = "fresh", identifier, "{",
+                         fresh-data-plan,
+                         "identity", "=", identity-policy, separator,
+                         "type_script", "=", "declared", separator,
+                         "lock_script", "=", "exact_hash", "(", expression, ")", separator,
+                         "capacity", "=", "builder_computed", separator,
+                         "cardinality", "=", "one", separator?,
+                       "}" ;
+fresh-data-plan      = "data", "{", fresh-field+, "}" ;
+fresh-field          = identifier, "=", expression, separator? ;
+identity-policy      = "none" | "ckb_type_id" | "script_args"
+                     | "singleton_type" | "field", "(", identifier, ")" ;
+
 separator            = NL | ";" ;
 ordinal              = decimal-integer ;
 cell-type            = identifier ;
@@ -181,13 +261,29 @@ rules:
   artifact;
 - for a Type Script, every `input` and `output` has the declared trigger Cell
   type; group ordinals are zero-based, sequential, and explicit; every role
-  appears in exactly one `replace`; every schema field and fixed envelope
-  clause appears exactly once in canonical order; the replacement
-  `lock_script` expression has type `Address`; and `effects` is final and
-  non-empty;
+  appears in exactly one `replace`, `pool`, `retire`, or `fresh` disposition;
+  output-producing dispositions follow declared `group_output` order so the
+  checked backend index and source role cannot diverge;
+  every schema field and fixed envelope clause appears exactly once in
+  canonical order; every `exact_hash(...)` subject has type `Address`; and
+  `effects` is final and non-empty;
+- a `pool` has non-empty, unique, explicitly named input and output sets; at
+  least one unsigned numeric schema field uses `= conserve`, which generates
+  an overflow-checked `u128` sum-equality over the declared roles; every other
+  field and every output lock
+  is assigned exactly once in output order; capacity remains visibly
+  builder-computed and chain-checked rather than being mislabelled as an
+  artifact-local equality;
+- `retire` requires an exact field, CKB Type ID, or singleton absence policy;
+  `fresh` requires exhaustive field initialization, a declared identity
+  policy, an exact output role, and an exact output lock hash;
+- every `audit` name is unique; its subject is pure and type-checked, cannot
+  capture a Cell-backed linear value directly, is recorded as metadata-only
+  external-policy evidence, and never creates an accepting execution path;
 - for a Lock Script, exactly one Cell-backed `protected` role is bound to
   `group_input[0]`; witness and current-script arguments use only the explicit
-  sources shown above; and the entry contains only a `verify` block; and
+  sources shown above; and the entry contains `verify` plus optional
+  metadata-only `audit` declarations, but no lifecycle effects; and
 - a module cannot mix the two native container kinds in this preview.
 
 The formatter emits the canonical example style. Alternate accepted separator
@@ -204,6 +300,10 @@ Edition 2026 equivalent subset:
 | `enforce condition` | `require condition` |
 | exhaustive `replace before -> after` | `std::lifecycle::transfer(before, after, lock) { fields... }` |
 | `capacity = same` | `std::cell::preserve_capacity(after, before)` |
+| `pool name` with `field = conserve` | exact output creation plus an overflow-checked `u128` sum-equality over all declared input/output roles, followed by explicit input discharge |
+| `retire input` with an absence policy | policy-specific checked `destroy` lowering |
+| `fresh output` | exact targeted `create` / `create_unique` lowering for the declared output ordinal |
+| `audit name { expected_evidence = external_policy(subject) }` | typed metadata-only claim with no executable operation or branch |
 | `on type_group<Token>` | entry trigger `type-group<Token>` |
 | one `entry transfer` | exact entry `action:transfer`, `SingleEntry` dispatch |
 | `lock_script ... on lock_group` | checked legacy `lock` semantic path |
@@ -212,7 +312,7 @@ Edition 2026 equivalent subset:
 This is a semantic lowering, not textual macro expansion. `cellc expand`
 renders canonical typed records and is not itself a hash input.
 
-For the equivalent subset, native and explicit Edition 2026 sources are tested
+For the equivalent one-to-one subset, native and explicit Edition 2026 sources are tested
 to produce the same `CoreSemanticId`, typed entry, ProofPlan, and fail-closed
 runtime-feature set. Their `EntryContractId` intentionally differs because the
 native syntax commits to the exact `type-group<Token>` trigger while the legacy
@@ -220,6 +320,15 @@ surface retains the generic `type-group` entry contract. The bounded native
 and explicit legacy Lock Script forms share the same `lock-group` entry
 contract and are tested to produce the same layered semantic identities and
 byte-identical ELF lowering.
+
+The pooled form is deliberately bounded by explicit local roles. `conserve`
+is not a documentation tag: the frontend generates an overflow-checked `u128`
+runtime equality between the sum of that unsigned numeric field across every
+named input and output. Non-conserved
+fields generate exact output-field checks, and each output lock generates an
+exact lock-hash check. The source disposition survives separately in shared IR
+so typed expansion records `Pooled` and `PoolResult` instead of re-inferring
+ambiguous legacy consumption from those executable operations.
 
 ## Semantic Obligations
 
@@ -237,7 +346,8 @@ The generated semantic foundation records:
 - witness, GroupInput, and GroupOutput provenance roots and derived nodes;
 - local input/output/protected roles with exact ordinal selectors and declared
   correspondence;
-- Type Script `Successor` and `SuccessorOf` disposition variants;
+- Type Script `Successor`/`SuccessorOf`, `Pooled`/`PoolResult`, `Retired`, and
+  `Fresh` disposition variants;
 - Lock Script `AuthorizationOnly` dispositions naming the Type Script or an
   explicit transaction policy as the business-disposition owner;
 - exhaustive data, logical identity, Lock Script, Type Script, capacity,
@@ -246,7 +356,8 @@ The generated semantic foundation records:
   condition-provenance node, typed condition/success/failure blocks, and
   `assertion-failed` runtime error;
 - supporting ProofPlan-linked claims, kept separate from source conditions;
-  and
+- metadata-only audit claims, kept visibly off-chain and without execution
+  bindings; and
 - separate core, entry-contract, artifact-contract, deployable-artifact,
   verified-bundle, source, and source-map identities.
 
@@ -273,9 +384,15 @@ The preview rejects, with source-linked diagnostics:
 - missing, duplicate, reordered, or non-schema `data` fields;
 - omitted or reordered Cell-envelope clauses;
 - implicit, repeated, skipped, or out-of-order group indexes;
-- a replacement that names an undeclared or already-accounted role;
-- an input or output without an exhaustive replacement;
-- zero Type Script replacements, multiple entries, multiple or mixed native
+- a disposition that names an undeclared or already-accounted role;
+- an input or output without exactly one exhaustive disposition;
+- a pool with empty/repeated roles, no conserved unsigned numeric field, incomplete or
+  reordered output-field assignments, or incomplete output locks;
+- a retirement without an exact absence policy, or a fresh output with an
+  incomplete field/identity/lock plan;
+- an audit with a duplicate name, impure subject, or direct Cell-backed linear
+  capture;
+- zero Type Script dispositions, multiple entries, multiple or mixed native
   containers, or a declaration after the container;
 - a Lock Script without exactly one Cell-backed `protected` role at
   `group_input[0]`, with an implicit or unsupported port source, or with an
@@ -327,18 +444,20 @@ This does not constitute graph-wide migration or the RFC's Phase 3 acceptance.
 
 ## Deliberately Deferred Surface
 
-The following remain outside `preview3`:
+The following remain outside `preview4`:
 
 - multi-role or variable-cardinality Lock Script entries and Lock Script
   disposition policy beyond spend authorization;
 - multiple entries and explicit versioned dispatch syntax;
-- `pool`, `retire`, `fresh`, pooled-result, or absence-policy dispositions;
+- variable-cardinality/native collection pools, custom pooled accounting
+  beyond numeric field-sum conservation, and non-local pooled roles;
 - foreign/open roles, Script handles, ProtocolBundle, or `.celltx`
   choreography;
 - non-positional selectors and bounded variable-cardinality native roles;
 - Script-valued lock construction beyond the current Address-based transfer
   primitive;
-- source-level `audit` declarations;
+- audit evidence kinds beyond the metadata-only `external_policy(subject)`
+  declaration;
 - typed temporal, digest-opening, and zero-knowledge-verifier surfaces;
 - a new entry payload, witness placement, builder, or deployment ABI; and
 - graph-wide or lossy automatic migration, lockfile mutation, publication, deployment, signing, or
@@ -348,14 +467,14 @@ These are design decisions, not parser TODOs that may be added independently.
 
 ## GitHub Issue Reconciliation
 
-The issue list was reviewed on 2026-09-02. The full issue-by-issue analysis is
+The issue list was reviewed on 2026-09-04. The full issue-by-issue analysis is
 maintained in the umbrella RFC; the table below marks the constraints that
 directly shape this preview.
 
 | Issues | Marker | Preview consequence |
 |---|---|---|
-| #7 | **[PARTIAL] [CONFLICT]** | Type Scripts implement only explicit one-to-one successor replacement. Pooled use and retirement stay deferred; ambiguous `consume` is rejected. Lock authorization is recorded separately and does not choose a business disposition. |
-| #8 | **[ALIGNED] [PARTIAL]** | Requires explicit group-relative ordinals and exhaustive one-to-one output correspondence. Variable-cardinality output plans remain on the 0.26 surface. |
+| #7 | **[ALIGNED] [PARTIAL]** | Type Scripts distinguish successor, bounded checked pool participation, retirement, and fresh output origin; ambiguous `consume` remains rejected. Lock authorization is recorded separately and does not choose a business disposition. Variable-cardinality/native collection pools remain deferred. |
+| #8 | **[ALIGNED] [PARTIAL]** | Requires explicit group-relative ordinals and exhaustive disposition/output correspondence. Variable-cardinality output plans remain on the 0.26 surface. |
 | #9 | **[SCOPE]** | No transaction choreography or `.celltx`; artifact composition remains ProtocolBundle-owned. |
 | #10-#11 | **[PREREQUISITE] [SCOPE]** | Only local roles exist. Foreign roles and exact Script/interface handles must stabilize before new syntax is admitted. |
 | #12 | **[DEFERRED]** | No temporal spelling or raw-`u64` reinterpretation is introduced. |
@@ -381,8 +500,9 @@ The implemented closure includes:
 - manifest-aware native LSP diagnostics, completion, hover/metadata paths, and
   formatting;
 - an explicit-edition virtual-document LSP entry for WASM consumers;
-- VS Code grammar and snippet coverage;
-- Type Script and Lock Script syntax-combination audit seeds that build
+- VS Code grammar and snippet coverage for the container/entry baseline;
+- Type Script, Lock Script, pool, retirement, fresh-output, and audit
+  syntax-combination seeds that build
   isolated Edition 2027 packages;
 - runnable locked example packages for both native containers; and
 - positive, negative, cross-frontend semantic-identity, and artifact-checker
@@ -399,9 +519,11 @@ Playground default.
 This preview can inform, but cannot satisfy by itself, the RFC grammar-freeze
 gate. Before a stable next edition, the project must still:
 
-- resolve the normative issue conflicts and complete the disposition algebra;
+- resolve the remaining normative issue conflicts and extend the implemented
+  disposition algebra to accepted variable-cardinality and non-local roles;
 - decide the full artifact-container and selector model;
-- define or omit `audit` and all remaining claim syntax;
+- accept or revise the bounded metadata-only `audit` contract and define or
+  omit all remaining claim syntax;
 - provide total migration mappings or required diagnostics for every Edition
   2026 construct;
 - close differential builder and CKB-VM evidence, not only typed lowering;

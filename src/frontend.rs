@@ -124,7 +124,7 @@ type_script TokenTransfer on type_group<Token> {
                 }
                 identity = same
                 type_script = same
-                lock_script = recipient
+                lock_script = exact_hash(recipient)
                 capacity = same
                 cardinality = one_to_one
             }
@@ -140,7 +140,7 @@ type_script TokenTransfer on type_group<Token> {
         assert_eq!(surface.container_name, "TokenTransfer");
         assert_eq!(surface.trigger_type, "Token");
         assert_eq!(surface.verify.len(), 1);
-        assert_eq!(surface.replacements.len(), 1);
+        assert_eq!(surface.dispositions.len(), 1);
         assert_eq!(action.params.len(), 2);
         assert_eq!(action.outputs.len(), 1);
 
@@ -165,6 +165,170 @@ type_script TokenTransfer on type_group<Token> {
             .unwrap_err()
             .message
             .contains("input/output ports must all use"));
+        let unhashed_lock = source.replace("lock_script = exact_hash(recipient)", "lock_script = recipient");
+        assert!(parse(&unhashed_lock, CellScriptEdition::Edition2027).unwrap_err().message.contains("exact_hash"));
+    }
+
+    #[test]
+    fn next_frontend_parses_fresh_retire_and_audit_surfaces_fail_closed() {
+        let fresh = r#"
+module demo
+#[type_id("demo::Token:v1")]
+resource Token has store, create, burn identity(ckb_type_id) { amount: u64 }
+type_script TokenMint on type_group<Token> {
+    entry mint(
+        witness amount: u64 from group_witness.input_type,
+        witness recipient: Address from group_witness.input_type,
+        output next: Token from group_output[0],
+    ) {
+        verify { enforce amount > 0 }
+        audit issuance_policy {
+            expected_evidence = external_policy(recipient)
+        }
+        effects {
+            fresh next {
+                data { amount = amount }
+                identity = ckb_type_id
+                type_script = declared
+                lock_script = exact_hash(recipient)
+                capacity = builder_computed
+                cardinality = one
+            }
+        }
+    }
+}
+"#;
+        let module = parse(fresh, CellScriptEdition::Edition2027).unwrap();
+        let Item::Action(action) = module.items.last().unwrap() else {
+            panic!("expected native fresh entry to lower to an action");
+        };
+        let surface = action.next_surface.as_ref().expect("native surface marker");
+        assert_eq!(surface.audits.len(), 1);
+        assert!(matches!(surface.dispositions.as_slice(), [crate::ast::NextDisposition::Fresh(_)]));
+        let formatted = crate::fmt::format_default(&module).unwrap();
+        assert!(formatted.contains("audit issuance_policy"));
+        assert!(formatted.contains("fresh next"));
+        assert_eq!(crate::fmt::format_default(&parse(&formatted, CellScriptEdition::Edition2027).unwrap()).unwrap(), formatted);
+
+        let duplicate_audit = fresh.replace(
+            "        effects {",
+            "        audit issuance_policy { expected_evidence = external_policy(amount) }\n        effects {",
+        );
+        assert!(parse(&duplicate_audit, CellScriptEdition::Edition2027).unwrap_err().message.contains("duplicate audit declaration"));
+        let missing_field = fresh.replace("                data { amount = amount }", "                data { }");
+        assert!(parse(&missing_field, CellScriptEdition::Edition2027).unwrap_err().message.contains("exhaustively list fields"));
+
+        let retire = r#"
+module demo
+resource Note has store, consume, burn identity(field(note_id)) { note_id: u64, amount: u64 }
+type_script NoteRetirement on type_group<Note> {
+    entry retire_note(input note: Note from group_input[0]) {
+        verify { enforce note.amount == 0 }
+        effects {
+            retire note {
+                absence = field(note_id)
+                data = discarded
+                lock_script = none
+                type_script = absent
+                capacity = released
+                cardinality = one
+            }
+        }
+    }
+}
+"#;
+        let module = parse(retire, CellScriptEdition::Edition2027).unwrap();
+        let Item::Action(action) = module.items.last().unwrap() else {
+            panic!("expected native retirement entry to lower to an action");
+        };
+        assert!(matches!(action.next_surface.as_ref().unwrap().dispositions.as_slice(), [crate::ast::NextDisposition::Retire(_)]));
+        let missing_capacity = retire.replace("                capacity = released\n", "");
+        assert!(parse(&missing_capacity, CellScriptEdition::Edition2027).is_err());
+
+        let reordered_outputs = r#"
+module demo
+resource Token has store, create { amount: u64 }
+type_script TokenMint on type_group<Token> {
+    entry mint(
+        witness amount: u64 from group_witness.input_type,
+        witness recipient: Address from group_witness.input_type,
+        output first: Token from group_output[0],
+        output second: Token from group_output[1],
+    ) {
+        verify { }
+        effects {
+            fresh second {
+                data { amount = amount }
+                identity = none
+                type_script = declared
+                lock_script = exact_hash(recipient)
+                capacity = builder_computed
+                cardinality = one
+            }
+            fresh first {
+                data { amount = amount }
+                identity = none
+                type_script = declared
+                lock_script = exact_hash(recipient)
+                capacity = builder_computed
+                cardinality = one
+            }
+        }
+    }
+}
+"#;
+        assert!(parse(reordered_outputs, CellScriptEdition::Edition2027).unwrap_err().message.contains("declared group_output order"));
+    }
+
+    #[test]
+    fn next_frontend_parses_checked_pool_surface_fail_closed() {
+        let source = r#"
+module demo
+resource Token has store, create, consume { owner: Address, amount: u64 }
+type_script TokenPool on type_group<Token> {
+    entry merge(
+        input left: Token from group_input[0],
+        input right: Token from group_input[1],
+        witness recipient: Address from group_witness.input_type,
+        output merged: Token from group_output[0],
+    ) {
+        verify { enforce left.amount > 0 }
+        effects {
+            pool value_flow {
+                inputs { left, right }
+                outputs { merged }
+                data {
+                    owner { merged = recipient }
+                    amount = conserve
+                }
+                identity = pooled
+                type_script = same
+                lock_script { merged = exact_hash(recipient) }
+                capacity = builder_computed
+                cardinality = declared
+            }
+        }
+    }
+}
+"#;
+        let module = parse(source, CellScriptEdition::Edition2027).unwrap();
+        let Item::Action(action) = module.items.last().unwrap() else {
+            panic!("expected native pool entry to lower to an action");
+        };
+        assert!(matches!(action.next_surface.as_ref().unwrap().dispositions.as_slice(), [crate::ast::NextDisposition::Pool(_)]));
+        let formatted = crate::fmt::format_default(&module).unwrap();
+        assert!(formatted.contains("pool value_flow"));
+        assert!(formatted.contains("amount = conserve"));
+        assert_eq!(crate::fmt::format_default(&parse(&formatted, CellScriptEdition::Edition2027).unwrap()).unwrap(), formatted);
+
+        let no_conservation =
+            source.replace("                    amount = conserve", "                    amount { merged = merged.amount }");
+        assert!(parse(&no_conservation, CellScriptEdition::Edition2027).unwrap_err().message.contains("at least one numeric field"));
+        let missing_lock =
+            source.replace("                lock_script { merged = exact_hash(recipient) }", "                lock_script { }");
+        assert!(parse(&missing_lock, CellScriptEdition::Edition2027).unwrap_err().message.contains("assign every pool output"));
+        let reused_input = source.replace("inputs { left, right }", "inputs { left, left }");
+        assert!(parse(&reused_input, CellScriptEdition::Edition2027).unwrap_err().message.contains("exactly one disposition"));
     }
 
     #[test]

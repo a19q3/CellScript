@@ -3331,6 +3331,7 @@ impl<'a> Parser<'a> {
 
         let end_span = self.current().span;
         Ok(Expr::CreateUnique(CreateUniqueExpr {
+            target: None,
             ty,
             fields,
             lock,

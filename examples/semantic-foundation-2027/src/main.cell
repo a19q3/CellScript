@@ -23,7 +23,7 @@ type_script TokenTransfer on type_group<Token> {
                 }
                 identity = same
                 type_script = same
-                lock_script = recipient
+                lock_script = exact_hash(recipient)
                 capacity = same
                 cardinality = one_to_one
             }

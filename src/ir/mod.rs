@@ -239,6 +239,14 @@ pub struct IrAction {
     /// Exact Script Group trigger selected by an Edition 2027 artifact
     /// container. Legacy actions leave this unset and retain `type-group`.
     pub entry_trigger: Option<String>,
+    /// Canonical source-declared disposition plans from the Edition 2027
+    /// frontend. The generated body remains the execution authority; these
+    /// records prevent typed expansion from re-inferring a weaker legacy
+    /// meaning from the lowered operations.
+    pub source_dispositions: Vec<IrSourceDisposition>,
+    /// Type-checked metadata-only declarations. These are intentionally not
+    /// inserted into executable blocks.
+    pub audit_claims: Vec<IrAuditClaim>,
     pub params: Vec<IrParam>,
     pub return_type: Option<IrType>,
     pub state_transition_edges: Vec<IrStateTransitionEdge>,
@@ -265,7 +273,80 @@ pub struct IrPureFn {
 pub struct IrLock {
     pub name: String,
     pub params: Vec<IrParam>,
+    pub audit_claims: Vec<IrAuditClaim>,
     pub body: IrBody,
+}
+
+#[derive(Debug, Clone)]
+pub struct IrAuditClaim {
+    pub name: String,
+    pub evidence: String,
+    pub subject: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct IrSourceDisposition {
+    pub kind: IrSourceDispositionKind,
+    pub input_binding: Option<String>,
+    pub output_binding: Option<String>,
+    pub data_fields: Vec<(String, String)>,
+    pub lock_expression: Option<String>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum IrSourceDispositionKind {
+    Successor,
+    PooledInput { pool_id: String, accounting_obligation: String },
+    PoolResult { pool_id: String, accounting_obligation: String },
+    Retired { absence_policy: String },
+    Fresh { identity_policy: String },
+}
+
+pub(crate) fn source_disposition_id(entry_id: &str, source: &IrSourceDisposition) -> String {
+    match &source.kind {
+        IrSourceDispositionKind::Successor => format!(
+            "disposition:{entry_id}:successor:{}->{}",
+            source.input_binding.as_deref().expect("validated successor input"),
+            source.output_binding.as_deref().expect("validated successor output")
+        ),
+        IrSourceDispositionKind::PooledInput { pool_id, .. } => format!(
+            "disposition:{entry_id}:pooled-input:{pool_id}:{}",
+            source.input_binding.as_deref().expect("validated pooled input")
+        ),
+        IrSourceDispositionKind::PoolResult { pool_id, .. } => format!(
+            "disposition:{entry_id}:pool-result:{pool_id}:{}",
+            source.output_binding.as_deref().expect("validated pool output")
+        ),
+        IrSourceDispositionKind::Retired { .. } => {
+            format!("disposition:{entry_id}:retired:{}", source.input_binding.as_deref().expect("validated retirement input"))
+        }
+        IrSourceDispositionKind::Fresh { .. } => {
+            format!("disposition:{entry_id}:fresh:{}", source.output_binding.as_deref().expect("validated fresh output"))
+        }
+    }
+}
+
+fn source_identity_policy(policy: &IdentityPolicy) -> String {
+    match policy {
+        IdentityPolicy::None => "none".to_string(),
+        IdentityPolicy::CkbTypeId => "ckb-type-id".to_string(),
+        IdentityPolicy::Field(field) => format!("field:{field}"),
+        IdentityPolicy::ScriptArgs => "script-args".to_string(),
+        IdentityPolicy::SingletonType => "singleton-type".to_string(),
+    }
+}
+
+fn source_absence_policy(policy: &DestructionPolicy) -> String {
+    match policy {
+        DestructionPolicy::SingletonType => "same-type-hash-output-absent".to_string(),
+        DestructionPolicy::Unique { .. } => "same-ckb-type-id-output-absent".to_string(),
+        DestructionPolicy::Instance { identity_field } => format!("same-field-identity-output-absent:{identity_field}"),
+        DestructionPolicy::Default | DestructionPolicy::BurnAmount { .. } => {
+            unreachable!("native retirement requires an exact absence policy")
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1740,6 +1821,11 @@ impl IrGenerator {
         IrAction {
             name: action.name.clone(),
             entry_trigger: action.next_surface.as_ref().map(|surface| format!("type-group<{}>", surface.trigger_type)),
+            source_dispositions: action
+                .next_surface
+                .as_ref()
+                .map_or_else(Vec::new, |surface| self.lower_source_dispositions(&action.name, &surface.dispositions)),
+            audit_claims: action.next_surface.as_ref().map_or_else(Vec::new, |surface| Self::lower_audit_claims(&surface.audits)),
             params,
             return_type,
             state_transition_edges: self.action_state_transition_edges(action),
@@ -1756,6 +1842,137 @@ impl IrGenerator {
                 })
                 .unwrap_or(SchedulerHints { parallelizable: touches_shared.is_empty(), touches_shared, estimated_cycles }),
         }
+    }
+
+    fn lower_source_dispositions(&self, entry_name: &str, dispositions: &[crate::ast::NextDisposition]) -> Vec<IrSourceDisposition> {
+        dispositions
+            .iter()
+            .flat_map(|disposition| match disposition {
+                crate::ast::NextDisposition::Replace(replacement) => vec![IrSourceDisposition {
+                    kind: IrSourceDispositionKind::Successor,
+                    input_binding: Some(replacement.input.clone()),
+                    output_binding: Some(replacement.output.clone()),
+                    data_fields: replacement
+                        .data_fields
+                        .iter()
+                        .map(|field| (field.clone(), "checked-successor-relation".to_string()))
+                        .collect(),
+                    lock_expression: Some(crate::fmt::format_expression(&replacement.lock_script)),
+                    span: replacement.span,
+                }],
+                crate::ast::NextDisposition::Pool(pool) => {
+                    let pool_id = format!("pool:{entry_name}:{}", pool.name);
+                    let accounting_obligation = pool
+                        .data_fields
+                        .iter()
+                        .filter_map(|field| match &field.treatment {
+                            crate::ast::NextPoolFieldTreatment::Conserve => {
+                                Some(format!("checked-u128-field-sum-equality:{}", field.field))
+                            }
+                            crate::ast::NextPoolFieldTreatment::Set(_) => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("+");
+                    let mut lowered = pool
+                        .inputs
+                        .iter()
+                        .map(|input| IrSourceDisposition {
+                            kind: IrSourceDispositionKind::PooledInput {
+                                pool_id: pool_id.clone(),
+                                accounting_obligation: accounting_obligation.clone(),
+                            },
+                            input_binding: Some(input.clone()),
+                            output_binding: None,
+                            data_fields: pool
+                                .data_fields
+                                .iter()
+                                .map(|field| {
+                                    let treatment = match &field.treatment {
+                                        crate::ast::NextPoolFieldTreatment::Conserve => {
+                                            format!("contributes-to:{}:conserve", pool_id)
+                                        }
+                                        crate::ast::NextPoolFieldTreatment::Set(_) => format!("available-to:{}:output-plan", pool_id),
+                                    };
+                                    (field.field.clone(), treatment)
+                                })
+                                .collect(),
+                            lock_expression: None,
+                            span: pool.span,
+                        })
+                        .collect::<Vec<_>>();
+                    lowered.extend(pool.outputs.iter().map(|output| {
+                        IrSourceDisposition {
+                            kind: IrSourceDispositionKind::PoolResult {
+                                pool_id: pool_id.clone(),
+                                accounting_obligation: accounting_obligation.clone(),
+                            },
+                            input_binding: None,
+                            output_binding: Some(output.clone()),
+                            data_fields: pool
+                                .data_fields
+                                .iter()
+                                .map(|field| {
+                                    let treatment = match &field.treatment {
+                                        crate::ast::NextPoolFieldTreatment::Conserve => {
+                                            format!("checked-by:{}:field-sum-equality", pool_id)
+                                        }
+                                        crate::ast::NextPoolFieldTreatment::Set(assignments) => assignments
+                                            .iter()
+                                            .find(|(candidate, _)| candidate == output)
+                                            .map(|(_, expression)| {
+                                                format!("set-from-expression:{}", crate::fmt::format_expression(expression))
+                                            })
+                                            .expect("validated pool output field assignment"),
+                                    };
+                                    (field.field.clone(), treatment)
+                                })
+                                .collect(),
+                            lock_expression: pool
+                                .output_locks
+                                .iter()
+                                .find(|(candidate, _)| candidate == output)
+                                .map(|(_, expression)| crate::fmt::format_expression(expression)),
+                            span: pool.span,
+                        }
+                    }));
+                    lowered
+                }
+                crate::ast::NextDisposition::Retire(retirement) => vec![IrSourceDisposition {
+                    kind: IrSourceDispositionKind::Retired { absence_policy: source_absence_policy(&retirement.absence_policy) },
+                    input_binding: Some(retirement.input.clone()),
+                    output_binding: None,
+                    data_fields: Vec::new(),
+                    lock_expression: None,
+                    span: retirement.span,
+                }],
+                crate::ast::NextDisposition::Fresh(fresh) => vec![IrSourceDisposition {
+                    kind: IrSourceDispositionKind::Fresh { identity_policy: source_identity_policy(&fresh.identity) },
+                    input_binding: None,
+                    output_binding: Some(fresh.output.clone()),
+                    data_fields: fresh
+                        .data_fields
+                        .iter()
+                        .map(|(field, value)| (field.clone(), crate::fmt::format_expression(value)))
+                        .collect(),
+                    lock_expression: Some(crate::fmt::format_expression(&fresh.lock_script)),
+                    span: fresh.span,
+                }],
+            })
+            .collect()
+    }
+
+    fn lower_audit_claims(audits: &[crate::ast::NextAudit]) -> Vec<IrAuditClaim> {
+        audits
+            .iter()
+            .map(|audit| IrAuditClaim {
+                name: audit.name.clone(),
+                evidence: match audit.evidence {
+                    crate::ast::NextAuditEvidence::ExternalPolicy => "external-policy".to_string(),
+                },
+                subject: crate::fmt::format_expression(&audit.subject),
+                span: audit.span,
+            })
+            .collect()
     }
 
     fn action_protocol_role_candidates(&self, action: &ActionDef) -> Vec<IrProtocolRoleCandidate> {
@@ -1943,7 +2160,12 @@ impl IrGenerator {
         let (params, body) = self.lower_signature_and_body(&lock.params, &[], &lock.body, Some(IrType::Bool), &HashSet::new());
         self.lowering_lock_entry = previous_lock_entry;
 
-        IrLock { name: lock.name.clone(), params, body }
+        IrLock {
+            name: lock.name.clone(),
+            params,
+            audit_claims: lock.next_surface.as_ref().map_or_else(Vec::new, |surface| Self::lower_audit_claims(&surface.audits)),
+            body,
+        }
     }
 
     fn convert_type(ty: &Type) -> IrType {
@@ -4637,7 +4859,11 @@ impl IrGenerator {
         blocks: &mut Vec<IrBlock>,
         vars: &mut HashMap<String, IrVar>,
     ) -> LoweredExpr {
-        let dest = self.new_var(format!("create_unique_{}", cu.ty), IrType::Named(cu.ty.clone()));
+        let dest = if let Some(target) = &cu.target {
+            vars.get(target).cloned().unwrap_or_else(|| self.new_var(target.clone(), IrType::Named(cu.ty.clone())))
+        } else {
+            self.new_var(format!("create_unique_{}", cu.ty), IrType::Named(cu.ty.clone()))
+        };
         let mut active = current;
         let mut lowered_fields = Vec::with_capacity(cu.fields.len());
         let mut field_vars = HashMap::new();

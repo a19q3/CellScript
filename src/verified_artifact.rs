@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) struct VerifiedArtifactDraft {
     pub machine_layout: MachineLayoutEvidence,
     pub source_spans: BTreeMap<String, Span>,
+    pub disposition_spans: BTreeMap<String, Span>,
     pub claim_spans: BTreeMap<String, Span>,
 }
 
@@ -31,7 +32,7 @@ impl VerifiedArtifactDraft {
                 _ => None,
             })
             .collect();
-        let claim_spans = ir
+        let mut claim_spans: BTreeMap<String, Span> = ir
             .items
             .iter()
             .filter_map(|item| match item {
@@ -47,7 +48,30 @@ impl VerifiedArtifactDraft {
                     .map(move |(ordinal, claim)| (format!("claim:{entry_id}:enforced:{ordinal:05}"), claim.span))
             })
             .collect();
-        Self { machine_layout, source_spans, claim_spans }
+        for item in &ir.items {
+            let (entry_id, audits) = match item {
+                crate::ir::IrItem::Action(entry) => (format!("action:{}", entry.name), entry.audit_claims.as_slice()),
+                crate::ir::IrItem::Lock(entry) => (format!("lock:{}", entry.name), entry.audit_claims.as_slice()),
+                crate::ir::IrItem::TypeDef(_) | crate::ir::IrItem::Invariant(_) | crate::ir::IrItem::PureFn(_) => continue,
+            };
+            for audit in audits {
+                claim_spans.insert(format!("claim:{entry_id}:audit:{}", audit.name), audit.span);
+            }
+        }
+        let disposition_spans = ir
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::ir::IrItem::Action(entry) => Some((format!("action:{}", entry.name), entry.source_dispositions.as_slice())),
+                _ => None,
+            })
+            .flat_map(|(entry_id, dispositions)| {
+                dispositions
+                    .iter()
+                    .map(move |disposition| (crate::ir::source_disposition_id(&entry_id, disposition), disposition.span))
+            })
+            .collect();
+        Self { machine_layout, source_spans, disposition_spans, claim_spans }
     }
 }
 
@@ -314,11 +338,11 @@ fn semantic_source_mappings(
         push(&role.semantic_node_id, &role.entry_id, None);
     }
     for disposition in &foundation.dispositions {
-        push(&disposition.semantic_node_id, &disposition.entry_id, None);
+        let disposition_span = draft.disposition_spans.get(&disposition.id).copied().filter(|span| span.end > span.start);
+        push(&disposition.semantic_node_id, &disposition.entry_id, disposition_span);
     }
     for claim in &foundation.claims {
-        let claim_span =
-            claim.execution.as_ref().and_then(|_| draft.claim_spans.get(&claim.id)).copied().filter(|span| span.end > span.start);
+        let claim_span = draft.claim_spans.get(&claim.id).copied().filter(|span| span.end > span.start);
         push(&claim.semantic_node_id, &claim.entry_id, claim_span);
     }
     for legacy in &foundation.legacy_nodes {

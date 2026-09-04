@@ -387,7 +387,7 @@ impl LspServer {
         if edition == crate::NEXT_EDITION {
             declarations.push((
                 "type_script",
-                "type_script ${1:Name} on type_group<${2:CellType}> {\n    entry ${3:verify}(\n        input ${4:before}: ${2:CellType} from group_input[0],\n        witness ${5:to}: Address from group_witness.input_type,\n        output ${6:after}: ${2:CellType} from group_output[0],\n    ) {\n        verify {\n            enforce ${4:before}.${7:amount} > 0\n        }\n\n        effects {\n            replace ${4:before} -> ${6:after} {\n                data {\n                    ${7:amount} = same\n                }\n                identity = same\n                type_script = same\n                lock_script = ${5:to}\n                capacity = same\n                cardinality = one_to_one\n            }\n        }\n    }\n}",
+                "type_script ${1:Name} on type_group<${2:CellType}> {\n    entry ${3:verify}(\n        input ${4:before}: ${2:CellType} from group_input[0],\n        witness ${5:to}: Address from group_witness.input_type,\n        output ${6:after}: ${2:CellType} from group_output[0],\n    ) {\n        verify {\n            enforce ${4:before}.${7:amount} > 0\n        }\n\n        effects {\n            replace ${4:before} -> ${6:after} {\n                data {\n                    ${7:amount} = same\n                }\n                identity = same\n                type_script = same\n                lock_script = exact_hash(${5:to})\n                capacity = same\n                cardinality = one_to_one\n            }\n        }\n    }\n}",
             ));
             declarations.push((
                 "lock_script",
@@ -1073,6 +1073,11 @@ impl LspServer {
                 ("enforce", "enforce ${1:condition}"),
                 ("effects", "effects {\n    $0\n}"),
                 ("replace", "replace ${1:input} -> ${2:output} {\n    $0\n}"),
+                ("pool", "pool ${1:name} {\n    inputs { ${2:input} }\n    outputs { ${3:output} }\n    data {\n        ${4:amount} = conserve\n    }\n    identity = pooled\n    type_script = same\n    lock_script { ${3:output} = exact_hash(${5:recipient}) }\n    capacity = builder_computed\n    cardinality = declared\n}"),
+                ("retire", "retire ${1:input} {\n    absence = ${2:field(identity)}\n    data = discarded\n    lock_script = none\n    type_script = absent\n    capacity = released\n    cardinality = one\n}"),
+                ("fresh", "fresh ${1:output} {\n    data {\n        ${2:field} = ${3:value}\n    }\n    identity = ${4:none}\n    type_script = declared\n    lock_script = exact_hash(${5:recipient})\n    capacity = builder_computed\n    cardinality = one\n}"),
+                ("audit", "audit ${1:name} {\n    expected_evidence = external_policy(${2:subject})\n}"),
+                ("exact_hash", "exact_hash(${1:address})"),
             ]);
         }
 
@@ -3459,6 +3464,10 @@ action update(amount: u64) -> u64 {
         assert!(completions.iter().any(|item| item.label == "type_script"));
         assert!(completions.iter().any(|item| item.label == "lock_script"));
         assert!(server.keyword_completions(&uri).iter().any(|item| item.label == "effects"));
+        assert!(server.keyword_completions(&uri).iter().any(|item| item.label == "pool"));
+        assert!(server.keyword_completions(&uri).iter().any(|item| item.label == "retire"));
+        assert!(server.keyword_completions(&uri).iter().any(|item| item.label == "fresh"));
+        assert!(server.keyword_completions(&uri).iter().any(|item| item.label == "audit"));
 
         let native = r#"module preview
 resource Token has store, replace, relock { owner: Address, amount: u64 }
@@ -3474,7 +3483,7 @@ type_script TokenTransfer on type_group<Token> {
                 data { owner = same; amount = same }
                 identity = same
                 type_script = same
-                lock_script = recipient
+                lock_script = exact_hash(recipient)
                 capacity = same
                 cardinality = one_to_one
             }

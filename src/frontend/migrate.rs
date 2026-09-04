@@ -1,6 +1,7 @@
 use super::parse;
 use crate::ast::{
-    ActionDef, Expr, Item, LockDef, Module, NextEntrySurface, NextLockSurface, NextReplacement, ParamSource, Stmt, Type, Visibility,
+    ActionDef, Expr, Item, LockDef, Module, NextDisposition, NextEntrySurface, NextLockSurface, NextReplacement, ParamSource, Stmt,
+    Type, Visibility,
 };
 use crate::edition::CellScriptEdition;
 use crate::error::{CompileError, Result, Span};
@@ -138,7 +139,7 @@ fn migrate_action(module: &Module, action: &ActionDef) -> Result<ActionDef> {
         cursor += 1;
     }
 
-    let mut replacements = Vec::new();
+    let mut dispositions = Vec::new();
     while cursor < action.body.len() {
         let Some(Stmt::Expr(Expr::StdlibCall(transfer))) = action.body.get(cursor) else {
             return migration_error(action.body[cursor].span(), "type-script migration expected an exact lifecycle transfer");
@@ -163,22 +164,27 @@ fn migrate_action(module: &Module, action: &ActionDef) -> Result<ActionDef> {
         {
             return migration_error(capacity.span, "each migrated transfer requires std::cell::preserve_capacity(output, input)");
         }
-        replacements.push(NextReplacement {
+        dispositions.push(NextDisposition::Replace(NextReplacement {
             input,
             output,
             data_fields: transfer.preserve_fields.clone(),
             lock_script: transfer.args[2].clone(),
             span: transfer.span,
-        });
+        }));
         cursor += 2;
     }
-    if replacements.is_empty() {
+    if dispositions.is_empty() {
         return migration_error(action.span, "type-script migration requires at least one exhaustive one-to-one transfer");
     }
 
     let mut migrated = action.clone();
-    migrated.next_surface =
-        Some(NextEntrySurface { container_name: format!("{}Script", pascal_case(&action.name)), trigger_type, verify, replacements });
+    migrated.next_surface = Some(NextEntrySurface {
+        container_name: format!("{}Script", pascal_case(&action.name)),
+        trigger_type,
+        verify,
+        audits: Vec::new(),
+        dispositions,
+    });
     Ok(migrated)
 }
 
@@ -223,7 +229,8 @@ fn migrate_lock(module: &Module, lock: &LockDef) -> Result<LockDef> {
         verify.push(require.condition.as_ref().clone());
     }
     let mut migrated = lock.clone();
-    migrated.next_surface = Some(NextLockSurface { container_name: format!("{}Lock", pascal_case(&lock.name)), verify });
+    migrated.next_surface =
+        Some(NextLockSurface { container_name: format!("{}Lock", pascal_case(&lock.name)), verify, audits: Vec::new() });
     Ok(migrated)
 }
 

@@ -1,7 +1,9 @@
 use super::*;
 use crate::ast::{
-    ActionDef, ActionOutput, EffectClass, Expr, Item, LockDef, NextEntrySurface, NextLockSurface, NextReplacement, Param, ParamSource,
-    RequireExpr, Stmt, Type, Visibility,
+    ActionDef, ActionOutput, BinaryExpr, BinaryOp, CastExpr, CreateExpr, CreateUniqueExpr, DestroyExpr, DestructionPolicy,
+    EffectClass, Expr, FieldAccessExpr, IdentityPolicy, Item, LockDef, NextAudit, NextAuditEvidence, NextDisposition,
+    NextEntrySurface, NextFreshOutput, NextLockSurface, NextPool, NextPoolField, NextPoolFieldTreatment, NextReplacement,
+    NextRetirement, Param, ParamSource, RequireExpr, Stmt, Type, Visibility,
 };
 use crate::error::Span;
 use crate::lexer::token::{Token, TokenKind};
@@ -271,14 +273,15 @@ impl<'a> Cursor<'a> {
         self.skip_newlines();
         let (verify, mut body) = self.parse_verify()?;
         self.skip_newlines();
-        let (replacements, effects) = self.parse_effects()?;
+        let audits = self.parse_audits()?;
+        let (dispositions, effects) = self.parse_effects(&outputs)?;
         body.extend(effects);
         self.skip_newlines();
         let entry_end = self.expect_kind(TokenKind::RBrace)?.span;
         self.skip_newlines();
         let container_end = self.expect_kind(TokenKind::RBrace)?.span;
 
-        validate_surface(module, &trigger_type, &params, &outputs, &replacements, start)?;
+        validate_surface(module, &trigger_type, &params, &outputs, &dispositions, start)?;
         Ok(ActionDef {
             name: entry_name,
             params,
@@ -289,7 +292,7 @@ impl<'a> Cursor<'a> {
             effect: EffectClass::Pure,
             effect_declared: false,
             scheduler_hint: None,
-            next_surface: Some(NextEntrySurface { container_name, trigger_type, verify, replacements }),
+            next_surface: Some(NextEntrySurface { container_name, trigger_type, verify, audits, dispositions }),
             doc_comment: None,
             span: Span::new(start.start, container_end.end, start.line, start.column).combine(&entry_end),
         })
@@ -311,6 +314,7 @@ impl<'a> Cursor<'a> {
         self.skip_newlines();
         let (verify, body) = self.parse_verify()?;
         self.skip_newlines();
+        let audits = self.parse_audits()?;
         let entry_end = self.expect_kind(TokenKind::RBrace)?.span;
         self.skip_newlines();
         let container_end = self.expect_kind(TokenKind::RBrace)?.span;
@@ -319,7 +323,7 @@ impl<'a> Cursor<'a> {
             params,
             return_type: Type::Bool,
             body,
-            next_surface: Some(NextLockSurface { container_name, verify }),
+            next_surface: Some(NextLockSurface { container_name, verify, audits }),
             span: Span::new(start.start, container_end.end, start.line, start.column).combine(&entry_end),
         })
     }
@@ -557,42 +561,109 @@ impl<'a> Cursor<'a> {
         Ok((verify, body))
     }
 
-    fn parse_effects(&mut self) -> Result<(Vec<NextReplacement>, Vec<Stmt>)> {
+    fn parse_audits(&mut self) -> Result<Vec<NextAudit>> {
+        let mut audits = Vec::new();
+        let mut names = BTreeSet::new();
+        while self.current().is_some_and(|token| token_is_word(token, "audit")) {
+            let start = self.expect_word("audit")?.span;
+            let name = self.parse_name("audit declaration name")?;
+            if !names.insert(name.clone()) {
+                return Err(CompileError::new(format!("duplicate audit declaration '{name}'"), start));
+            }
+            self.skip_newlines();
+            self.expect_kind(TokenKind::LBrace)?;
+            self.skip_newlines();
+            self.expect_word("expected_evidence")?;
+            self.expect_kind(TokenKind::Eq)?;
+            self.expect_word("external_policy")?;
+            let subject = self.parse_parenthesized_expression("external_policy")?;
+            self.consume_statement_separator();
+            let end = self.expect_kind(TokenKind::RBrace)?.span;
+            audits.push(NextAudit {
+                name,
+                evidence: NextAuditEvidence::ExternalPolicy,
+                subject,
+                span: Span::new(start.start, end.end, start.line, start.column),
+            });
+            self.consume_statement_separator();
+        }
+        Ok(audits)
+    }
+
+    fn parse_effects(&mut self, outputs: &[ActionOutput]) -> Result<(Vec<NextDisposition>, Vec<Stmt>)> {
         self.expect_word("effects")?;
         self.skip_newlines();
         self.expect_kind(TokenKind::LBrace)?;
         self.skip_newlines();
-        let mut replacements = Vec::new();
+        let mut dispositions = Vec::new();
         let mut body = Vec::new();
         while !self.at_kind(&TokenKind::RBrace) {
-            let replacement = self.parse_replacement()?;
-            let span = replacement.span;
-            body.push(Stmt::Expr(Expr::StdlibCall(crate::ast::StdlibCallExpr {
-                namespace: "lifecycle".to_string(),
-                name: "transfer".to_string(),
-                args: vec![
-                    Expr::Identifier(replacement.input.clone()),
-                    Expr::Identifier(replacement.output.clone()),
-                    replacement.lock_script.clone(),
-                ],
-                preserve_fields: replacement.data_fields.clone(),
-                span,
-            })));
-            body.push(Stmt::Expr(Expr::StdlibCall(crate::ast::StdlibCallExpr {
-                namespace: "cell".to_string(),
-                name: "preserve_capacity".to_string(),
-                args: vec![Expr::Identifier(replacement.output.clone()), Expr::Identifier(replacement.input.clone())],
-                preserve_fields: Vec::new(),
-                span,
-            })));
-            replacements.push(replacement);
+            if self.current().is_some_and(|token| token_is_word(token, "replace")) {
+                let replacement = self.parse_replacement()?;
+                let span = replacement.span;
+                body.push(Stmt::Expr(Expr::StdlibCall(crate::ast::StdlibCallExpr {
+                    namespace: "lifecycle".to_string(),
+                    name: "transfer".to_string(),
+                    args: vec![
+                        Expr::Identifier(replacement.input.clone()),
+                        Expr::Identifier(replacement.output.clone()),
+                        replacement.lock_script.clone(),
+                    ],
+                    preserve_fields: replacement.data_fields.clone(),
+                    span,
+                })));
+                body.push(Stmt::Expr(Expr::StdlibCall(crate::ast::StdlibCallExpr {
+                    namespace: "cell".to_string(),
+                    name: "preserve_capacity".to_string(),
+                    args: vec![Expr::Identifier(replacement.output.clone()), Expr::Identifier(replacement.input.clone())],
+                    preserve_fields: Vec::new(),
+                    span,
+                })));
+                dispositions.push(NextDisposition::Replace(replacement));
+            } else if self.current().is_some_and(|token| token_is_word(token, "pool")) {
+                let pool = self.parse_pool(outputs)?;
+                body.extend(lower_pool_body(&pool));
+                dispositions.push(NextDisposition::Pool(pool));
+            } else if self.current().is_some_and(|token| token_is_word(token, "retire")) {
+                let retirement = self.parse_retirement()?;
+                body.push(Stmt::Expr(Expr::Destroy(DestroyExpr {
+                    expr: Box::new(Expr::Identifier(retirement.input.clone())),
+                    policy: retirement.absence_policy.clone(),
+                    span: retirement.span,
+                })));
+                dispositions.push(NextDisposition::Retire(retirement));
+            } else if self.current().is_some_and(|token| token_is_word(token, "fresh")) {
+                let fresh = self.parse_fresh_output(outputs)?;
+                let expression = if fresh.identity == IdentityPolicy::None {
+                    Expr::Create(CreateExpr {
+                        target: Some(fresh.output.clone()),
+                        ty: fresh.ty.clone(),
+                        fields: fresh.data_fields.clone(),
+                        lock: Some(Box::new(fresh.lock_script.clone())),
+                        span: fresh.span,
+                    })
+                } else {
+                    Expr::CreateUnique(CreateUniqueExpr {
+                        target: Some(fresh.output.clone()),
+                        ty: fresh.ty.clone(),
+                        fields: fresh.data_fields.clone(),
+                        lock: Some(Box::new(fresh.lock_script.clone())),
+                        identity: fresh.identity.clone(),
+                        span: fresh.span,
+                    })
+                };
+                body.push(Stmt::Expr(expression));
+                dispositions.push(NextDisposition::Fresh(fresh));
+            } else {
+                return Err(CompileError::new("effects expects an explicit replace, pool, retire, or fresh disposition", self.span()));
+            }
             self.consume_statement_separator();
         }
-        if replacements.is_empty() {
+        if dispositions.is_empty() {
             return Err(CompileError::new("effects must contain at least one exhaustive disposition", self.span()));
         }
         self.expect_kind(TokenKind::RBrace)?;
-        Ok((replacements, body))
+        Ok((dispositions, body))
     }
 
     fn parse_replacement(&mut self) -> Result<NextReplacement> {
@@ -625,11 +696,8 @@ impl<'a> Cursor<'a> {
         self.parse_same_property("type_script")?;
         self.expect_word("lock_script")?;
         self.expect_kind(TokenKind::Eq)?;
-        let lock_tokens = self.take_statement_tokens()?;
-        if lock_tokens.is_empty() {
-            return Err(CompileError::new("lock_script requires an Address expression", self.span()));
-        }
-        let lock_script = parser::parse_expression_fragment(lock_tokens)?;
+        self.expect_word("exact_hash")?;
+        let lock_script = self.parse_parenthesized_expression("exact_hash")?;
         self.consume_statement_separator();
         self.parse_same_property("capacity")?;
         self.expect_word("cardinality")?;
@@ -646,10 +714,263 @@ impl<'a> Cursor<'a> {
         })
     }
 
+    fn parse_pool(&mut self, outputs: &[ActionOutput]) -> Result<NextPool> {
+        let start = self.expect_word("pool")?.span;
+        let name = self.parse_name("pool name")?;
+        self.skip_newlines();
+        self.expect_kind(TokenKind::LBrace)?;
+        self.skip_newlines();
+        self.expect_word("inputs")?;
+        let inputs = self.parse_name_block("pool input role")?;
+        self.expect_word("outputs")?;
+        let output_names = self.parse_name_block("pool output role")?;
+        let ty = output_names
+            .first()
+            .and_then(|name| outputs.iter().find(|candidate| candidate.name == *name))
+            .and_then(|candidate| match &candidate.ty {
+                Type::Named(name) => Some(name.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| CompileError::new("pool outputs must name at least one declared Cell output role", start))?;
+
+        self.expect_word("data")?;
+        self.skip_newlines();
+        self.expect_kind(TokenKind::LBrace)?;
+        self.skip_newlines();
+        let mut data_fields = Vec::new();
+        while !self.at_kind(&TokenKind::RBrace) {
+            let field = self.parse_name("pool data field")?;
+            let treatment = if self.at_kind(&TokenKind::Eq) {
+                self.advance();
+                self.expect_word("conserve")?;
+                self.consume_statement_separator();
+                NextPoolFieldTreatment::Conserve
+            } else {
+                self.skip_newlines();
+                self.expect_kind(TokenKind::LBrace)?;
+                self.skip_newlines();
+                let mut assignments = Vec::new();
+                while !self.at_kind(&TokenKind::RBrace) {
+                    let output = self.parse_name("pool output field assignment")?;
+                    self.expect_kind(TokenKind::Eq)?;
+                    let expression_tokens = self.take_statement_tokens()?;
+                    if expression_tokens.is_empty() {
+                        return Err(CompileError::new(
+                            format!("pool field '{field}' output '{output}' requires an expression"),
+                            self.span(),
+                        ));
+                    }
+                    assignments.push((output, parser::parse_expression_fragment(expression_tokens)?));
+                    self.consume_statement_separator();
+                }
+                self.expect_kind(TokenKind::RBrace)?;
+                self.consume_statement_separator();
+                NextPoolFieldTreatment::Set(assignments)
+            };
+            data_fields.push(NextPoolField { field, treatment });
+        }
+        self.expect_kind(TokenKind::RBrace)?;
+        self.consume_statement_separator();
+        self.parse_exact_property("identity", "pooled")?;
+        self.parse_exact_property("type_script", "same")?;
+        self.expect_word("lock_script")?;
+        self.skip_newlines();
+        self.expect_kind(TokenKind::LBrace)?;
+        self.skip_newlines();
+        let mut output_locks = Vec::new();
+        while !self.at_kind(&TokenKind::RBrace) {
+            let output = self.parse_name("pool output lock assignment")?;
+            self.expect_kind(TokenKind::Eq)?;
+            self.expect_word("exact_hash")?;
+            let expression = self.parse_parenthesized_expression("exact_hash")?;
+            output_locks.push((output, expression));
+            self.consume_statement_separator();
+        }
+        self.expect_kind(TokenKind::RBrace)?;
+        self.consume_statement_separator();
+        self.parse_exact_property("capacity", "builder_computed")?;
+        self.parse_exact_property("cardinality", "declared")?;
+        let end = self.expect_kind(TokenKind::RBrace)?.span;
+        Ok(NextPool {
+            name,
+            ty,
+            inputs,
+            outputs: output_names,
+            data_fields,
+            output_locks,
+            span: Span::new(start.start, end.end, start.line, start.column),
+        })
+    }
+
+    fn parse_name_block(&mut self, context: &str) -> Result<Vec<String>> {
+        self.skip_newlines();
+        self.expect_kind(TokenKind::LBrace)?;
+        self.skip_newlines();
+        let mut names = Vec::new();
+        while !self.at_kind(&TokenKind::RBrace) {
+            names.push(self.parse_name(context)?);
+            if self.at_kind(&TokenKind::Comma) {
+                self.advance();
+            }
+            self.consume_statement_separator();
+        }
+        self.expect_kind(TokenKind::RBrace)?;
+        self.consume_statement_separator();
+        if names.is_empty() {
+            return Err(CompileError::new(format!("{context} block must not be empty"), self.span()));
+        }
+        Ok(names)
+    }
+
+    fn parse_retirement(&mut self) -> Result<NextRetirement> {
+        let start = self.expect_word("retire")?.span;
+        let input = self.parse_name("retirement input role")?;
+        self.skip_newlines();
+        self.expect_kind(TokenKind::LBrace)?;
+        self.skip_newlines();
+        self.expect_word("absence")?;
+        self.expect_kind(TokenKind::Eq)?;
+        let absence_policy = self.parse_absence_policy()?;
+        self.consume_statement_separator();
+        self.parse_exact_property("data", "discarded")?;
+        self.parse_exact_property("lock_script", "none")?;
+        self.parse_exact_property("type_script", "absent")?;
+        self.parse_exact_property("capacity", "released")?;
+        self.parse_exact_property("cardinality", "one")?;
+        let end = self.expect_kind(TokenKind::RBrace)?.span;
+        Ok(NextRetirement { input, absence_policy, span: Span::new(start.start, end.end, start.line, start.column) })
+    }
+
+    fn parse_fresh_output(&mut self, outputs: &[ActionOutput]) -> Result<NextFreshOutput> {
+        let start = self.expect_word("fresh")?.span;
+        let output = self.parse_name("fresh output role")?;
+        let ty = outputs
+            .iter()
+            .find(|candidate| candidate.name == output)
+            .and_then(|candidate| match &candidate.ty {
+                Type::Named(name) => Some(name.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| CompileError::new(format!("fresh output '{output}' must name a declared Cell output role"), start))?;
+        self.skip_newlines();
+        self.expect_kind(TokenKind::LBrace)?;
+        self.skip_newlines();
+        self.expect_word("data")?;
+        self.skip_newlines();
+        self.expect_kind(TokenKind::LBrace)?;
+        self.skip_newlines();
+        let mut data_fields = Vec::new();
+        while !self.at_kind(&TokenKind::RBrace) {
+            let field = self.parse_name("fresh output data field")?;
+            self.expect_kind(TokenKind::Eq)?;
+            let expression_tokens = self.take_statement_tokens()?;
+            if expression_tokens.is_empty() {
+                return Err(CompileError::new(format!("fresh output field '{field}' requires an expression"), self.span()));
+            }
+            let expression = parser::parse_expression_fragment(expression_tokens)?;
+            data_fields.push((field, expression));
+            self.consume_statement_separator();
+        }
+        self.expect_kind(TokenKind::RBrace)?;
+        self.consume_statement_separator();
+        self.expect_word("identity")?;
+        self.expect_kind(TokenKind::Eq)?;
+        let identity = self.parse_identity_policy()?;
+        self.consume_statement_separator();
+        self.parse_exact_property("type_script", "declared")?;
+        self.expect_word("lock_script")?;
+        self.expect_kind(TokenKind::Eq)?;
+        self.expect_word("exact_hash")?;
+        let lock_script = self.parse_parenthesized_expression("exact_hash")?;
+        self.consume_statement_separator();
+        self.parse_exact_property("capacity", "builder_computed")?;
+        self.parse_exact_property("cardinality", "one")?;
+        let end = self.expect_kind(TokenKind::RBrace)?.span;
+        Ok(NextFreshOutput {
+            output,
+            ty,
+            data_fields,
+            identity,
+            lock_script,
+            span: Span::new(start.start, end.end, start.line, start.column),
+        })
+    }
+
+    fn parse_absence_policy(&mut self) -> Result<DestructionPolicy> {
+        let policy = self.parse_name("retirement absence policy")?;
+        match policy.as_str() {
+            "singleton_type" => Ok(DestructionPolicy::SingletonType),
+            "ckb_type_id" => Ok(DestructionPolicy::Unique { identity: "ckb_type_id".to_string() }),
+            "field" => {
+                self.expect_kind(TokenKind::LParen)?;
+                let field = self.parse_name("retirement identity field")?;
+                self.expect_kind(TokenKind::RParen)?;
+                Ok(DestructionPolicy::Instance { identity_field: field })
+            }
+            _ => Err(CompileError::new("retire absence policy must be singleton_type, ckb_type_id, or field(name)", self.span())),
+        }
+    }
+
+    fn parse_identity_policy(&mut self) -> Result<IdentityPolicy> {
+        let policy = self.parse_name("fresh output identity policy")?;
+        match policy.as_str() {
+            "none" => Ok(IdentityPolicy::None),
+            "ckb_type_id" => Ok(IdentityPolicy::CkbTypeId),
+            "script_args" => Ok(IdentityPolicy::ScriptArgs),
+            "singleton_type" => Ok(IdentityPolicy::SingletonType),
+            "field" => {
+                self.expect_kind(TokenKind::LParen)?;
+                let field = self.parse_name("fresh output identity field")?;
+                self.expect_kind(TokenKind::RParen)?;
+                Ok(IdentityPolicy::Field(field))
+            }
+            _ => Err(CompileError::new(
+                "fresh identity policy must be none, ckb_type_id, field(name), script_args, or singleton_type",
+                self.span(),
+            )),
+        }
+    }
+
+    fn parse_parenthesized_expression(&mut self, context: &str) -> Result<Expr> {
+        self.expect_kind(TokenKind::LParen)?;
+        let start = self.position;
+        let mut depth = 0usize;
+        while let Some(token) = self.current() {
+            match token.kind {
+                TokenKind::LParen => {
+                    depth = depth.saturating_add(1);
+                    self.advance();
+                }
+                TokenKind::RParen if depth == 0 => break,
+                TokenKind::RParen => {
+                    depth = depth.saturating_sub(1);
+                    self.advance();
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+        if start == self.position {
+            return Err(CompileError::new(format!("{context} requires an expression"), self.span()));
+        }
+        let expression = parser::parse_expression_fragment(&self.tokens[start..self.position])?;
+        self.expect_kind(TokenKind::RParen)?;
+        Ok(expression)
+    }
+
     fn parse_same_property(&mut self, property: &str) -> Result<()> {
         self.expect_word(property)?;
         self.expect_kind(TokenKind::Eq)?;
         self.expect_word("same")?;
+        self.consume_statement_separator();
+        Ok(())
+    }
+
+    fn parse_exact_property(&mut self, property: &str, value: &str) -> Result<()> {
+        self.expect_word(property)?;
+        self.expect_kind(TokenKind::Eq)?;
+        self.expect_word(value)?;
         self.consume_statement_separator();
         Ok(())
     }
@@ -680,12 +1001,74 @@ impl<'a> Cursor<'a> {
     }
 }
 
+fn lower_pool_body(pool: &NextPool) -> Vec<Stmt> {
+    let mut body = Vec::new();
+    for field in &pool.data_fields {
+        if matches!(field.treatment, NextPoolFieldTreatment::Conserve) {
+            let left = sum_pool_field(&pool.inputs, &field.field, pool.span);
+            let right = sum_pool_field(&pool.outputs, &field.field, pool.span);
+            body.push(Stmt::Expr(Expr::Require(RequireExpr {
+                condition: Box::new(Expr::Binary(BinaryExpr {
+                    op: BinaryOp::Eq,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                    span: pool.span,
+                })),
+                message: None,
+                span: pool.span,
+            })));
+        }
+    }
+    for output in &pool.outputs {
+        let fields = pool
+            .data_fields
+            .iter()
+            .map(|field| {
+                let value = match &field.treatment {
+                    NextPoolFieldTreatment::Conserve => pool_field(output, &field.field, pool.span),
+                    NextPoolFieldTreatment::Set(assignments) => assignments
+                        .iter()
+                        .find(|(candidate, _)| candidate == output)
+                        .map(|(_, expression)| expression.clone())
+                        .expect("validated pool field output assignment"),
+                };
+                (field.field.clone(), value)
+            })
+            .collect();
+        let lock =
+            pool.output_locks.iter().find(|(candidate, _)| candidate == output).map(|(_, expression)| Box::new(expression.clone()));
+        body.push(Stmt::Expr(Expr::Create(CreateExpr {
+            target: Some(output.clone()),
+            ty: pool.ty.clone(),
+            fields,
+            lock,
+            span: pool.span,
+        })));
+    }
+    body.extend(pool.inputs.iter().map(|input| {
+        Stmt::Expr(Expr::Consume(crate::ast::ConsumeExpr { expr: Box::new(Expr::Identifier(input.clone())), span: pool.span }))
+    }));
+    body
+}
+
+fn sum_pool_field(bindings: &[String], field: &str, span: Span) -> Expr {
+    bindings
+        .iter()
+        .map(|binding| Expr::Cast(CastExpr { expr: Box::new(pool_field(binding, field, span)), ty: Type::U128, span }))
+        .reduce(|left, right| Expr::Binary(BinaryExpr { op: BinaryOp::Add, left: Box::new(left), right: Box::new(right), span }))
+        .expect("validated non-empty pool role set")
+}
+
+fn pool_field(binding: &str, field: &str, span: Span) -> Expr {
+    Expr::FieldAccess(FieldAccessExpr { expr: Box::new(Expr::Identifier(binding.to_string())), field: field.to_string(), span })
+}
+
 fn validate_surface(
     module: &ast::Module,
     trigger_type: &str,
     params: &[Param],
     outputs: &[ActionOutput],
-    replacements: &[NextReplacement],
+    dispositions: &[NextDisposition],
     span: Span,
 ) -> Result<()> {
     let fields = module.items.iter().find_map(|item| match item {
@@ -720,37 +1103,144 @@ fn validate_surface(
         .filter(|output| output.ty == Type::Named(trigger_type.to_string()))
         .map(|output| output.name.as_str())
         .collect::<BTreeSet<_>>();
-    if inputs.is_empty() || output_names.is_empty() {
+    if inputs.is_empty() && output_names.is_empty() {
         return Err(CompileError::new(
-            format!("type_group<{trigger_type}> entry requires explicit input and output roles of type {trigger_type}"),
+            format!("type_group<{trigger_type}> entry requires at least one explicit input or output role of type {trigger_type}"),
             span,
         ));
     }
     let mut disposed_inputs = BTreeSet::new();
     let mut produced_outputs = BTreeSet::new();
-    for replacement in replacements {
-        if !inputs.contains(replacement.input.as_str()) || !output_names.contains(replacement.output.as_str()) {
-            return Err(CompileError::new(
-                format!(
-                    "replace {} -> {} must bind declared type_group<{trigger_type}> input/output roles",
-                    replacement.input, replacement.output
-                ),
-                replacement.span,
-            ));
-        }
-        if !disposed_inputs.insert(replacement.input.as_str()) || !produced_outputs.insert(replacement.output.as_str()) {
-            return Err(CompileError::new("each input and output role may appear in exactly one disposition", replacement.span));
-        }
-        if replacement.data_fields != declared_fields {
-            return Err(CompileError::new(
-                format!("replace data must exhaustively list fields in schema order: {}", declared_fields.join(", ")),
-                replacement.span,
-            ));
+    let mut produced_output_order = Vec::new();
+    let mut pool_names = BTreeSet::new();
+    for disposition in dispositions {
+        match disposition {
+            NextDisposition::Replace(replacement) => {
+                if !inputs.contains(replacement.input.as_str()) || !output_names.contains(replacement.output.as_str()) {
+                    return Err(CompileError::new(
+                        format!(
+                            "replace {} -> {} must bind declared type_group<{trigger_type}> input/output roles",
+                            replacement.input, replacement.output
+                        ),
+                        replacement.span,
+                    ));
+                }
+                if !disposed_inputs.insert(replacement.input.as_str()) || !produced_outputs.insert(replacement.output.as_str()) {
+                    return Err(CompileError::new(
+                        "each input and output role may appear in exactly one disposition",
+                        replacement.span,
+                    ));
+                }
+                produced_output_order.push(replacement.output.as_str());
+                if replacement.data_fields != declared_fields {
+                    return Err(CompileError::new(
+                        format!("replace data must exhaustively list fields in schema order: {}", declared_fields.join(", ")),
+                        replacement.span,
+                    ));
+                }
+            }
+            NextDisposition::Pool(pool) => {
+                if !pool_names.insert(pool.name.as_str()) {
+                    return Err(CompileError::new(format!("duplicate pool disposition '{}'", pool.name), pool.span));
+                }
+                if pool.ty != trigger_type
+                    || pool.inputs.iter().any(|input| !inputs.contains(input.as_str()))
+                    || pool.outputs.iter().any(|output| !output_names.contains(output.as_str()))
+                {
+                    return Err(CompileError::new(
+                        format!("pool {} must bind only declared type_group<{trigger_type}> input/output roles", pool.name),
+                        pool.span,
+                    ));
+                }
+                if pool.inputs.iter().any(|input| !disposed_inputs.insert(input.as_str()))
+                    || pool.outputs.iter().any(|output| !produced_outputs.insert(output.as_str()))
+                {
+                    return Err(CompileError::new("each input and output role may appear in exactly one disposition", pool.span));
+                }
+                let pool_fields = pool.data_fields.iter().map(|field| field.field.clone()).collect::<Vec<_>>();
+                if pool_fields != declared_fields {
+                    return Err(CompileError::new(
+                        format!("pool data must exhaustively list fields in schema order: {}", declared_fields.join(", ")),
+                        pool.span,
+                    ));
+                }
+                produced_output_order.extend(pool.outputs.iter().map(String::as_str));
+                if !pool.data_fields.iter().any(|field| matches!(field.treatment, NextPoolFieldTreatment::Conserve)) {
+                    return Err(CompileError::new(
+                        "pool must declare at least one numeric field as '= conserve' so pooled accounting is checked on chain",
+                        pool.span,
+                    ));
+                }
+                for field in &pool.data_fields {
+                    if let NextPoolFieldTreatment::Set(assignments) = &field.treatment {
+                        let assigned = assignments.iter().map(|(output, _)| output.as_str()).collect::<Vec<_>>();
+                        let expected = pool.outputs.iter().map(String::as_str).collect::<Vec<_>>();
+                        if assigned != expected {
+                            return Err(CompileError::new(
+                                format!(
+                                    "pool field '{}' must assign every pool output exactly once in declared order: {}",
+                                    field.field,
+                                    pool.outputs.join(", ")
+                                ),
+                                pool.span,
+                            ));
+                        }
+                    }
+                }
+                let locked = pool.output_locks.iter().map(|(output, _)| output.as_str()).collect::<Vec<_>>();
+                let expected = pool.outputs.iter().map(String::as_str).collect::<Vec<_>>();
+                if locked != expected {
+                    return Err(CompileError::new(
+                        format!(
+                            "pool lock_script must assign every pool output exactly once in declared order: {}",
+                            pool.outputs.join(", ")
+                        ),
+                        pool.span,
+                    ));
+                }
+            }
+            NextDisposition::Retire(retirement) => {
+                if !inputs.contains(retirement.input.as_str()) {
+                    return Err(CompileError::new(
+                        format!("retire {} must bind a declared type_group<{trigger_type}> input role", retirement.input),
+                        retirement.span,
+                    ));
+                }
+                if !disposed_inputs.insert(retirement.input.as_str()) {
+                    return Err(CompileError::new("each input role may appear in exactly one disposition", retirement.span));
+                }
+            }
+            NextDisposition::Fresh(fresh) => {
+                if !output_names.contains(fresh.output.as_str()) || fresh.ty != trigger_type {
+                    return Err(CompileError::new(
+                        format!("fresh {} must bind a declared type_group<{trigger_type}> output role", fresh.output),
+                        fresh.span,
+                    ));
+                }
+                if !produced_outputs.insert(fresh.output.as_str()) {
+                    return Err(CompileError::new("each output role may appear in exactly one disposition", fresh.span));
+                }
+                produced_output_order.push(fresh.output.as_str());
+                let fresh_fields = fresh.data_fields.iter().map(|(field, _)| field.clone()).collect::<Vec<_>>();
+                if fresh_fields != declared_fields {
+                    return Err(CompileError::new(
+                        format!("fresh data must exhaustively list fields in schema order: {}", declared_fields.join(", ")),
+                        fresh.span,
+                    ));
+                }
+            }
         }
     }
     if disposed_inputs != inputs || produced_outputs != output_names {
         return Err(CompileError::new(
             "effects must exhaustively dispose every type-group input and account for every type-group output",
+            span,
+        ));
+    }
+    let declared_output_order = outputs.iter().map(|output| output.name.as_str()).collect::<Vec<_>>();
+    if produced_output_order != declared_output_order {
+        return Err(CompileError::new(
+            format!("effects must account for outputs in declared group_output order: {}", declared_output_order.join(", ")),
             span,
         ));
     }

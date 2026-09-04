@@ -45,7 +45,7 @@ impl CellScriptEdition {
     pub const fn source_semantics(self) -> &'static str {
         match self {
             Self::Edition2026 => "cellscript-source-semantics-2026",
-            Self::Edition2027 => "cellscript-source-semantics-2027-preview3",
+            Self::Edition2027 => "cellscript-source-semantics-2027-preview4",
         }
     }
 }
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn edition_owns_source_semantics_only() {
         assert_eq!(CURRENT_EDITION.source_semantics(), "cellscript-source-semantics-2026");
-        assert_eq!(NEXT_EDITION.source_semantics(), "cellscript-source-semantics-2027-preview3");
+        assert_eq!(NEXT_EDITION.source_semantics(), "cellscript-source-semantics-2027-preview4");
     }
 
     #[test]

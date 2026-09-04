@@ -42,11 +42,13 @@ containing entry as a fail-safe diagnostic fallback. Other records may use the
 containing entry range. All records are hash-bound into compile metadata and
 validated immediately after compilation.
 
-The Edition 2027 `preview3` native Type Script surface may refine a legacy
+The Edition 2027 `preview4` native Type Script surface may refine a legacy
 `type-group` trigger to an exact non-empty `type-group<T>` value. Its native
 Lock Script surface preserves the exact `lock-group` trigger while making role
 provenance and authorization-only scope explicit. The independent checker
-validates both spellings and their recomputed entry-node hashes. This is an
+validates both spellings, their recomputed entry-node hashes, complete role
+coverage, matched pooled input/output obligations, exact retirement/fresh
+records, and the non-executable classification of external-policy audits. This is an
 entry-contract distinction: equivalent native and legacy Type Script lowerings
 may share `CoreSemanticId` while intentionally having different
 `EntryContractId` values; the bounded Lock forms share both identities.
