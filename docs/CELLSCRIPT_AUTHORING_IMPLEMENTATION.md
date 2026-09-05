@@ -455,6 +455,37 @@ qualified diagnostic change, not identical exit-code evidence or a new
 production-equivalence claim. The earlier source-pin and
 submodule-publication limitations continue to apply.
 
+### Acceptance recipe rebind and stateful diagnosis
+
+The audited transaction recipes (`transactions-v0.23.json`) still recorded the
+pre-0.26b artifact identities, so the CKB acceptance live replay aborted at
+its first `artifact_data_hash` comparison. Following the established refresh
+precedent, all sixty action/lock case hashes, the recipe dependency table and
+every embedded code-hash reference were rebound to the freshly compiled
+artifact identities, and the checker's three pinned timelock identities were
+updated to match. After the rebind, the live devnet replay gets
+substantially further: every `token.cell` action case (mint, transfer, merge,
+burn) replays its initial cells, commits its valid transaction, and rejects
+its malformed variant against the real deployed policy bytes.
+
+The replay then stops at `nft.cell:create_collection`. Its valid transaction
+fails dry-run at `Inputs[0].Lock` with runtime error 3
+(`CellLoadFailed`) from the freshly compiled `create_collection` artifact,
+which the recipe deliberately installs as the initial cell's lock. The
+artifact identity changed from `a34564aa…` (the last audited full-pass
+compile) to `13754faa…` under the 0.26b tranches, so the recipe's fixed
+witness and output layout encode the pre-0.26b entry contract while the
+rebound dep deploys current bytes. The harness's rebind and devnet logic are
+unchanged since that last full pass, and the surrounding transaction shape is
+preserved, so this is a genuine compiler-versus-recipe semantic gap on the
+0.26b line, exposed now because the earlier stages no longer stop it. No
+recipe regeneration tooling exists; the fixture has been hand-maintained
+since the tooling migration, and hand-forging replacement transactions would
+fabricate audited evidence. Regenerating the recipe set against the current
+entry contract with a real devnet extraction is therefore tracked work, and
+the backend gate's clean-source stateful stage remains blocked on it with
+this concrete diagnosis.
+
 ## Verification workflow
 
 The policy tranche passed the complete `dev` gate on 2026-09-05. Its strict

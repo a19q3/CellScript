@@ -678,9 +678,9 @@ mod tests {
 
         let action_cases = fixture["action_cases"].as_array().unwrap();
         for (name, expected_hash) in [
-            ("timelock.cell:create_absolute_lock", "0xc1e7dce634480aceedc7bd5dfbb7df1e5951cd945fb0d10cb8ea70968af0443b"),
-            ("timelock.cell:extend_lock", "0x078a625eb933f34dee98290d89c9cd6b57ab95d8bb1a89f254f422649a972954"),
-            ("timelock.cell:batch_create_locks", "0x2eb610fca034a18303d192bcbf52ba0f68e6ee8b1cafa90b200d5edad55257ef"),
+            ("timelock.cell:create_absolute_lock", "0x5126987dcb912aed4726b9f2cd52fd68a5dc62f3de9c39e56cdf426b3fad3e42"),
+            ("timelock.cell:extend_lock", "0x076565dddc1ab7dab3ee341c53004c7dc27e6ba9adbd5fe41e29d0df5120fa41"),
+            ("timelock.cell:batch_create_locks", "0x3883fbf20d8d74b97fb596c279df4730e38ab4996bf53fb00565e3f0020decc5"),
         ] {
             let case = action_cases.iter().find(|case| case["name"] == name).unwrap();
             assert_eq!(case["artifact_data_hash"], expected_hash, "stale audited artifact identity for {name}");

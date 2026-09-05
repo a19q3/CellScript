@@ -2,6 +2,17 @@
 
 ## 0.26b - Experimental semantic-foundation branch
 
+- Rebind the audited CKB acceptance recipes to the current artifact
+  identities (sixty case hashes, the dependency table, embedded code-hash
+  references and the checker's pinned timelock identities) following the
+  established refresh precedent. The live devnet replay now executes every
+  token.cell action case end to end. It then stops at
+  nft.cell:create_collection, whose recipe transaction fails with
+  `CellLoadFailed` against the freshly compiled artifact: the 0.26b tranches
+  changed its bytes while the pre-extracted recipe still encodes the old
+  entry contract. Recipe regeneration against the current contract is
+  tracked work; the clean-source stateful gate stage remains blocked on it.
+
 - Fail closed when a runtime `source::*` view index reaches the 32-bit index
   space. The generated SourceView helper previously added an unchecked index
   to the tagged view word, so an index at or above 2^32 carried into the view
