@@ -6,7 +6,7 @@ backend. Together they make more compiler claims independently inspectable
 without calling local execution chain evidence.
 
 The experimental `0.26b` line extends the same four-file bundle with
-`cellscript-typed-semantics-v4` inside lowering record v5 and semantic source
+`cellscript-typed-semantics-v7` inside lowering record v6 and semantic source
 mapping in source-map v2. The checker now
 independently validates the IR-shaped typed record, recomputes its layout,
 identity, operation, dataflow, ownership, and borrow invariants, and checks its
@@ -14,7 +14,7 @@ connection to entry ABI and final machine blocks; failures use stable `V2419`
 and `V2420` codes. It does not reconstruct the record from source and still keeps
 `semantic_equivalence_claimed = false`.
 
-Typed semantics v4 embeds `cellscript-semantic-foundation-v1`. The independent
+Typed semantics v6 embeds `cellscript-semantic-foundation-v3`. The independent
 checker validates its hash-consed provenance DAG, artifact entry-selection
 contract, transaction roles, exhaustive Cell dispositions, claim enforcement
 classes, executable-claim links to the condition provenance node, ordered typed
@@ -22,6 +22,11 @@ success/failure branch, and fail-closed runtime error, plus legacy migration
 nodes and layered semantic IDs. `SourceDigest` and semantic-node-to-span
 mappings remain distinct from `CoreSemanticId`, so formatting changes do not
 silently change core meaning while a changed enforced condition does.
+
+The explicit Type-policy dispatch record also binds variant tags, resource
+layout, fixed group roles, ordered common checks and the outer witness ABI.
+Independent projection checks and direct VM execution are separate evidence;
+the current checker does not prove the machine selector-to-adapter dataflow.
 
 ## Build the Four-File Bundle
 

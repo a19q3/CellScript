@@ -310,7 +310,7 @@ impl CodeGenerator {
     }
 
     pub(super) fn emit_type_hash(&mut self, dest: &IrVar, operand: &IrOperand) -> Result<()> {
-        if let Some(output_index) = self.output_type_hash_sources.get(&dest.id).copied() {
+        if let Some((source, output_index)) = self.output_type_hash_sources.get(&dest.id).copied() {
             let Some(size_offset) = self.cell_buffer_size_offsets.get(&dest.id).copied() else {
                 return Ok(());
             };
@@ -321,7 +321,7 @@ impl CodeGenerator {
             self.emit_operand_comment("type_hash source", operand);
             self.emit_load_cell_by_field_syscall_to_offsets(
                 "output_type_hash",
-                CKB_SOURCE_OUTPUT,
+                source,
                 output_index,
                 CKB_CELL_FIELD_TYPE_HASH,
                 size_offset,
@@ -361,18 +361,7 @@ impl CodeGenerator {
     /// Runtime type_hash: try to load the type hash from a cell identified by the operand's
     /// association with a consumed input, created output, or read_ref cell dep.
     fn emit_runtime_type_hash(&mut self, dest: &IrVar, operand: &IrOperand) -> bool {
-        let IrOperand::Var(var) = operand else {
-            return false;
-        };
-
-        // Try to find which cell this var is associated with
-        let (source, index) = if let Some(input_index) = self.consume_indices.get(&var.id).copied() {
-            (CKB_SOURCE_INPUT, input_index)
-        } else if let Some(output_index) = self.operation_output_indices.get(&var.id).copied() {
-            (CKB_SOURCE_OUTPUT, output_index)
-        } else if let Some(dep_index) = self.read_ref_indices.get(&var.id).copied() {
-            (CKB_SOURCE_CELL_DEP, dep_index)
-        } else {
+        let Some((source, index)) = self.operand_cell_location(operand) else {
             return false;
         };
 

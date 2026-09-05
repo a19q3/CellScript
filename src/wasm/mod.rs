@@ -366,6 +366,7 @@ mod tests {
 
     fn empty_body() -> IrBody {
         IrBody {
+            cell_bindings: Vec::new(),
             consume_set: Vec::new(),
             read_refs: Vec::new(),
             create_set: Vec::new(),
@@ -383,6 +384,7 @@ mod tests {
         let ir = IrModule {
             name: "types_only".to_string(),
             items: Vec::new(),
+            entry_selection: crate::ir::IrEntrySelection::Legacy,
             external_type_defs: Vec::new(),
             external_callable_abis: Vec::new(),
             enum_fixed_sizes: Default::default(),
@@ -397,6 +399,7 @@ mod tests {
     fn wasm_compiler_rejects_pure_action_modules() {
         let ir = IrModule {
             name: "demo".to_string(),
+            entry_selection: crate::ir::IrEntrySelection::Legacy,
             external_type_defs: Vec::new(),
             external_callable_abis: Vec::new(),
             enum_fixed_sizes: Default::default(),

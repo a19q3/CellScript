@@ -73,3 +73,18 @@ and signature. The application profile must separately define and test:
 The compiler does not infer these rules from action names or field names. A
 successful BIP340 call is not, by itself, proof that the correct transaction
 message or authority was verified.
+
+`env::sighash_all(source)` does not implement canonical CKB transaction
+sighash construction. Its source spelling remains available for inspection,
+but metadata classifies it as `ckb-sighash-all-deferred` and
+`DenyFailClosed` rejects artifact generation. Audit artifacts compiled with
+`AllowFailClosed` terminate the VM with error `66 sighash-all-unsupported`
+whenever the call executes, including inside a helper or with an unused result.
+They cannot pass a placeholder digest to this verifier.
+
+The explicit BIP340 API above still verifies independently supplied messages.
+Standard CKB Lock signing remains a separate supported route; the real
+multisig-v2 fixture in `tests/entry_witness_abi.rs` places CellScript's
+`WitnessArgs.input_type` payload before SDK signing and checks post-signing
+witness tampering. Neither route supplies an implicit transaction digest to a
+custom CellScript Lock.

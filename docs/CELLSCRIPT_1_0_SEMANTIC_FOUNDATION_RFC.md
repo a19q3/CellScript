@@ -5,6 +5,14 @@
 **Draft design agenda. Not accepted grammar, implementation scope, or release
 commitment.**
 
+**Authoring decision, 2026-09-05:** adopt the
+[CellScript authoring target](CELLSCRIPT_AUTHORING_TARGET.md): retain the
+Edition 2026 vocabulary and verification model, concentrate successor rules,
+and support multiple actions under one persistent deployed policy. Its A1-A6
+contracts govern the next authoring iteration. Preview4 remains the implemented
+experimental reference; accepting this direction does not freeze its text or
+mark the implementation and release gates below as passed.
+
 **Implementation branch:** `0.26b`, based on `origin/nightly-0.26` at
 `415554bb9ed65001cec03468e92e407306c662c8`.
 
@@ -27,8 +35,9 @@ contract:
 
 > **Strategic direction: 9/10. Current readiness as frozen grammar: 6.5-7/10.**
 
-The central correction is methodological: CellScript must define the CKB
-semantic algebra first and select surface keywords last.
+The next iteration must define the semantics needed by each authoring change
+and test its readability on representative contracts. Existing-meaning
+shorthand can be evaluated without freezing every future semantic subsystem.
 
 ## `0.26b` Implementation Snapshot
 
@@ -37,8 +46,8 @@ agenda; it does not mark any acceptance checkbox below as project-approved.
 
 Implemented:
 
-- `cellscript-typed-semantics-v4` embeds
-  `cellscript-semantic-foundation-v1` and a bounded,
+- `cellscript-typed-semantics-v7` embeds
+  `cellscript-semantic-foundation-v3` and a bounded,
   hash-consed `cellscript-value-provenance-dag-v1`;
 - canonical transaction roles, complete Cell-envelope disposition records,
   enforcement-classified claims, legacy ambiguity nodes, and distinct core,
@@ -51,6 +60,11 @@ Implemented:
 - a parser/codegen-independent checker for those records, including both
   `SingleEntry` and `ExplicitVersionedDispatch`, executable-claim linkage, and
   negative mutation tests;
+- a bounded persistent Type-group `PolicyWitnessV1` entry contract with explicit
+  tags, full Script-hash keyed witness records, fixed role counts and ordered
+  common checks. Compiler/VM and typed-projection checks exist; independent
+  machine dispatch dataflow and complete authoring/product closure remain
+  requirements, not claims supplied by this record;
 - source-map v2 semantic-node-to-span mappings outside semantic hashes;
 - exact originating condition or generated-sugar source-map ranges for
   executable claim nodes, while broader semantic records retain entry-level
@@ -61,9 +75,10 @@ Implemented:
   and byte-identical RISC-V ELF differential checks;
 - a separate Edition 2027 preview route selected by `Cell.toml`, while Edition
   2026 remains frozen and default;
-- a bounded native `type_script` / `entry` / `verify` / `effects` /
-  exhaustive-one-to-one-`replace` slice, including exact `type-group<T>` entry
-  triggers, canonical formatting, and differential lowering evidence; see the
+- a bounded native `type_script` / `entry` / `verify` / `effects` slice with
+  exhaustive `replace`, fixed-role `pool`, `retire`, `fresh`, and metadata-only
+  external-policy audits, including exact `type-group<T>` entry triggers,
+  canonical formatting, and differential lowering evidence; see the
   [implemented preview grammar](CELLSCRIPT_2027_PREVIEW_GRAMMAR.md);
 - formatter, LSP diagnostic/completion, manifest, example, and cross-edition
   semantic-identity coverage, plus WASM explicit-edition compilation and
@@ -85,8 +100,10 @@ Intentionally deferred:
 
 The post-0.26 redesign should:
 
-1. freeze the 0.26 source, runtime, artifact, and evidence contracts;
-2. introduce a new source edition and a second frontend;
+1. preserve and pin the existing source, runtime, artifact, and evidence
+   contracts required by each change;
+2. retain `resource`, `action`, `lock`, and `require` in a separately routed
+   authoring frontend, using a new edition for intentional source-meaning changes;
 3. lower both frontends into one versioned canonical typed semantic core;
 4. make value provenance, transaction-role binding, Cell disposition,
    enforcement location, and artifact entry selection explicit;
@@ -94,7 +111,9 @@ The post-0.26 redesign should:
    ABI, metadata, target profile, and compiler release;
 6. keep transaction construction and multi-artifact choreography outside the
    consensus-facing core language; and
-7. derive layered semantic, entry-contract, artifact-contract, and bundle
+7. support declared multi-action dispatch for one persistent deployed policy;
+   scoped action ELFs remain useful independent compilation products; and
+8. derive layered semantic, entry-contract, artifact-contract, and bundle
    identities from canonical records, never from a rendered expansion or
    formatted source text.
 
@@ -108,7 +127,7 @@ Four rules should govern every new-edition feature:
 
 > **Every value has provenance.**
 >
-> **Every Cell role has an exhaustive disposition.**
+> **Every Cell role has explicit accounting and verification responsibility.**
 >
 > **Every claim states whether and where it is enforced.**
 >
@@ -117,10 +136,15 @@ Four rules should govern every new-edition feature:
 These rules are stronger and more durable than any particular spelling such as
 `verify`, `effects`, `replace`, or `retire`.
 
+Unique lifecycle accounting and independent identity, value, capacity, and
+authorization obligations must compose. Complete responsibility records may
+state that a dimension is outside this verifier's scope; claiming another
+mechanism guarantees it requires authenticated identity and applicability.
+
 ## Goals
 
-- Make the source an auditable description of CKB transaction facts rather
-  than an imperative simulation of state mutation.
+- Improve the readability of the existing candidate-transaction verification
+  model, with concise roles and concentrated successor relations.
 - Preserve Script Group, WitnessArgs, CellDep, HeaderDep, Lock Script, Type
   Script, capacity, and output-correspondence boundaries.
 - Prevent schema evolution from silently changing preservation behavior.
@@ -129,8 +153,8 @@ These rules are stronger and more durable than any particular spelling such as
 - Make source migration reviewable through canonical typed expansion and
   differential lowering.
 - Retain the existing verified-artifact and independent-checker architecture.
-- Absorb Argent's useful role, containment, and choreography ideas only where
-  they map honestly to the CKB Cell Model.
+- Absorb Argent's useful concentration of role and successor relations while
+  keeping actor routing and source choreography outside this authoring scope.
 
 ## Non-Goals
 
@@ -195,6 +219,11 @@ This must be a genuine two-frontend architecture. A growing collection of
 edition conditionals inside one parser and one desugaring path would make the
 old contract difficult to freeze and the new contract difficult to audit.
 
+The authoring frontend elaborates directly into structured semantic records.
+It must not depend permanently on generating verbose preview4 source and
+parsing it again. `cellc expand` renders the record for review. Equal semantic
+IDs alone do not establish correct elaboration or machine-code generation.
+
 The common core does not require every legacy construct to become valid
 next-edition syntax. When 0.26 contains a construct whose meaning cannot be
 translated safely, the core may retain an explicitly tagged legacy node. The
@@ -254,8 +283,10 @@ clauses on every scalar, but it must not admit a bare symbolic `arg` with no
 recoverable CKB source.
 
 An `Address` remains identity-like data. It is not a Lock Script, signer, or
-authorization proof. Assigning a lock must construct or preserve a complete
-Lock Script value.
+authorization proof. Lock relations must preserve, construct, or verify the
+exact identity of a complete Lock Script under a defined type contract. An
+`Address` value alone implies neither address conversion nor authorization;
+see authoring contract A2.
 
 ### Artifact Entry Contract
 
@@ -277,12 +308,13 @@ The canonical core must support both `SingleEntry` and
 only `SingleEntry`; that is a Phase 2 scope restriction, not a permanent
 language principle.
 
-The syntax must not imply that CKB natively invokes an action name. If a future
-artifact contains several actions, its selector source, unknown-tag behavior,
-exhaustiveness, ambiguity rules, and witness ABI must be specified and checked.
-Multi-entry source syntax remains gated until its dispatch contract is
-accepted. No implementation may infer dispatch from action names or
-transaction shape.
+The syntax must not imply that CKB natively invokes an action name. The adopted
+authoring target requires an explicit artifact action set and versioned dispatch
+for several operations under one persistent deployed Script policy. Independent
+action ELFs alone do not provide that lifecycle. Selector source, unknown-tag
+behavior, exhaustiveness, ambiguity rules, and witness ABI must be specified
+and checked before the compiler admits this surface. No implementation may
+infer dispatch from action names or transaction shape. See authoring contract A1.
 
 ### Transaction Role Binding
 
@@ -319,7 +351,7 @@ script, index, or checked role witness.
 CKB consumes every transaction input at the ledger level. CellScript therefore
 must not use `consume` as an unexplained business-level terminal state.
 
-The core should begin with an explicit algebra:
+The implemented preview begins with this algebra:
 
 ```text
 InputDisposition =
@@ -333,6 +365,13 @@ OutputOrigin =
   | Fresh { identity_policy }
   | PoolResult { pool_id, accounting_obligation }
 ```
+
+The authoring target retains explicit lifecycle accounting while requiring
+independent, composable identity, asset-quantity, capacity, and authorization
+obligations. The same successor may participate in additional accounting
+relations without being linearly discharged twice. The preview's mutually
+exclusive labels are not a final classification of every business relation;
+see authoring contracts A4 and A5.
 
 Candidate surface verbs are:
 
@@ -353,10 +392,17 @@ policy. `disposition_owner` must name the layer that supplies those rules, such
 as the Type Script or an explicit transaction policy. This variant must never
 be interpreted as implicit retirement.
 
+That layer label does not establish that a particular external verifier
+guarantees a condition. Likewise, a Lock equality fixture is not evidence of
+credential control. Authorization requires the actual enforced policy.
+
 ### Exhaustive Cell Envelope Disposition
 
 Exhaustive data-field treatment is necessary but insufficient. Every role must
-account for the complete Cell envelope:
+account for the complete Cell envelope, including dimensions outside the
+current verifier's responsibility. The following is a design sketch, not a
+frozen or exhaustive type definition; authoring contracts A2 and A4 require
+exact Script-hash identity checks and scoped verification responsibility:
 
 ```text
 CellEnvelopeDisposition {
@@ -375,8 +421,12 @@ versioned. The canonical typed expansion must still enumerate every data field
 and envelope dimension. A new schema field must either appear in that expansion
 under a declared total rule or make the old transition fail compilation.
 
-Blacklist preservation such as `preserve except` remains unsuitable. Concise
-source must not become invisible audit drift.
+The 2026-09-05 authoring decision admits `same except` under a concrete schema
+identity, exhaustive field expansion, and focused migration acknowledgement
+when schema changes affect that expansion. This replaces the earlier blanket
+objection to blacklist preservation. A new semantic hash does not demonstrate
+review of an automatically preserved field. The acknowledgement mechanism is
+still a design contract; see authoring contract A3.
 
 Capacity relations checked by the current artifact must remain separate from
 occupied-capacity computation and chain admission. The latter continue to be
@@ -387,15 +437,16 @@ builder or chain evidence where appropriate.
 The next edition should retain the existing evidence-tier taxonomy rather than
 inventing a second truth system.
 
-Provisional source terms may be:
+The authoring target keeps `require`; preview4 retains `enforce` as its current
+experimental spelling. The semantic distinction is:
 
-- `enforce`: the selected artifact must discharge the claim as checked-static
+- executable condition: the selected artifact must discharge the claim as checked-static
   or checked-runtime evidence; production compilation fails otherwise;
 - `audit`: an optional structured declaration that is type-checked and recorded
   as metadata-only, is not evaluated by the generated artifact, cannot
   authorize an accepting path, and is visibly labelled as non-consensus; and
 - typed builder or chain requirements emitted from roles and dispositions,
-  never disguised as artifact-local `enforce` claims.
+  never disguised as artifact-local executable conditions.
 
 The language must not promote an assertion merely because its name sounds
 strong. ProofPlan and lowering evidence remain authoritative.
@@ -419,14 +470,13 @@ spans remain diagnostic source-map data and never enter the claim hash.
 Script does not apply or commit a mutation; it accepts or rejects transaction
 facts that already exist.
 
-The typed core should call the concept `DispositionPlan`. `effects` is the
-preferred provisional source label because it matches existing CellScript
-terminology, but even `effects` must be defined as a declarative relation over
-the candidate transaction.
-
-The disposition section should be structurally final in an entry. It is not a
-runtime control-flow terminator and must not be lowered as an imperative
-"commit instruction."
+The typed core uses `DispositionPlan` for declarative relations over a candidate
+transaction. Preview4 places them in a structurally final `effects` section;
+this is its implemented grammar restriction. The authoring target does not
+require separate `verify` and `effects` blocks. Conditions and successor
+relations should compose in ordinary branches, with complete role accounting
+on each accepting path. Final section spelling remains subject to the corpus
+comparison; there is no imperative "commit instruction."
 
 The word `commit` should remain available for cryptographic commitments, where
 it already has a precise meaning in digest-backed substate designs.
@@ -448,8 +498,10 @@ fixed-width handle need not carry Cell lifecycle authority.
 
 ## Implemented Bounded Preview Surface
 
-The following spelling is implemented by
-`cellscript-source-semantics-2027-preview4`. It remains experimental and does
+The following spelling is an implementation reference, not the adopted authoring
+target. It was introduced by
+`cellscript-source-semantics-2027-preview4` and remains accepted under
+`cellscript-source-semantics-2027-authoring1`. It remains experimental and does
 not freeze the complete grammar or select a new payload ABI. The exact bounded
 contract and EBNF are specified in the
 [Edition 2027 preview grammar](CELLSCRIPT_2027_PREVIEW_GRAMMAR.md).
@@ -644,7 +696,7 @@ placement ABI, metadata schema, and target profile remain independent axes.
 
 ### Freeze Before Migration
 
-The eventual 0.26 release must provide the input contract for migration:
+Each migration must identify and preserve its exact input contract:
 
 - frozen grammar and formatter behavior;
 - frozen typed semantics and lifecycle interpretation;
@@ -654,6 +706,11 @@ The eventual 0.26 release must provide the input contract for migration:
 - complete positive and negative evidence for admitted shapes.
 
 This RFC must not retroactively redefine 0.26 behavior.
+
+Prototyping a faithful shorthand does not require a blanket freeze of every
+0.26 subsystem. Record the exact source baseline and dependencies for that
+slice. Broad release compatibility still needs a pinned, reviewed release
+baseline and its evidence.
 
 ### Migration Behavior
 
@@ -732,7 +789,7 @@ unless a gate below explicitly says otherwise.
 | [#10 Typed cross-Script transaction roles](https://github.com/CellScript-Labs/CellScript/issues/10) | **[ALIGNED] [PREREQUISITE] [SCOPE]** | The proposed `RoleBinding` should be shared with #10. Stabilize local roles first. Closed and open foreign roles remain later phases built on #9 and #11; they must not be smuggled into ordinary entry parameters or imply runtime linkage. |
 | [#11 Interface-bound runtime Script handles](https://github.com/CellScript-Labs/CellScript/issues/11) | **[ALIGNED] [PREREQUISITE]** | Exact `ScriptHandle`/`VerifierHandle` identity is the correct basis for open roles and dependency provenance. Preserve the distinction among raw Script, artifact, interface, and deployment identity. Its fixed-width handle must remain an ordinary non-linear value; `fixed` itself must not imply non-Cell or grant lifecycle authority. |
 | [#12 Typed CKB temporal and Since domains](https://github.com/CellScript-Labs/CellScript/issues/12) | **[ALIGNED] [PREREQUISITE]** | This is a concrete example of a safe new-edition semantic break. Do not change `current_timepoint()` or raw-`u64` meaning inside Edition 2026. The next-edition inventory and migration must include the typed temporal APIs, exact wire compatibility, and explicit old-edition interoperation. |
-| [#13 Typed openings for digest-committed substate](https://github.com/CellScript-Labs/CellScript/issues/13) | **[ALIGNED] [CONFLICT]** | Its explicit witness provenance, authenticated opening, and successor correspondence align. It also gives `commit` a precise cryptographic meaning, strengthening the decision not to use `commit` as a general Cell-disposition section. Reserve `commit` for commitment construction and use `DispositionPlan` plus a provisional `effects` source label for transaction relations. Its opening witness must also compose inside the entry envelope rather than independently claiming `WitnessArgs.input_type`. |
+| [#13 Typed openings for digest-committed substate](https://github.com/CellScript-Labs/CellScript/issues/13) | **[ALIGNED] [CONFLICT]** | Its explicit witness provenance, authenticated opening, and successor correspondence align. It also gives `commit` a precise cryptographic meaning, strengthening the decision not to use `commit` as a general Cell-disposition section. Reserve `commit` for commitment construction and use `DispositionPlan` for transaction relations. `effects` is the preview4 reference spelling; the adopted authoring target permits relations within ordinary branches. Its opening witness must also compose inside the entry envelope rather than independently claiming `WitnessArgs.input_type`. |
 | [#14 Executable-surface versus capability completeness](https://github.com/CellScript-Labs/CellScript/issues/14) | **[ALIGNED] [PREREQUISITE]** | Preview4 supplies compiler, artifact, checker, LSP, WASM-source, and syntax-matrix evidence only for its enumerated fixed-role slice. It is not builder, variable-cardinality, website-product, ecosystem-migration, or production closure. Every use of "complete" must name its universe. |
 | [#15 Canonical workspace graph](https://github.com/CellScript-Labs/CellScript/issues/15) | **[PREREQUISITE]** | Not a grammar blocker, but required before graph-wide mixed-edition builds or migrations are reliable. Do not let a 1.0 migration rely on synthetic workspace locks or declaration-order member builds. |
 | [#16 Package instance and unification semantics](https://github.com/CellScript-Labs/CellScript/issues/16) | **[PREREQUISITE] [CONFLICT]** | The proposed conservative single-version-per-coordinate model may conflict with an incremental ecosystem migration that needs both old and new major versions of one dependency. Decide whether mixed editions work within one selected package version or whether package-qualified multi-version identity is required. Do not discover this conflict after 1.0 publication. |
@@ -813,8 +870,9 @@ identity before promising gradual ecosystem migration.
 Using `commit` for both a declarative transaction disposition and a
 cryptographic commitment would be misleading.
 
-**Required resolution:** reserve `commit` for digest commitment operations and
-use another source label for the structurally final `DispositionPlan`.
+**Required resolution:** reserve `commit` for digest commitment operations.
+Preview4's final `effects` block remains a reference; authoring syntax may
+compose declarative relations in branches with per-path accounting.
 
 ### C7: Witness Payload Multiplexing
 
@@ -833,6 +891,12 @@ that cannot fit this contract must advance the payload and placement ABI
 explicitly. Preserve `WitnessArgs.lock` for the Lock Script and do not move
 protocol payloads after signing. Every nested value retains its exact field
 path in `ValueProvenance`.
+
+The current wrapper already falls back from `GroupInput#0` to `GroupOutput#0`
+for an input-free group. The new authoring target treats witness placement as
+an invocation-context ABI contract and requires creation, Lock, multi-action,
+and shared-witness cases to be specified together. It does not redefine the
+existing placement version; see authoring contract A6.
 
 ## Non-Normative Recommended Issue Actions
 
@@ -857,9 +921,12 @@ Issue edits are not part of this RFC change and require their own review.
 
 ## Implementation Sequence
 
-### Phase 0: Freeze and Inventory
+The authoring target's A1-A6 contracts and acceptance corpus refine the stages
+below. Their adoption does not imply that the current preview implements them.
 
-- complete and freeze the 0.26 contract;
+### Phase 0: Baseline and Inventory
+
+- pin the exact existing contracts required by each proposed change;
 - inventory every value source, lifecycle operation, output-binding rule,
   evidence tier, entry path, and runtime ABI;
 - classify which legacy semantics are total, ambiguous, or intentionally
@@ -879,11 +946,14 @@ Issue edits are not part of this RFC change and require their own review.
 
 ### Phase 2: Second Frontend and Expansion
 
-- implement a separate parser, formatter, and frontend lowering path;
+- implement the concise authoring parser, formatter, and direct semantic
+  lowering path while preserving Edition 2026 behavior;
 - add `cellc expand` over the canonical typed record;
-- initially emit only `SingleEntry` while retaining both entry-selection
-  variants in the canonical core;
+- retain preview4's `SingleEntry` implementation as bounded evidence; implement
+  declared dispatch before claiming the shared-policy multi-action target;
 - implement next-edition provenance, role, disposition, and claim syntax;
+- evaluate successor shorthand and schema acknowledgement against the adopted
+  authoring corpus rather than freezing preview4's textual structure;
 - keep unresolved legacy mappings as diagnostics; and
 - close parser, type checker, formatter, metadata, LSP, editor, Playground,
   docs, and syntax-combination coverage together.
@@ -988,6 +1058,10 @@ This gate accepts a concrete next-edition source contract.
       resolved with #8.
 - [ ] Multi-entry syntax remains rejected unless its explicit dispatch ABI is
       accepted.
+- [ ] The authoring contract supports a declared action set under one persistent
+      Script policy; independent action ELFs are not counted as that support.
+- [ ] Lock authorization, Script-hash types, schema acknowledgement, constructor
+      defaults, and context-specific witness placement satisfy A1-A6.
 - [ ] `audit` is either precisely defined or omitted from the frozen grammar.
 - [ ] Disposition clauses generate their own obligations without duplicate
       `verify` assertions.
@@ -1007,8 +1081,10 @@ This gate accepts the implemented compiler and migration boundary.
 - [ ] Edition 2026 and next-edition frontends are separate, frozen, and
       independently testable.
 - [ ] Both frontends lower to the accepted versioned semantic schemas.
-- [ ] The initial new frontend may emit only `SingleEntry`, while the core
-      still preserves the accepted dispatch sum type.
+- [ ] Shared-policy multi-action dispatch executes the required Token lifecycle
+      with its real Type Script; `SingleEntry` preview evidence alone is insufficient.
+- [ ] Schema evolution triggers focused acknowledgement, and the new field-reset
+      obligation has positive and negative execution evidence.
 - [ ] Canonical typed expansion, layered hashes, and the source-map sidecar are
       implemented and mutation-tested.
 - [ ] The public interface, ProofPlan, typed semantics, lowering record, source

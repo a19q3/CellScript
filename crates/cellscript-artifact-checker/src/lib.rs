@@ -1,5 +1,8 @@
+mod bindings;
 mod checker;
 mod elf;
+mod failure;
+mod policy;
 mod schema;
 
 pub use checker::{
@@ -7,6 +10,10 @@ pub use checker::{
     CheckerError, CheckerRejectionCode, CheckerReport, EvidenceState,
 };
 pub use elf::{parse_elf, ElfSummary, ParsedElf};
+pub use policy::{
+    validate_policy_metadata, PolicyWitnessContract, PolicyWitnessVariant, POLICY_DISPATCH_SCHEMA, POLICY_DISPATCH_VERSION,
+    POLICY_PAYLOAD_ABI, POLICY_PLACEMENT_ABI, POLICY_SELECTOR_FIELD, POLICY_WITNESS_SOURCE,
+};
 pub use schema::*;
 
 pub const CKB_HASH_PERSONALIZATION: &[u8; 16] = b"ckb-default-hash";

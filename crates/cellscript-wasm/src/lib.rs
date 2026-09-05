@@ -81,7 +81,8 @@ struct LanguageServiceResult {
 ///
 /// Returns a JSON string. On success this is the serialized
 /// browser metadata summary (module, types, actions with effect_class /
-/// consume_set / create_set / estimated_cycles, etc.). On error it
+/// consume_set / create_set / estimated_cycles, plus module-wide fail-closed
+/// runtime features and their scoped reasons). On error it
 /// is `{"error": "<message>"}`.
 ///
 /// `edition` is mandatory and accepts stable `"2026"` or experimental
@@ -252,6 +253,20 @@ fn browser_metadata_value(metadata: &cellscript::CompileMetadata) -> serde_json:
             })
         })
         .collect::<Vec<_>>();
+    let fail_closed_obligations = metadata
+        .runtime
+        .verifier_obligations
+        .iter()
+        .filter(|obligation| obligation.status == "fail-closed")
+        .map(|obligation| {
+            serde_json::json!({
+                "scope": obligation.scope,
+                "feature": obligation.feature,
+                "status": obligation.status,
+                "detail": obligation.detail,
+            })
+        })
+        .collect::<Vec<_>>();
     serde_json::json!({
         "metadata_scope": "cellscript-browser-summary-v1",
         "metadata_schema_version": metadata.metadata_schema_version,
@@ -264,6 +279,10 @@ fn browser_metadata_value(metadata: &cellscript::CompileMetadata) -> serde_json:
         "target_profile": { "name": metadata.target_profile.name },
         "types": types,
         "actions": actions,
+        "runtime": {
+            "fail_closed_runtime_features": metadata.runtime.fail_closed_runtime_features,
+            "fail_closed_obligations": fail_closed_obligations,
+        },
         "native_records_omitted": [
             "public_interface",
             "typed_semantics",
@@ -359,6 +378,65 @@ mod tests {
         }));
         assert!(result.get("public_interface").is_none());
         assert!(result.get("typed_semantics").is_none());
+        assert_eq!(result["runtime"]["fail_closed_runtime_features"], serde_json::json!([]));
+        assert_eq!(result["runtime"]["fail_closed_obligations"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn wasm_summary_exposes_deferred_runtime_in_locks_and_helpers() {
+        let fixtures = [
+            (
+                "lock:unlock",
+                "module deferred_digest\nlock unlock() -> bool { verification let value = env::sighash_all(source::group_input(0)) return value == value }\n",
+            ),
+            (
+                "fn:digest",
+                "module deferred_digest\nfn digest() -> Hash { return env::sighash_all(source::group_input(0)) }\n",
+            ),
+            (
+                "fn:digest",
+                "module deferred_digest\nfn digest() -> Hash { return env::sighash_all(source::group_input(0)) }\nlock unlock() -> bool { verification let value = digest() return value == value }\n",
+            ),
+        ];
+        for edition in ["2026", "2027"] {
+            for (scope, source) in fixtures {
+                let source = if edition == "2027" { source.replace("verification", "") } else { source.to_string() };
+                let metadata =
+                    cellscript::compile_metadata(&source, edition.parse().unwrap(), None).expect("audit metadata remains available");
+                let result: serde_json::Value = serde_json::from_str(&compile_metadata_json(&source, edition, None)).unwrap();
+                assert!(result.get("error").is_none(), "{result}");
+                assert_eq!(result["actions"], serde_json::json!([]), "the module warning must not depend on actions");
+                assert_eq!(
+                    result["runtime"]["fail_closed_runtime_features"],
+                    serde_json::json!(metadata.runtime.fail_closed_runtime_features)
+                );
+                assert!(result["runtime"]["fail_closed_runtime_features"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|feature| feature == "ckb-sighash-all-deferred"));
+                let obligation = metadata
+                    .runtime
+                    .verifier_obligations
+                    .iter()
+                    .find(|obligation| {
+                        obligation.scope == scope
+                            && obligation.feature == "ckb-sighash-all-deferred"
+                            && obligation.status == "fail-closed"
+                    })
+                    .expect("shared metadata must explain the deferred operation");
+                assert!(result["runtime"]["fail_closed_obligations"].as_array().unwrap().iter().any(|reason| {
+                    reason["scope"] == scope && reason["feature"] == obligation.feature && reason["detail"] == obligation.detail
+                }));
+                assert!(result.get("typed_semantics").is_none());
+                assert!(result["runtime"].get("proof_plan").is_none());
+
+                let report: serde_json::Value =
+                    serde_json::from_str(&compile_metadata_json_diagnostics(&source, edition, None)).unwrap();
+                assert_eq!(report["error_count"], 0);
+                assert_eq!(report["metadata"]["runtime"], result["runtime"]);
+            }
+        }
     }
 
     #[test]

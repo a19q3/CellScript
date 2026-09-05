@@ -388,9 +388,7 @@ impl CodeGenerator {
         let done_label = self.fresh_label("u128_arithmetic_done");
         self.emit(format!("j {}", done_label));
         self.emit_label(&overflow_label);
-        self.emit_runtime_error_comment(CellScriptRuntimeError::AggregateAmountMismatch);
-        self.emit(format!("li a0, {}", CellScriptRuntimeError::AggregateAmountMismatch.code()));
-        self.emit_epilogue();
+        self.emit_fail(CellScriptRuntimeError::AggregateAmountMismatch);
         self.emit_label(&done_label);
     }
 
@@ -487,9 +485,7 @@ impl CodeGenerator {
         self.emit(format!("j {}", done_label));
 
         self.emit_label(&overflow_label);
-        self.emit_runtime_error_comment(CellScriptRuntimeError::AggregateAmountMismatch);
-        self.emit(format!("li a0, {}", CellScriptRuntimeError::AggregateAmountMismatch.code()));
-        self.emit_epilogue();
+        self.emit_fail(CellScriptRuntimeError::AggregateAmountMismatch);
         self.emit_label(&done_label);
     }
 
@@ -583,9 +579,7 @@ impl CodeGenerator {
         self.emit(format!("j {}", done_label));
 
         self.emit_label(&fail_label);
-        self.emit_runtime_error_comment(CellScriptRuntimeError::NumericOrDiscriminantInvalid);
-        self.emit(format!("li a0, {}", CellScriptRuntimeError::NumericOrDiscriminantInvalid.code()));
-        self.emit_epilogue();
+        self.emit_fail(CellScriptRuntimeError::NumericOrDiscriminantInvalid);
         self.emit_label(&done_label);
     }
 
@@ -650,6 +644,11 @@ impl CodeGenerator {
     }
 
     pub(super) fn emit_field_access(&mut self, dest: &IrVar, obj: &IrOperand, field: &str) -> Result<()> {
+        // A tuple call returns register payloads, not the address of its
+        // allocated (but uninitialized) fixed-byte local buffer.
+        if self.emit_tuple_call_return_field_access(dest, obj, field) {
+            return Ok(());
+        }
         if self.emit_fixed_byte_field_access(dest, obj, field) {
             return Ok(());
         }
@@ -657,9 +656,6 @@ impl CodeGenerator {
             return Ok(());
         }
         if self.emit_aggregate_field_access(dest, obj, field) {
-            return Ok(());
-        }
-        if self.emit_tuple_call_return_field_access(dest, obj, field) {
             return Ok(());
         }
         if self.emit_generic_field_access(dest, obj, field) {
@@ -908,11 +904,12 @@ impl CodeGenerator {
         let Some(slot_var_id) = self.tuple_call_return_field_slots.get(&(var.id, field.to_string())).copied() else {
             return false;
         };
-        if slot_var_id != dest.id {
-            return false;
-        }
         self.emit(format!("# field access .{}", field));
         self.emit(format!("# cellscript abi: tuple call return field .{} projected from return register", field));
+        if slot_var_id != dest.id {
+            self.emit_stack_load("t0", slot_var_id * 8);
+            self.emit_stack_store("t0", dest.id * 8);
+        }
         true
     }
 

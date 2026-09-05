@@ -64,6 +64,7 @@ pub enum CellScriptRuntimeError {
     BoundedCellDepNotFound = 63,
     MerkleRootMismatch = 64,
     ShiftAmountInvalid = 65,
+    SighashAllUnsupported = 66,
 }
 
 impl CellScriptRuntimeError {
@@ -131,6 +132,7 @@ impl CellScriptRuntimeError {
             Self::BoundedCellDepNotFound => "bounded-cell-dep-not-found",
             Self::MerkleRootMismatch => "merkle-root-mismatch",
             Self::ShiftAmountInvalid => "shift-amount-invalid",
+            Self::SighashAllUnsupported => "sighash-all-unsupported",
         }
     }
 
@@ -212,6 +214,7 @@ impl CellScriptRuntimeError {
             }
             Self::MerkleRootMismatch => "A bounded Merkle proof did not reconstruct the expected root.",
             Self::ShiftAmountInvalid => "A runtime integer shift amount was greater than or equal to the left operand width.",
+            Self::SighashAllUnsupported => "Canonical CKB transaction sighash construction is deferred and cannot produce a digest.",
         }
     }
 
@@ -307,6 +310,9 @@ impl CellScriptRuntimeError {
             }
             Self::MerkleRootMismatch => "Check leaf byte order, sibling order, depth, leaf index, hash algorithm, and expected root.",
             Self::ShiftAmountInvalid => "Keep runtime shift amounts below the bit width of the shifted integer value.",
+            Self::SighashAllUnsupported => {
+                "Use an authenticated standard Lock or an explicit verifier with an independently specified message contract."
+            }
         }
     }
 
@@ -370,6 +376,7 @@ impl CellScriptRuntimeError {
             63 => Some(Self::BoundedCellDepNotFound),
             64 => Some(Self::MerkleRootMismatch),
             65 => Some(Self::ShiftAmountInvalid),
+            66 => Some(Self::SighashAllUnsupported),
             _ => None,
         }
     }
@@ -442,6 +449,7 @@ pub const ALL_RUNTIME_ERRORS: &[CellScriptRuntimeError] = &[
     CellScriptRuntimeError::BoundedCellDepNotFound,
     CellScriptRuntimeError::MerkleRootMismatch,
     CellScriptRuntimeError::ShiftAmountInvalid,
+    CellScriptRuntimeError::SighashAllUnsupported,
 ];
 
 pub const RESERVED_RUNTIME_ERROR_CODES: &[u64] = &[6, 19, 27, 28, 29, 30, 31];
@@ -474,6 +482,10 @@ fn parse_diagnostic_runtime_code(code: &str) -> Option<u64> {
 pub fn runtime_error_info_for_diagnostic_message(message: &str) -> Option<CellScriptRuntimeErrorInfo> {
     if let Some(info) = ALL_RUNTIME_ERRORS.iter().copied().map(runtime_error_info).find(|info| message.contains(info.name)) {
         return Some(info);
+    }
+
+    if message.contains(crate::ir::IrDeferredRuntimeFeature::CkbSighashAll.feature()) {
+        return Some(runtime_error_info(CellScriptRuntimeError::SighashAllUnsupported));
     }
 
     if message.contains("fixed-byte-comparison") {
@@ -520,6 +532,10 @@ mod tests {
 
     #[test]
     fn diagnostic_messages_map_to_runtime_error_codes_where_possible() {
+        assert_eq!(
+            runtime_error_info_for_diagnostic_message("fail-closed runtime features: ckb-sighash-all-deferred").map(|info| info.code),
+            Some(66)
+        );
         assert_eq!(
             runtime_error_info_for_diagnostic_message("fail-closed runtime features: collection-push").map(|info| info.code),
             Some(24)

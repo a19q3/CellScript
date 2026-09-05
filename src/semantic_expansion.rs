@@ -13,6 +13,7 @@ pub fn render(metadata: &CompileMetadata) -> Result<String> {
         format!("semantic-foundation {} version {}", foundation.schema, foundation.version),
         format!("module {}", typed.module),
         format!("edition {}", metadata.edition),
+        format!("verifier-failure {} ordinary-return-abi=unchanged", typed.failure_semantics.as_str()),
         format!("core-semantic-id {}", foundation.identities.core_semantic_id),
         format!("entry-contract-id {}", foundation.identities.entry_contract_id),
         format!("artifact-contract-id {}", foundation.identities.artifact_contract_id),
@@ -34,8 +35,44 @@ pub fn render(metadata: &CompileMetadata) -> Result<String> {
             foundation.entry_contract.witness_placement_field,
             foundation.entry_contract.witness_placement_source,
         ),
-        "types".to_string(),
     ];
+    if let cellscript_artifact_checker::EntryDispatchContract::PolicyWitnessV1(policy) = &foundation.entry_contract.dispatch {
+        lines.push(format!(
+            "policy {} schema={} version={} resource={} layout={}",
+            policy.artifact_name, policy.schema, policy.version, policy.resource, policy.resource_layout_hash,
+        ));
+        let selector = foundation
+            .provenance
+            .nodes
+            .iter()
+            .find(|node| node.id == policy.selector_node_id)
+            .ok_or_else(|| CompileError::without_span("cannot render policy dispatch: its selector provenance node is missing"))?;
+        let cellscript_artifact_checker::ValueProvenance::EntryWitness { field_path, group_witness_source, .. } = &selector.provenance
+        else {
+            return Err(CompileError::without_span("cannot render policy dispatch: its selector is not entry-witness provenance"));
+        };
+        lines.push(format!(
+            "  selector {} source={} node={} unknown={}",
+            field_path, group_witness_source, policy.selector_node_id, policy.unknown_selector,
+        ));
+        lines.push(format!("  limits records=1..{} witness-bytes<={}", policy.max_records, policy.max_witness_bytes));
+        lines.push("  variants (numeric tag order)".to_string());
+        for variant in &policy.variants {
+            lines.push(format!(
+                "    tag {} -> {} payload-schema={} group-inputs={} group-outputs={}",
+                variant.tag, variant.entry_id, variant.payload_schema_hash, variant.input_count, variant.output_count,
+            ));
+        }
+        if policy.common_checks.is_empty() {
+            lines.push("  common-checks (ordered): none".to_string());
+        } else {
+            lines.push("  common-checks (declaration order)".to_string());
+            for (index, entry) in policy.common_checks.iter().enumerate() {
+                lines.push(format!("    {} -> {}", index + 1, entry));
+            }
+        }
+    }
+    lines.push("types".to_string());
     for ty in &typed.types {
         lines.push(format!(
             "  {} kind={} layout={} identity={} fields=[{}]",
@@ -124,6 +161,7 @@ fn dispatch_label(dispatch: &cellscript_artifact_checker::EntryDispatchContract)
     match dispatch {
         cellscript_artifact_checker::EntryDispatchContract::SingleEntry => "single-entry",
         cellscript_artifact_checker::EntryDispatchContract::ExplicitVersionedDispatch { .. } => "explicit-versioned-dispatch",
+        cellscript_artifact_checker::EntryDispatchContract::PolicyWitnessV1(_) => "policy-witness-v1",
     }
 }
 
@@ -202,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn native_type_script_and_explicit_legacy_surface_share_core_semantics() {
+    fn native_group_ports_and_legacy_absolute_ports_have_distinct_core_semantics() {
         let legacy = r#"
 module demo
 resource Token has store, replace, relock { owner: Address, amount: u64 }
@@ -240,7 +278,7 @@ type_script TokenTransfer on type_group<Token> {
         let stable = compile_metadata(legacy, CellScriptEdition::Edition2026, None).unwrap();
         let preview = compile_metadata(native, CellScriptEdition::Edition2027, None).unwrap();
 
-        assert_eq!(
+        assert_ne!(
             stable.typed_semantics.foundation.identities.core_semantic_id,
             preview.typed_semantics.foundation.identities.core_semantic_id
         );
@@ -248,7 +286,17 @@ type_script TokenTransfer on type_group<Token> {
             stable.typed_semantics.foundation.identities.entry_contract_id,
             preview.typed_semantics.foundation.identities.entry_contract_id
         );
-        assert_eq!(stable.typed_semantics.entries, preview.typed_semantics.entries);
+        let stable_entry = &stable.typed_semantics.entries[0];
+        let preview_entry = &preview.typed_semantics.entries[0];
+        assert_eq!(stable_entry.blocks, preview_entry.blocks);
+        assert!(stable_entry
+            .cell_bindings
+            .iter()
+            .any(|binding| binding.source == cellscript_artifact_checker::CellBindingSource::Input));
+        assert!(preview_entry
+            .cell_bindings
+            .iter()
+            .any(|binding| binding.source == cellscript_artifact_checker::CellBindingSource::GroupInput));
         assert_eq!(stable.actions[0].proof_plan, preview.actions[0].proof_plan);
         assert_eq!(stable.actions[0].fail_closed_runtime_features, preview.actions[0].fail_closed_runtime_features);
     }

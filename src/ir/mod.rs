@@ -4,14 +4,148 @@ use crate::resolve::{FunctionDef, ModuleResolver, TypeDef};
 use crate::runtime_errors::CellScriptRuntimeError;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+mod bindings;
+mod policy;
+pub use bindings::{IrCellBinding, IrCellBindingRole, IrCellMembership, IrCellSource};
+pub(crate) use policy::bind_artifact_policy;
+
 #[derive(Debug, Clone)]
 pub struct IrModule {
     pub name: String,
     pub items: Vec<IrItem>,
+    pub entry_selection: IrEntrySelection,
     pub external_type_defs: Vec<IrTypeDef>,
     pub external_callable_abis: Vec<IrCallableAbi>,
     pub enum_fixed_sizes: HashMap<String, usize>,
     pub enum_layouts: HashMap<String, IrEnumLayout>,
+}
+
+/// Artifact-local entry choice, separate from the retained callable set.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum IrEntrySelection {
+    #[default]
+    Legacy,
+    Action(String),
+    Lock(String),
+    Artifact(crate::artifact::ArtifactDeclaration),
+}
+
+/// The callable selected by an implicit or explicit single-entry contract.
+///
+/// Keep the selection in shared IR so emitted code and semantic metadata cannot
+/// disagree about which callable the entry wrapper invokes. A module may retain
+/// other actions as dependencies; their presence does not imply dispatch.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum IrEntryPoint<'a> {
+    Action(&'a IrAction),
+    Lock(&'a IrLock),
+}
+
+impl<'a> IrEntryPoint<'a> {
+    pub(crate) fn name(self) -> &'a str {
+        match self {
+            Self::Action(action) => &action.name,
+            Self::Lock(lock) => &lock.name,
+        }
+    }
+
+    pub(crate) fn params(self) -> &'a [IrParam] {
+        match self {
+            Self::Action(action) => &action.params,
+            Self::Lock(lock) => &lock.params,
+        }
+    }
+
+    #[cfg(not(feature = "wasm"))]
+    pub(crate) fn kind(self) -> &'static str {
+        match self {
+            Self::Action(_) => "action",
+            Self::Lock(_) => "lock",
+        }
+    }
+
+    #[cfg(not(feature = "wasm"))]
+    pub(crate) fn script_role(self) -> &'static str {
+        match self {
+            Self::Action(_) => "type",
+            Self::Lock(_) => "lock",
+        }
+    }
+
+    #[cfg(not(feature = "wasm"))]
+    pub(crate) fn trigger(self) -> &'a str {
+        match self {
+            Self::Action(action) => action.entry_trigger.as_deref().unwrap_or("type-group"),
+            Self::Lock(_) => "lock-group",
+        }
+    }
+}
+
+impl IrModule {
+    /// Explicit scopes select exactly their named callable, even when other
+    /// actions are retained as dependencies. Unscoped compilation preserves
+    /// Edition 2026's runtime entry precedence: `main`, the first no-argument
+    /// action, the first action, then the first Lock Script.
+    pub(crate) fn resolved_entry(&self) -> Option<IrEntryPoint<'_>> {
+        match &self.entry_selection {
+            IrEntrySelection::Action(name) => {
+                return self.items.iter().find_map(|item| match item {
+                    IrItem::Action(action) if action.name == *name => Some(IrEntryPoint::Action(action)),
+                    _ => None,
+                });
+            }
+            IrEntrySelection::Lock(name) => {
+                return self.items.iter().find_map(|item| match item {
+                    IrItem::Lock(lock) if lock.name == *name => Some(IrEntryPoint::Lock(lock)),
+                    _ => None,
+                });
+            }
+            IrEntrySelection::Artifact(_) => return None,
+            IrEntrySelection::Legacy => {}
+        }
+        let actions = || {
+            self.items.iter().filter_map(|item| match item {
+                IrItem::Action(action) => Some(action),
+                _ => None,
+            })
+        };
+        actions()
+            .find(|action| action.name == "main")
+            .or_else(|| actions().find(|action| action.params.is_empty()))
+            .or_else(|| actions().next())
+            .map(IrEntryPoint::Action)
+            .or_else(|| {
+                self.items.iter().find_map(|item| match item {
+                    IrItem::Lock(lock) => Some(IrEntryPoint::Lock(lock)),
+                    _ => None,
+                })
+            })
+    }
+
+    pub(crate) fn validate_entry_selection(&self) -> Result<()> {
+        let (kind, name) = match &self.entry_selection {
+            IrEntrySelection::Legacy => return Ok(()),
+            IrEntrySelection::Action(name) => ("action", name),
+            IrEntrySelection::Lock(name) => ("lock", name),
+            IrEntrySelection::Artifact(declaration) => return policy::validate_artifact_selection(self, declaration),
+        };
+        let matches = self
+            .items
+            .iter()
+            .filter(|item| match (kind, item) {
+                ("action", IrItem::Action(action)) => action.name == *name,
+                ("lock", IrItem::Lock(lock)) => lock.name == *name,
+                _ => false,
+            })
+            .count();
+        if matches != 1 || name.is_empty() {
+            return Err(CompileError::without_span(format!(
+                "explicit artifact entry {kind} '{name}' must identify exactly one retained callable; found {matches}"
+            ))
+            .with_code("E2101"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -362,6 +496,8 @@ pub struct IrParam {
 
 #[derive(Debug, Clone)]
 pub struct IrBody {
+    /// Resolved physical locations; later phases must not allocate ordinals.
+    pub cell_bindings: Vec<IrCellBinding>,
     pub consume_set: Vec<CellPattern>,
     pub read_refs: Vec<CellPattern>,
     pub create_set: Vec<CreatePattern>,
@@ -443,6 +579,46 @@ pub const BOUNDED_OUTPUT_PLAN_V1: &str = "bounded-output-plan-v1";
 pub const BOUNDED_OUTPUT_PLAN_MAGIC_V1: &[u8; 8] = b"CSBPLv1\0";
 const BOUNDED_CELL_RUNTIME_MAX_DATA_BYTES: usize = 512;
 pub const BOUNDED_OUTPUT_PLAN_MAX_BYTES: usize = 4084;
+
+/// Recognized source/runtime contracts with intentionally unavailable execution.
+/// Keep this classification shared by metadata and the emitter: a deferred
+/// value-producing call must terminate, never return an error as a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrDeferredRuntimeFeature {
+    CkbSighashAll,
+}
+
+impl IrDeferredRuntimeFeature {
+    pub fn from_helper(helper: &str) -> Option<Self> {
+        match helper {
+            "__ckb_sighash_all" => Some(Self::CkbSighashAll),
+            _ => None,
+        }
+    }
+
+    pub fn from_source_name(name: &str) -> Option<Self> {
+        match name {
+            "env::sighash_all" => Some(Self::CkbSighashAll),
+            _ => None,
+        }
+    }
+
+    pub const fn feature(self) -> &'static str {
+        match self {
+            Self::CkbSighashAll => "ckb-sighash-all-deferred",
+        }
+    }
+
+    pub const fn runtime_error(self) -> CellScriptRuntimeError {
+        match self {
+            Self::CkbSighashAll => CellScriptRuntimeError::SighashAllUnsupported,
+        }
+    }
+
+    pub fn effect(self) -> String {
+        format!("deferred-runtime-fail-closed:{}:{}", self.runtime_error().code(), self.feature())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct CellPattern {
@@ -1061,6 +1237,7 @@ impl IrGenerator {
             module: IrModule {
                 name: module_name,
                 items: Vec::new(),
+                entry_selection: IrEntrySelection::Legacy,
                 external_type_defs: Vec::new(),
                 external_callable_abis: Vec::new(),
                 enum_fixed_sizes: HashMap::new(),
@@ -1601,8 +1778,9 @@ impl IrGenerator {
         self.transition_param_ids.clear();
         self.transition_coverable_value_ids.clear();
         let return_type = function.return_type.as_ref().map(Self::convert_type);
-        let (params, body) =
+        let (params, mut body) =
             self.lower_signature_and_body(&function.params, &[], &function.body, return_type.clone(), &HashSet::new());
+        body.cell_bindings = bindings::resolve(&params, &body, bindings::BindingContext::Helper, &self.type_kinds);
         let inferred_effect_class = self.analyze_body_effect_class(&function.body);
         let declared_effect_class = function.effect_declared.then(|| self.convert_effect_class(function.effect));
         let effect_class = declared_effect_class
@@ -1795,8 +1973,14 @@ impl IrGenerator {
         self.transition_coverable_value_ids.clear();
         let core_input_bindings = action_core_input_binding_names(action);
         let return_type = action.return_type.as_ref().map(Self::convert_type);
-        let (params, body) =
+        let (params, mut body) =
             self.lower_signature_and_body(&action.params, &action.outputs, &action.body, return_type.clone(), &core_input_bindings);
+        let context = if action.next_surface.is_some() {
+            bindings::BindingContext::NativeTypeGroup
+        } else {
+            bindings::BindingContext::LegacyEntry
+        };
+        body.cell_bindings = bindings::resolve(&params, &body, context, &self.type_kinds);
 
         let mut effect_class = self.analyze_effect_class(action);
         if params.iter().any(|param| param.is_read_ref) && effect_class == EffectClass::Pure {
@@ -2157,7 +2341,13 @@ impl IrGenerator {
         self.transition_coverable_value_ids.clear();
         let previous_lock_entry = self.lowering_lock_entry;
         self.lowering_lock_entry = true;
-        let (params, body) = self.lower_signature_and_body(&lock.params, &[], &lock.body, Some(IrType::Bool), &HashSet::new());
+        let (params, mut body) = self.lower_signature_and_body(&lock.params, &[], &lock.body, Some(IrType::Bool), &HashSet::new());
+        let context = if lock.next_surface.is_some() {
+            bindings::BindingContext::NativeLockGroup
+        } else {
+            bindings::BindingContext::LegacyLockEntry
+        };
+        body.cell_bindings = bindings::resolve(&params, &body, context, &self.type_kinds);
         self.lowering_lock_entry = previous_lock_entry;
 
         IrLock {
@@ -2495,6 +2685,7 @@ impl IrGenerator {
         (
             ir_params,
             IrBody {
+                cell_bindings: Vec::new(),
                 consume_set,
                 read_refs,
                 create_set,

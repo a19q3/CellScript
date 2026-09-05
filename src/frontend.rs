@@ -1,11 +1,11 @@
 //! Edition-routed source frontends.
 //!
 //! Edition 2026 remains frozen on the legacy lexer/parser path. Edition 2027
-//! deliberately has its own entry point and post-parse constitution checks so
-//! new-edition restrictions cannot silently change old source semantics. The
-//! initial preview reuses the proven token and expression machinery; grammar
-//! additions belong only in `next` and must still lower to the shared AST and
-//! typed semantic foundation.
+//! has its own entry point and authoring policy. Both frontends share the value,
+//! declaration, and statement kernel, so an authoring improvement does not
+//! discard existing language features. The older bounded native preview keeps
+//! its own syntax checks. All routes produce structured AST, never intermediate
+//! preview source text, before the shared typed semantic foundation.
 
 use crate::ast;
 use crate::edition::CellScriptEdition;
@@ -13,10 +13,17 @@ use crate::error::{CompileError, Result};
 use crate::lexer;
 use crate::parser;
 
+mod authoring;
 mod migrate;
 mod next;
 
 pub use migrate::{migrate_source_to_2027, MigrationCandidate, MigrationKind};
+
+/// Tooling uses the same contextual surface selection as the parser. This
+/// remains usable while a native container body is incomplete during editing.
+pub(crate) fn uses_native_preview(source: &str) -> bool {
+    lexer::lex(source).is_ok_and(|tokens| next::has_native_surface(&tokens))
+}
 
 pub fn parse(source: &str, edition: CellScriptEdition) -> Result<ast::Module> {
     match edition {
@@ -56,29 +63,35 @@ mod tests {
     fn legacy_and_next_frontends_are_independently_routed() {
         let implicit = "module demo\naction main(value: u64) -> u64 { verification return value }";
         assert!(parse(implicit, CellScriptEdition::Edition2026).is_ok());
-        let error = parse(implicit, CellScriptEdition::Edition2027).unwrap_err();
-        assert!(error.message.contains("has no explicit source"));
+        assert!(parse(implicit, CellScriptEdition::Edition2027).is_ok());
 
         let explicit = "module demo\naction main(witness value: u64) -> u64 { verification return value }";
         assert!(parse(explicit, CellScriptEdition::Edition2027).is_ok());
+
+        let concise = "module demo\naction main(witness value: u64) -> u64 { return value }";
+        assert!(parse(concise, CellScriptEdition::Edition2027).is_ok());
+        assert!(parse(concise, CellScriptEdition::Edition2026).is_err());
     }
 
     #[test]
-    fn next_frontend_fails_closed_on_ambiguous_disposition_and_dispatch() {
+    fn authoring_frontend_keeps_legacy_lifecycle_and_source_entry_organization() {
         let consume = r#"
 module demo
 resource Token has consume { amount: u64 }
 action main(input token: Token) { verification consume token }
 "#;
         assert!(parse(consume, CellScriptEdition::Edition2026).is_ok());
-        assert!(parse(consume, CellScriptEdition::Edition2027).unwrap_err().message.contains("ambiguous consume"));
+        let module = parse(consume, CellScriptEdition::Edition2027).unwrap();
+        let Item::Action(action) = module.items.last().unwrap() else { panic!("expected action") };
+        assert!(matches!(action.body.as_slice(), [ast::Stmt::Expr(ast::Expr::Consume(_))]));
+        assert!(action.next_surface.is_none(), "a legacy consume must not acquire a native disposition policy");
 
         let multiple = r#"
 module demo
 action first() { verification return }
 action second() { verification return }
 "#;
-        assert!(parse(multiple, CellScriptEdition::Edition2027).unwrap_err().message.contains("SingleEntry"));
+        assert_eq!(parse(multiple, CellScriptEdition::Edition2027).unwrap().items.len(), 2);
 
         let capability_only = r#"
 module demo
@@ -90,10 +103,37 @@ action main(witness value: u64) -> u64 { verification return value }
 
     #[test]
     fn diagnostic_frontend_keeps_source_spans() {
-        let source = "module demo\naction main(value: u64) { verification return }";
+        let source = "module demo\naction main(value: ) { return }";
         let diagnostics = parse_diagnostics(source, CellScriptEdition::Edition2027).unwrap_err();
         assert_eq!(diagnostics.len(), 1);
         assert_ne!(diagnostics[0].span, Span::default());
+    }
+
+    #[test]
+    fn native_container_words_remain_ordinary_authoring_names() {
+        let source = r#"
+module type_script
+const lock_script: u64 = 3
+fn type_script(value: u64) -> u64 { value + lock_script }
+action main(value: u64) -> u64 { return type_script(value) }
+"#;
+        let module = parse(source, CellScriptEdition::Edition2027).unwrap();
+        let formatted = crate::fmt::format_default(&module).unwrap();
+        assert!(parse(&formatted, CellScriptEdition::Edition2026).is_ok());
+        assert_eq!(crate::fmt::format_default(&parse(&formatted, CellScriptEdition::Edition2027).unwrap()).unwrap(), formatted);
+    }
+
+    #[test]
+    fn authoring_lock_constraint_blocks_keep_the_legacy_verification_model() {
+        let source = "module demo\nlock owner(witness value: u64) { require value > 0\n return true }";
+        let module = parse(source, CellScriptEdition::Edition2027).unwrap();
+        assert!(parse(source, CellScriptEdition::Edition2026).is_err());
+        let Item::Lock(lock) = module.items.last().unwrap() else { panic!("expected lock") };
+        assert!(matches!(lock.body[0], ast::Stmt::Expr(ast::Expr::Require(_))));
+        assert!(lock.next_surface.is_none());
+        let formatted = crate::fmt::format_default(&module).unwrap();
+        assert!(formatted.contains("verification"));
+        assert!(parse(&formatted, CellScriptEdition::Edition2026).is_ok());
     }
 
     #[test]

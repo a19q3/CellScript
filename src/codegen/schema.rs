@@ -17,7 +17,9 @@ impl CodeGenerator {
         let ok_label = self.fresh_label("schema_size_ok");
         self.emit_stack_load("a0", size_offset);
         self.emit(format!("li a1, {}", expected_size));
-        self.emit("call __cellscript_require_exact_size");
+        // Inline the exact-size helper's sub/ret body. Keep its argument and
+        // result registers unchanged, without clobbering any scratch register.
+        self.emit("sub a0, a0, a1");
         self.emit(format!("beqz a0, {}", ok_label));
         self.emit_fail(CellScriptRuntimeError::ExactSizeMismatch);
         self.emit_label(&ok_label);
@@ -800,9 +802,7 @@ impl CodeGenerator {
         self.emit_stack_store("t0", dest.id * 8);
         self.emit(format!("j {}", done_label));
         self.emit_label(&overflow_label);
-        self.emit_runtime_error_comment(CellScriptRuntimeError::AggregateAmountMismatch);
-        self.emit(format!("li a0, {}", CellScriptRuntimeError::AggregateAmountMismatch.code()));
-        self.emit_epilogue();
+        self.emit_fail(CellScriptRuntimeError::AggregateAmountMismatch);
         self.emit_label(&done_label);
         true
     }

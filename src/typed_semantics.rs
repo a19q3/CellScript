@@ -5,17 +5,19 @@
 use crate::ir::{self, IrInstruction, IrOperand, IrTerminator, IrType, IrVar};
 use crate::CompileMetadata;
 use cellscript_artifact_checker::{
-    canonical_hash, ArtifactContractDescriptor, ArtifactEntryContract, CellDisposition, CellEnvelopeDisposition,
-    ClaimExecutionBinding, EntryDispatchContract, FieldDisposition, InputDisposition, LayeredSemanticIdentities, LegacySemanticNode,
-    OutputOrigin, ProvenanceBinding, ProvenanceGraph, ProvenanceNode, RoleBinding, SemanticClaim, SemanticFoundationRecord,
-    TypedSemanticBlock, TypedSemanticBorrow, TypedSemanticCall, TypedSemanticConstant, TypedSemanticCreatePattern, TypedSemanticEntry,
-    TypedSemanticField, TypedSemanticInstantiation, TypedSemanticLocal, TypedSemanticOperand, TypedSemanticOperation,
-    TypedSemanticOperationDetail, TypedSemanticOwnership, TypedSemanticParam, TypedSemanticRecord, TypedSemanticRuntimeError,
-    TypedSemanticType, TypedSemanticVariant, TypedSemanticVariantField, ValueProvenance, PROVENANCE_GRAPH_SCHEMA,
-    PROVENANCE_GRAPH_VERSION, SEMANTIC_FOUNDATION_SCHEMA, SEMANTIC_FOUNDATION_VERSION, TYPED_SEMANTICS_SCHEMA,
-    TYPED_SEMANTICS_VERSION,
+    canonical_hash, ArtifactContractDescriptor, ArtifactEntryContract, CellBindingMembership, CellBindingRole, CellBindingSource,
+    CellDisposition, CellEnvelopeDisposition, ClaimExecutionBinding, EntryDispatchContract, FieldDisposition, InputDisposition,
+    LayeredSemanticIdentities, LegacySemanticNode, OutputOrigin, ProvenanceBinding, ProvenanceGraph, ProvenanceNode, RoleBinding,
+    SemanticClaim, SemanticFoundationRecord, TypedSemanticBlock, TypedSemanticBorrow, TypedSemanticCall, TypedSemanticCellBinding,
+    TypedSemanticConstant, TypedSemanticCreatePattern, TypedSemanticEntry, TypedSemanticField, TypedSemanticInstantiation,
+    TypedSemanticLocal, TypedSemanticOperand, TypedSemanticOperation, TypedSemanticOperationDetail, TypedSemanticOwnership,
+    TypedSemanticParam, TypedSemanticRecord, TypedSemanticRuntimeError, TypedSemanticType, TypedSemanticVariant,
+    TypedSemanticVariantField, ValueProvenance, PROVENANCE_GRAPH_SCHEMA, PROVENANCE_GRAPH_VERSION, SEMANTIC_FOUNDATION_SCHEMA,
+    SEMANTIC_FOUNDATION_VERSION, TYPED_SEMANTICS_SCHEMA, TYPED_SEMANTICS_VERSION,
 };
 use std::collections::{BTreeMap, BTreeSet};
+
+mod policy;
 
 pub(crate) fn build(module: &ir::IrModule, metadata: &CompileMetadata) -> TypedSemanticRecord {
     let mut types = module
@@ -181,6 +183,7 @@ pub(crate) fn build(module: &ir::IrModule, metadata: &CompileMetadata) -> TypedS
         version: TYPED_SEMANTICS_VERSION,
         module: module.name.clone(),
         interface_hash: String::new(),
+        failure_semantics: cellscript_artifact_checker::VerifierFailureSemantics::CurrentVmProcessExitV1,
         types: {
             types.sort_by(|left, right| left.name.cmp(&right.name));
             types.dedup_by(|left, right| left.name == right.name);
@@ -205,14 +208,10 @@ fn build_semantic_foundation(
     types: &[TypedSemanticType],
     entries: &[TypedSemanticEntry],
 ) -> SemanticFoundationRecord {
-    let cell_types = types
-        .iter()
-        .filter(|ty| matches!(ty.kind.as_str(), "resource" | "shared" | "receipt"))
-        .map(|ty| ty.name.as_str())
-        .collect::<BTreeSet<_>>();
     let type_layouts = types.iter().map(|ty| (ty.name.as_str(), ty)).collect::<BTreeMap<_, _>>();
-    let entry_contract = build_entry_contract(module);
-    let (provenance, condition_nodes) = build_provenance_graph(entries, &cell_types);
+    let (mut provenance, condition_nodes) = build_provenance_graph(entries, module);
+    let entry_contract =
+        policy::build_entry_contract(module, types, entries, &mut provenance).unwrap_or_else(|| build_entry_contract(module));
     let mut roles = Vec::new();
     let mut dispositions = Vec::new();
     let mut legacy_nodes = Vec::new();
@@ -234,7 +233,8 @@ fn build_semantic_foundation(
         if kind == "helper" {
             continue;
         }
-        append_roles(&mut roles, &entry_id, kind, params, body, &type_layouts, &cell_types);
+        let typed_entry = entries.iter().find(|entry| entry.id == entry_id).expect("IR callable has a typed entry");
+        append_roles(&mut roles, typed_entry, &type_layouts);
         append_dispositions(
             &mut dispositions,
             &mut legacy_nodes,
@@ -245,7 +245,6 @@ fn build_semantic_foundation(
             source_dispositions,
             &type_layouts,
             &metadata.runtime.proof_plan,
-            metadata.edition.as_str(),
         );
     }
     roles.sort_by(|left, right| left.role_id.cmp(&right.role_id));
@@ -257,8 +256,18 @@ fn build_semantic_foundation(
     let mut claims = build_claims(metadata, module, entries, &condition_nodes);
     claims.sort_by(|left, right| left.id.cmp(&right.id));
 
-    let core_semantic_id = canonical_hash("cellscript-core-semantic-id-v1", &(types, &roles, &dispositions, &claims, &legacy_nodes))
-        .expect("semantic foundation core projection is serializable");
+    let core_semantic_id = canonical_hash(
+        "cellscript-core-semantic-id-v2",
+        &(
+            cellscript_artifact_checker::VerifierFailureSemantics::CurrentVmProcessExitV1,
+            types,
+            &roles,
+            &dispositions,
+            &claims,
+            &legacy_nodes,
+        ),
+    )
+    .expect("semantic foundation core projection is serializable");
     let provenance_roots = provenance
         .nodes
         .iter()
@@ -267,7 +276,13 @@ fn build_semantic_foundation(
         .collect::<Vec<_>>();
     let entry_contract_id = canonical_hash(
         "cellscript-entry-contract-id-v1",
-        &(core_semantic_id.as_str(), &entry_contract, provenance_roots, crate::ENTRY_WITNESS_ABI, crate::ENTRY_WITNESS_PLACEMENT_ABI),
+        &(
+            core_semantic_id.as_str(),
+            &entry_contract,
+            provenance_roots,
+            entry_contract.entry_payload_abi.as_str(),
+            entry_contract.witness_placement_abi.as_str(),
+        ),
     )
     .expect("semantic foundation entry projection is serializable");
     let artifact_contract = ArtifactContractDescriptor {
@@ -297,15 +312,8 @@ fn build_semantic_foundation(
 
 fn build_entry_contract(module: &ir::IrModule) -> ArtifactEntryContract {
     let (script_role, trigger, exact_entry) = module
-        .items
-        .iter()
-        .find_map(|item| match item {
-            ir::IrItem::Action(action) => {
-                Some(("type", action.entry_trigger.as_deref().unwrap_or("type-group"), format!("action:{}", action.name)))
-            }
-            ir::IrItem::Lock(lock) => Some(("lock", "lock-group", format!("lock:{}", lock.name))),
-            ir::IrItem::TypeDef(_) | ir::IrItem::Invariant(_) | ir::IrItem::PureFn(_) => None,
-        })
+        .resolved_entry()
+        .map(|entry| (entry.script_role(), entry.trigger(), format!("{}:{}", entry.kind(), entry.name())))
         .unwrap_or(("none", "none", "none".to_string()));
     let semantic_node_id = canonical_hash(
         "cellscript-semantic-node-entry-contract-v1",
@@ -336,8 +344,31 @@ fn build_entry_contract(module: &ir::IrModule) -> ArtifactEntryContract {
 
 fn build_provenance_graph(
     entries: &[TypedSemanticEntry],
-    cell_types: &BTreeSet<&str>,
+    module: &ir::IrModule,
 ) -> (ProvenanceGraph, BTreeMap<(String, u32), String>) {
+    let cell_types = module
+        .external_type_defs
+        .iter()
+        .chain(module.items.iter().filter_map(|item| match item {
+            ir::IrItem::TypeDef(definition) => Some(definition),
+            _ => None,
+        }))
+        .filter(|definition| matches!(definition.kind, ir::IrTypeKind::Resource | ir::IrTypeKind::Shared | ir::IrTypeKind::Receipt))
+        .map(|definition| definition.name.clone())
+        .collect::<BTreeSet<_>>();
+    let abi_sources = module
+        .items
+        .iter()
+        .filter_map(|item| {
+            let (kind, name, params, body) = match item {
+                ir::IrItem::Action(action) => ("action", &action.name, &action.params, &action.body),
+                ir::IrItem::Lock(lock) => ("lock", &lock.name, &lock.params, &lock.body),
+                ir::IrItem::PureFn(function) => ("helper", &function.name, &function.params, &function.body),
+                ir::IrItem::TypeDef(_) | ir::IrItem::Invariant(_) => return None,
+            };
+            Some((format!("{kind}:{name}"), crate::codegen::entry_param_abi_sources(params, body, &cell_types, &module.enum_layouts)))
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut nodes = BTreeMap::<String, ProvenanceNode>::new();
     let mut bindings = Vec::new();
     let mut condition_nodes = BTreeMap::new();
@@ -345,7 +376,7 @@ fn build_provenance_graph(
         let mut local_nodes = BTreeMap::<u32, String>::new();
         let mut named_nodes = BTreeMap::<String, String>::new();
         for param in &entry.params {
-            let provenance = param_provenance(entry, param, cell_types);
+            let provenance = param_provenance(entry, param, &abi_sources[&entry.id], module);
             let node_id = insert_provenance_node(&mut nodes, provenance);
             local_nodes.insert(param.binding_id, node_id.clone());
             named_nodes.insert(param.name.clone(), node_id.clone());
@@ -404,29 +435,26 @@ fn build_provenance_graph(
                 }
                 if operation.opcode == "read-ref" {
                     for destination in &operation.destinations {
-                        let role = format!("{}:read-ref:{}", entry.id, destination);
-                        let node_id = insert_provenance_node(
-                            &mut nodes,
-                            ValueProvenance::CellDep {
-                                identity_policy: "declared-type-hash".to_string(),
-                                selector: format!("cell-dep-ordinal-for-local-{destination}"),
-                                field_path: "data".to_string(),
-                            },
-                        );
+                        let binding =
+                            cell_binding_for_typed_local(entry, *destination).expect("lowered read_ref has a resolved Cell binding");
+                        let node_id = insert_provenance_node(&mut nodes, binding.provenance(&entry.id));
                         local_nodes.insert(*destination, node_id.clone());
-                        named_nodes.insert(role, node_id.clone());
+                        // Generated temporary names are not source bindings.
+                        // A user may legitimately name a parameter
+                        // `read_ref_Config`; only StoreVar can introduce an
+                        // alias into named_nodes without shadowing that value.
                         bindings.push(ProvenanceBinding { entry_id: entry.id.clone(), local_id: *destination, node_id });
                     }
                     continue;
                 }
                 for (destination_index, destination) in operation.destinations.iter().enumerate() {
-                    let node_id = insert_provenance_node(
-                        &mut nodes,
-                        ValueProvenance::Derived {
+                    let provenance = cell_binding_for_typed_local(entry, *destination)
+                        .map(|binding| binding.provenance(&entry.id))
+                        .unwrap_or_else(|| ValueProvenance::Derived {
                             operation: format!("{}#{}", operation.opcode, destination_index),
                             inputs: input_nodes.clone(),
-                        },
-                    );
+                        });
+                    let node_id = insert_provenance_node(&mut nodes, provenance);
                     local_nodes.insert(*destination, node_id.clone());
                     bindings.push(ProvenanceBinding { entry_id: entry.id.clone(), local_id: *destination, node_id });
                 }
@@ -448,44 +476,65 @@ fn alias_provenance_node(entry: &TypedSemanticEntry, local_id: u32, local_nodes:
     entry.locals.iter().filter(|local| local.source_id == source_id).find_map(|local| local_nodes.get(&local.id).cloned())
 }
 
-fn param_provenance(entry: &TypedSemanticEntry, param: &TypedSemanticParam, cell_types: &BTreeSet<&str>) -> ValueProvenance {
-    if entry.kind == "helper" {
+fn cell_binding_for_typed_local(entry: &TypedSemanticEntry, local_id: u32) -> Option<&TypedSemanticCellBinding> {
+    let source_id = entry.locals.iter().find(|local| local.id == local_id)?.source_id;
+    entry.cell_bindings.iter().find(|binding| {
+        binding.local_id.is_some_and(|root| entry.locals.iter().any(|local| local.id == root && local.source_id == source_id))
+    })
+}
+
+fn param_provenance(
+    entry: &TypedSemanticEntry,
+    param: &TypedSemanticParam,
+    abi_sources: &[crate::codegen::EntryParamAbiSource],
+    module: &ir::IrModule,
+) -> ValueProvenance {
+    let policy = match &module.entry_selection {
+        ir::IrEntrySelection::Artifact(declaration) => Some(declaration),
+        _ => None,
+    };
+    let policy_variant = policy.and_then(|declaration| declaration.action(&entry.name));
+    if entry.kind == "helper" || (policy.is_some() && policy_variant.is_none()) {
         return ValueProvenance::Derived { operation: format!("call-parameter:{}", param.name), inputs: Vec::new() };
     }
-    let bare_type = strip_semantic_reference(&param.ty);
-    let cell_bound = cell_types.contains(bare_type) || bounded_cell_element(&param.ty).is_some();
-    match param.source.as_str() {
-        "lockargs" | "lock-args" => ValueProvenance::ScriptArgs {
-            script_role: "lock".to_string(),
-            byte_range: format!("parameter[{}]", param.index),
-            codec: "typed-fixed-bytes".to_string(),
-        },
-        "output" => ValueProvenance::GroupOutput {
-            role: format!("{}:{}", entry.id, param.name),
-            ordinal: format!("source-order:output[{}]", param.index),
-            field_path: "data".to_string(),
-        },
-        "protected" => ValueProvenance::GroupInput {
-            role: format!("{}:{}", entry.id, param.name),
-            ordinal: "lock-group-relative".to_string(),
-            field_path: "cell".to_string(),
-        },
-        "input" if param.ty.starts_with("BoundedCellSet<") => ValueProvenance::GroupInput {
+    if let Some(binding) = cell_binding_for_typed_local(entry, param.binding_id) {
+        return binding.provenance(&entry.id);
+    }
+    if param.ty.starts_with("BoundedCellSet<") {
+        return ValueProvenance::GroupInput {
             role: format!("{}:{}", entry.id, param.name),
             ordinal: "all-in-canonical-group-order-up-to-bound".to_string(),
             field_path: "cell".to_string(),
+        };
+    }
+    match &abi_sources[param.index as usize] {
+        crate::codegen::EntryParamAbiSource::ScriptArgs { byte_range } => ValueProvenance::ScriptArgs {
+            script_role: if entry.kind == "lock" { "lock" } else { "type" }.to_string(),
+            byte_range: byte_range
+                .map(|(start, end)| format!("{start}..{end}"))
+                .unwrap_or_else(|| "unsupported-fail-closed".to_string()),
+            codec: "typed-fixed-bytes".to_string(),
         },
-        "input" | "default" if cell_bound => ValueProvenance::GroupInput {
-            role: format!("{}:{}", entry.id, param.name),
-            ordinal: format!("source-order:input[{}]", param.index),
-            field_path: "data".to_string(),
+        crate::codegen::EntryParamAbiSource::Witness { ordinal } if policy_variant.is_some() => ValueProvenance::EntryWitness {
+            placement_abi: crate::artifact::POLICY_WITNESS_PLACEMENT_ABI.to_string(),
+            payload_abi: crate::policy_witness::POLICY_WITNESS_ABI.to_string(),
+            group_witness_source: crate::artifact::POLICY_WITNESS_PLACEMENT_SOURCE.to_string(),
+            field_path: format!("input_type.records[type,current-script-hash].args[{ordinal}].{}", param.name),
         },
-        _ => ValueProvenance::EntryWitness {
+        crate::codegen::EntryParamAbiSource::Witness { ordinal } => ValueProvenance::EntryWitness {
             placement_abi: crate::ENTRY_WITNESS_PLACEMENT_ABI.to_string(),
             payload_abi: crate::ENTRY_WITNESS_ABI.to_string(),
             group_witness_source: crate::ENTRY_WITNESS_PLACEMENT_SOURCE.to_string(),
-            field_path: format!("args[{}].{}", param.index, param.name),
+            field_path: format!("args[{ordinal}].{}", param.name),
         },
+        crate::codegen::EntryParamAbiSource::Unit => ValueProvenance::Constant { declaration: "Unit".to_string() },
+        crate::codegen::EntryParamAbiSource::RuntimeBound => ValueProvenance::Derived {
+            operation: format!("unresolved-runtime-bound-entry-parameter:{}", param.name),
+            inputs: Vec::new(),
+        },
+        crate::codegen::EntryParamAbiSource::Unsupported => {
+            ValueProvenance::Derived { operation: format!("unsupported-entry-abi:{}", param.name), inputs: Vec::new() }
+        }
     }
 }
 
@@ -508,118 +557,63 @@ fn bind_operation_destinations(
     }
 }
 
-fn append_roles(
-    roles: &mut Vec<RoleBinding>,
-    entry_id: &str,
-    entry_kind: &str,
-    params: &[ir::IrParam],
-    body: &ir::IrBody,
-    types: &BTreeMap<&str, &TypedSemanticType>,
-    cell_types: &BTreeSet<&str>,
-) {
-    let mut input_ordinal = 0usize;
-    let mut output_ordinal = 0usize;
-    let read_bindings = body.read_refs.iter().map(|pattern| pattern.binding.as_str()).collect::<BTreeSet<_>>();
-    for param in params {
-        let ty = render_type(&param.ty);
-        let bare = strip_semantic_reference(&ty);
-        let element = bounded_cell_element(&ty);
-        if !cell_types.contains(bare) && element.is_none() {
-            continue;
-        }
-        let is_read = param.is_read_ref || read_bindings.contains(param.name.as_str());
-        let (direction, source, ordinal) = if is_read {
-            let ordinal = input_ordinal;
-            input_ordinal += 1;
-            ("read-only-dependency", "cell-dep", ordinal)
-        } else if param.source == crate::ast::ParamSource::Output {
-            let ordinal = output_ordinal;
-            output_ordinal += 1;
-            ("output", "group-relative", ordinal)
+fn append_roles(roles: &mut Vec<RoleBinding>, entry: &TypedSemanticEntry, types: &BTreeMap<&str, &TypedSemanticType>) {
+    let script_role = if entry.kind == "lock" { "lock" } else { "type" };
+    for binding in &entry.cell_bindings {
+        let direction = binding.direction();
+        let role_id = binding.role_id(&entry.id);
+        let schema_identity = types
+            .get(binding.ty.as_str())
+            .map(|layout| layout.layout_hash.clone())
+            .unwrap_or_else(|| format!("unresolved:{}", binding.ty));
+        let correspondence = if binding.role == CellBindingRole::Output {
+            entry
+                .cell_bindings
+                .iter()
+                .find(|input| input.binding == binding.binding && input.role == CellBindingRole::Input)
+                .map_or_else(
+                    || format!("canonical-output:{}", binding.selector()),
+                    |input| format!("successor-of-{}", input.selector()),
+                )
         } else {
-            let ordinal = input_ordinal;
-            input_ordinal += 1;
-            ("input", "group-relative", ordinal)
+            "none".to_string()
         };
-        let role_id = format!("role:{entry_id}:{direction}:{}", param.name);
-        let cardinality = bounded_cell_maximum(&ty).map_or_else(|| "exactly-one".to_string(), |maximum| format!("0..={maximum}"));
-        let schema_name = element.unwrap_or(bare);
-        let schema_identity =
-            types.get(schema_name).map(|layout| layout.layout_hash.clone()).unwrap_or_else(|| format!("unresolved:{schema_name}"));
-        let selector = if direction == "read-only-dependency" {
-            format!("cell-dep[{ordinal}] by declared type identity")
-        } else if ty.starts_with("BoundedCellSet<") {
-            "all current Type Script Group cells in canonical group order".to_string()
-        } else {
-            format!("{source}[{ordinal}]")
-        };
-        let correspondence_policy =
-            if direction == "output" { format!("canonical-fixed-arity-output-ordinal:{ordinal}") } else { "none".to_string() };
         roles.push(make_role(
             role_id,
-            entry_id,
-            param.name.clone(),
-            ty,
+            &entry.id,
+            binding.binding.clone(),
+            binding.ty.clone(),
             direction,
-            source,
-            selector,
-            cardinality,
-            if entry_kind == "lock" { "lock" } else { "type" },
-            "current-script-exact",
+            binding.source_scope(),
+            binding.selector(),
+            "exactly-one".to_string(),
+            script_role,
+            binding.membership_policy(),
             schema_identity,
-            correspondence_policy,
+            correspondence,
         ));
     }
-    for pattern in &body.mutate_set {
-        let role_id = format!("role:{entry_id}:output:{}", pattern.binding);
-        if roles.iter().any(|role| role.role_id == role_id) {
-            continue;
-        }
-        let schema_identity = types
-            .get(pattern.ty.as_str())
-            .map(|layout| layout.layout_hash.clone())
-            .unwrap_or_else(|| format!("unresolved:{}", pattern.ty));
+    // Bounded handles have an independently executable scan contract. They
+    // must not be projected as a fixed Cell at the parameter signature index.
+    for param in &entry.params {
+        let Some(element) = bounded_cell_element(&param.ty) else { continue };
+        let Some(maximum) = bounded_cell_maximum(&param.ty) else { continue };
         roles.push(make_role(
-            role_id,
-            entry_id,
-            pattern.binding.clone(),
-            pattern.ty.clone(),
-            "output",
+            format!("role:{}:input:{}", entry.id, param.name),
+            &entry.id,
+            param.name.clone(),
+            param.ty.clone(),
+            "input",
             "group-relative",
-            format!("group-output[{}]", pattern.output_index),
-            "exactly-one".to_string(),
-            if entry_kind == "lock" { "lock" } else { "type" },
-            "current-script-exact",
-            schema_identity,
-            format!("successor-of-group-input[{}]", pattern.input_index),
-        ));
-    }
-    for (ordinal, pattern) in body.create_set.iter().enumerate() {
-        let role_id = format!("role:{entry_id}:output:{}", pattern.binding);
-        if roles.iter().any(|role| role.role_id == role_id) {
-            continue;
-        }
-        let schema_identity = types
-            .get(pattern.ty.as_str())
-            .map(|layout| layout.layout_hash.clone())
-            .unwrap_or_else(|| format!("unresolved:{}", pattern.ty));
-        roles.push(make_role(
-            role_id,
-            entry_id,
-            pattern.binding.clone(),
-            pattern.ty.clone(),
-            "output",
-            "group-relative",
-            format!("group-output[{ordinal}]"),
-            "exactly-one".to_string(),
-            if entry_kind == "lock" { "lock" } else { "type" },
-            "current-script-exact",
-            schema_identity,
-            format!("canonical-create-order:{ordinal}"),
+            "all current Type Script Group cells in canonical group order".to_string(),
+            format!("0..={maximum}"),
+            script_role,
+            "current-type-group",
+            types.get(element).map(|layout| layout.layout_hash.clone()).unwrap_or_else(|| format!("unresolved:{element}")),
+            "none".to_string(),
         ));
     }
 }
-
 #[allow(clippy::too_many_arguments)]
 fn make_role(
     role_id: String,
@@ -681,7 +675,13 @@ fn append_source_dispositions(
 ) {
     for source in source_dispositions {
         let input_role = source.input_binding.as_ref().map(|binding| format!("role:{entry_id}:input:{binding}"));
-        let output_role = source.output_binding.as_ref().map(|binding| format!("role:{entry_id}:output:{binding}"));
+        let output_role = source.output_binding.as_ref().map(|binding| {
+            let ordinal = body
+                .cell_binding(ir::IrCellBindingRole::Output, binding)
+                .expect("native output has a resolved physical location")
+                .ordinal;
+            format!("role:{entry_id}:output:{binding}:output[{ordinal}]")
+        });
         match &source.kind {
             ir::IrSourceDispositionKind::Successor => {
                 let input_binding = source.input_binding.as_deref().expect("validated native successor input");
@@ -844,6 +844,10 @@ fn source_binding_type(params: &[ir::IrParam], body: &ir::IrBody, binding: &str)
         .or_else(|| body.create_set.iter().find(|pattern| pattern.binding == binding).map(|pattern| pattern.ty.clone()))
 }
 
+// Legacy node meanings name the semantic contract inherited from Edition 2026,
+// not the caller's source edition. The outer compatibility profile already
+// records the frontend. Keeping these meanings fixed preserves canonical IDs
+// for identical legacy operations accepted by the authoring frontend.
 fn append_dispositions(
     dispositions: &mut Vec<CellDisposition>,
     legacy_nodes: &mut Vec<LegacySemanticNode>,
@@ -854,7 +858,6 @@ fn append_dispositions(
     source_dispositions: &[ir::IrSourceDisposition],
     types: &BTreeMap<&str, &TypedSemanticType>,
     proof_plan: &[crate::ProofPlanMetadata],
-    edition: &str,
 ) {
     if entry_kind == "lock" {
         for param in params.iter().filter(|param| param.source == crate::ast::ParamSource::Protected) {
@@ -898,7 +901,7 @@ fn append_dispositions(
     let mutated = body.mutate_set.iter().map(|pattern| pattern.binding.as_str()).collect::<BTreeSet<_>>();
     for pattern in &body.mutate_set {
         let input_role = format!("role:{entry_id}:input:{}", pattern.binding);
-        let output_role = format!("role:{entry_id}:output:{}", pattern.binding);
+        let output_role = format!("role:{entry_id}:output:{}:output[{}]", pattern.binding, pattern.output_index);
         let transition_by_field = pattern
             .transitions
             .iter()
@@ -941,7 +944,7 @@ fn append_dispositions(
                 type_script: if pattern.preserve_type_hash { "preserve" } else { "set-and-check" }.to_string(),
                 capacity: "preserve-or-explicit-runtime-relation".to_string(),
                 cardinality: "one-input-to-one-output".to_string(),
-                correspondence: format!("group-input[{}]->group-output[{}]", pattern.input_index, pattern.output_index),
+                correspondence: format!("input[{}]->output[{}]", pattern.input_index, pattern.output_index),
             },
             "checked-runtime",
         ));
@@ -951,7 +954,7 @@ fn append_dispositions(
     let successor_outputs = successor_pairs.iter().map(|pair| pair.output_binding.as_str()).collect::<BTreeSet<_>>();
     for pair in &successor_pairs {
         let input_role = format!("role:{entry_id}:input:{}", pair.input_binding);
-        let output_role = format!("role:{entry_id}:output:{}", pair.output_binding);
+        let output_role = format!("role:{entry_id}:output:{}:output[{}]", pair.output_binding, pair.output_index);
         let fields = type_fields(types, &pair.ty)
             .into_iter()
             .map(|field| FieldDisposition { field: field.to_string(), treatment: "checked-successor-relation".to_string() })
@@ -974,7 +977,7 @@ fn append_dispositions(
                 type_script: "preserve-and-check".to_string(),
                 capacity: "builder-set-and-chain-checked".to_string(),
                 cardinality: "one-input-to-one-output".to_string(),
-                correspondence: format!("group-input[{}]->group-output[{}]", pair.input_index, pair.output_index),
+                correspondence: format!("input[{}]->output[{}]", pair.input_index, pair.output_index),
             },
             "checked-runtime",
         ));
@@ -1033,19 +1036,23 @@ fn append_dispositions(
             format!("legacy:{id}"),
             "input-disposition",
             format!(
-                "Edition {edition} operation '{}' terminates linear ownership without a complete next-edition disposition",
+                "Edition 2026 operation '{}' terminates linear ownership without a complete next-edition disposition",
                 pattern.operation
             ),
             migration,
         ));
         dispositions.push(disposition);
     }
-    for pattern in &body.create_set {
+    for (ordinal, pattern) in body.create_set.iter().enumerate() {
         if successor_outputs.contains(pattern.binding.as_str()) {
             continue;
         }
-        let output_role = format!("role:{entry_id}:output:{}", pattern.binding);
-        let id = format!("disposition:{entry_id}:output:{}", pattern.binding);
+        let output_role = if pattern.operation == "bounded-create" {
+            format!("role:{entry_id}:output:{}", pattern.binding)
+        } else {
+            format!("role:{entry_id}:output:{}:output[{ordinal}]", pattern.binding)
+        };
+        let id = format!("disposition:{entry_id}:output:{}:output[{ordinal}]", pattern.binding);
         let declared_fields = type_fields(types, &pattern.ty);
         let provided = pattern.fields.iter().map(|(field, _)| field.as_str()).collect::<BTreeSet<_>>();
         let exhaustive = !declared_fields.is_empty() && declared_fields.iter().all(|field| provided.contains(field));
@@ -1122,7 +1129,7 @@ fn append_dispositions(
             format!("legacy:{id}"),
             "bounded-input-disposition",
             format!(
-                "Edition {edition} consume_each checks up to {} Type Script Group inputs but does not classify their business disposition",
+                "Edition 2026 consume_each checks up to {} Type Script Group inputs but does not classify their business disposition",
                 operation.max_elements
             ),
             "select a per-element Successor, Pooled, or Retired disposition",
@@ -1433,7 +1440,16 @@ fn build_entry(
         .map(|block| {
             let mut operations =
                 block.instructions.iter().map(|instruction| operation(instruction, &mut locals, signatures)).collect::<Vec<_>>();
-            if let IrTerminator::Return(operand) = &block.terminator {
+            if let Some(error) = block.runtime_error {
+                operations.push(TypedSemanticOperation {
+                    index: 0,
+                    opcode: "verifier-failure".to_string(),
+                    destinations: Vec::new(),
+                    operands: vec![typed_operand(&ir::IrOperand::Const(ir::IrConst::U64(error.code())), &mut locals)],
+                    detail: TypedSemanticOperationDetail::None,
+                    call: None,
+                });
+            } else if let IrTerminator::Return(operand) = &block.terminator {
                 operations.push(TypedSemanticOperation {
                     index: 0,
                     opcode: "return".to_string(),
@@ -1457,6 +1473,7 @@ fn build_entry(
                 operation.index = u32::try_from(index).unwrap_or(u32::MAX);
             }
             let (terminator, successors) = match &block.terminator {
+                _ if block.runtime_error.is_some() => ("verifier-failure", Vec::new()),
                 IrTerminator::Return(_) => ("return", Vec::new()),
                 IrTerminator::Jump(target) => ("jump", vec![u32::try_from(target.0).unwrap_or(u32::MAX)]),
                 IrTerminator::Branch { then_block, else_block, .. } => {
@@ -1537,11 +1554,41 @@ fn build_entry(
         .collect::<Vec<_>>();
     let mut typed_locals = locals.into_values();
     refine_collection_local_types(&mut typed_locals, &mut typed_params, &mut blocks);
+    let cell_bindings = body
+        .cell_bindings
+        .iter()
+        .map(|binding| TypedSemanticCellBinding {
+            binding: binding.binding.clone(),
+            role: match binding.role {
+                ir::IrCellBindingRole::Input => CellBindingRole::Input,
+                ir::IrCellBindingRole::Output => CellBindingRole::Output,
+                ir::IrCellBindingRole::ReadOnly => CellBindingRole::ReadOnly,
+            },
+            local_id: binding
+                .local_id
+                .and_then(|source_id| typed_locals.iter().find(|local| local.source_id == source_id as u64).map(|local| local.id)),
+            ty: binding.ty.clone(),
+            source: match binding.source {
+                ir::IrCellSource::Input => CellBindingSource::Input,
+                ir::IrCellSource::Output => CellBindingSource::Output,
+                ir::IrCellSource::GroupInput => CellBindingSource::GroupInput,
+                ir::IrCellSource::GroupOutput => CellBindingSource::GroupOutput,
+                ir::IrCellSource::CellDep => CellBindingSource::CellDep,
+            },
+            ordinal: u32::try_from(binding.ordinal).unwrap_or(u32::MAX),
+            membership: match binding.membership {
+                ir::IrCellMembership::Unproven => CellBindingMembership::Unproven,
+                ir::IrCellMembership::CurrentTypeGroup => CellBindingMembership::CurrentTypeGroup,
+                ir::IrCellMembership::CurrentLockGroup => CellBindingMembership::CurrentLockGroup,
+            },
+        })
+        .collect();
     TypedSemanticEntry {
         id: format!("{kind}:{name}"),
         kind: kind.to_string(),
         name: name.to_string(),
         params: typed_params,
+        cell_bindings,
         return_type: return_type.map(render_type).unwrap_or_else(|| "unit".to_string()),
         effect: effect.to_string(),
         entry_block: body.blocks.first().and_then(|block| u32::try_from(block.id.0).ok()).unwrap_or(0),
@@ -1728,7 +1775,8 @@ fn operation(
             let signature = signatures.get(func).cloned().unwrap_or_else(|| CallableSignature {
                 params: args.iter().map(operand_type).collect(),
                 return_type: dest.as_ref().map(|dest| render_type(&dest.ty)).unwrap_or_else(|| "unit".to_string()),
-                effect: "runtime-contract".to_string(),
+                effect: crate::ir::IrDeferredRuntimeFeature::from_helper(func)
+                    .map_or_else(|| "runtime-contract".to_string(), |deferred| deferred.effect()),
                 contract: "versioned-runtime-helper".to_string(),
             });
             (

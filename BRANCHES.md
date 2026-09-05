@@ -6,15 +6,29 @@
 foundation. It starts from `origin/nightly-0.26` and adds versioned provenance,
 role, disposition, claim, entry-selection, source-map, and layered-identity
 records plus a separately routed Edition 2027 preview frontend and
-`cellc expand`. The branch also implements the bounded
-`cellscript-source-semantics-2027-preview4` native `type_script` and
+`cellc expand`. The `cellscript-source-semantics-2027-authoring1` route now
+shares the complete 2026 declaration/value/statement grammar, accepts ordinary
+multi-entry source modules, and makes the action/lock `verification` marker
+optional. A separate bounded Type-policy artifact path now dispatches explicitly
+tagged actions from full Script-hash keyed witness records. Complete product and
+authenticated lifecycle support, independent machine dispatch proof and concise
+relations remain implementation work, not implied by grammar reuse. The branch retains the bounded native
+`type_script` and
 `lock_script` surfaces specified in
 `docs/CELLSCRIPT_2027_PREVIEW_GRAMMAR.md`, including fixed-role checked pools,
 exact retirement/fresh-output plans, and metadata-only external-policy audits.
+These native forms were introduced by `cellscript-source-semantics-2027-preview4`.
 It is implementation evidence for
 the umbrella RFC, not a
 stable release, accepted grammar, production-equivalence claim, or 1.0
 readiness claim. Edition 2026 remains the stable source-semantics default.
+
+The [adopted authoring target](docs/CELLSCRIPT_AUTHORING_TARGET.md) preserves
+`resource`, `action`, `lock`, and `require` while requiring concise successor
+relations and multiple actions under one persistent deployed policy. It is
+design direction for the next iteration, not functionality already provided
+by preview4. The versioned semantic model remains reusable; the verbose
+preview4 text is not the final authoring target.
 
 ## nightly-0.26
 

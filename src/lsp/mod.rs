@@ -375,7 +375,7 @@ impl LspServer {
             ("action", "action ${1:name}(input ${2:cell}: ${3:CellType}) -> ${4:output}: ${3:CellType} {\n    verification\n        $0\n}"),
             (
                 "lock",
-                "lock ${1:name}(protected ${2:cell}: ${3:CellType}, witness ${4:arg}: ${5:Address}, lock_args ${6:owner}: ${7:Address}) -> bool {\n    verification\n        require ${6} == ${2}.owner\n        require ${4} == ${6}\n        $0\n}",
+                "lock ${1:name}(protected ${2:cell}: ${3:CellType}) -> bool {\n    verification\n        require ${4:authorization_condition}\n        $0\n}",
             ),
             ("const", "const ${1:NAME}: ${2:u64} = $0;"),
             ("enum", "enum ${1:Name} {\n    $0\n}"),
@@ -1020,7 +1020,7 @@ impl LspServer {
             ("transition", "transition ${1:input} -> ${2:output}"),
             (
                 "lock",
-                "lock ${1:name}(protected ${2:cell}: ${3:CellType}, witness ${4:arg}: ${5:Address}, lock_args ${6:owner}: ${7:Address}) -> bool {\n    verification\n        require ${6} == ${2}.owner\n        require ${4} == ${6}\n        $0\n}",
+                "lock ${1:name}(protected ${2:cell}: ${3:CellType}) -> bool {\n    verification\n        require ${4:authorization_condition}\n        $0\n}",
             ),
             ("let", "let ${1:name} = $0"),
             ("if", "if ${1:condition} {\n    $0\n}"),
@@ -1032,6 +1032,7 @@ impl LspServer {
             ("borrow", "borrow ${1:root} as ${2:view} {\n    $0\n}"),
             ("return", "return $0"),
             ("create", "create ${1:output} = ${2:Type} { $0 }"),
+            ("consume", "consume ${1:input}"),
             ("destroy", "destroy ${1:expr}"),
             ("require", "require ${1:condition}"),
             (
@@ -1066,6 +1067,12 @@ impl LspServer {
             keywords.extend([
                 ("type_script", "type_script ${1:Name} on type_group<${2:CellType}> {\n    $0\n}"),
                 ("lock_script", "lock_script ${1:Name} on lock_group {\n    $0\n}"),
+            ]);
+        }
+        if edition == crate::NEXT_EDITION && self.documents.get(uri).is_some_and(|source| crate::frontend::uses_native_preview(source))
+        {
+            keywords.retain(|(label, _)| !matches!(*label, "consume" | "consume_each"));
+            keywords.extend([
                 ("lock_group", "lock_group"),
                 ("current_script", "current_script.args"),
                 ("entry", "entry ${1:name}($0)"),
@@ -1077,13 +1084,12 @@ impl LspServer {
                 ("retire", "retire ${1:input} {\n    absence = ${2:field(identity)}\n    data = discarded\n    lock_script = none\n    type_script = absent\n    capacity = released\n    cardinality = one\n}"),
                 ("fresh", "fresh ${1:output} {\n    data {\n        ${2:field} = ${3:value}\n    }\n    identity = ${4:none}\n    type_script = declared\n    lock_script = exact_hash(${5:recipient})\n    capacity = builder_computed\n    cardinality = one\n}"),
                 ("audit", "audit ${1:name} {\n    expected_evidence = external_policy(${2:subject})\n}"),
-                ("exact_hash", "exact_hash(${1:address})"),
+                ("exact_hash", "exact_hash(${1:script_hash})"),
             ]);
         }
 
         keywords
             .into_iter()
-            .filter(|(label, _)| edition == crate::CURRENT_EDITION || !matches!(*label, "consume" | "consume_each"))
             .map(|(label, insert)| CompletionItem {
                 label: label.to_string(),
                 kind: CompletionItemKind::Keyword,
@@ -2230,7 +2236,7 @@ fn lowering_diagnostics(source: &str, module: &Module, metadata: &crate::Compile
                 "action '{}' {}; fail-closed runtime features: {}; CKB runtime features: {}; CKB accesses: {}",
                 action.name,
                 if action.elf_compatible { "emits fail-closed runtime traps" } else { "is not currently ELF-compatible" },
-                diagnostic_list(&action.fail_closed_runtime_features),
+                diagnostic_fail_closed_features(&action.fail_closed_runtime_features, &action.verifier_obligations),
                 diagnostic_list(&action.ckb_runtime_features),
                 diagnostic_access_list(&action.ckb_runtime_accesses)
             ),
@@ -2259,7 +2265,7 @@ fn lowering_diagnostics(source: &str, module: &Module, metadata: &crate::Compile
                 "lock '{}' {}; fail-closed runtime features: {}; CKB runtime features: {}; CKB accesses: {}",
                 lock.name,
                 if lock.elf_compatible { "emits fail-closed runtime traps" } else { "is not currently ELF-compatible" },
-                diagnostic_list(&lock.fail_closed_runtime_features),
+                diagnostic_fail_closed_features(&lock.fail_closed_runtime_features, &lock.verifier_obligations),
                 diagnostic_list(&lock.ckb_runtime_features),
                 diagnostic_access_list(&lock.ckb_runtime_accesses)
             ),
@@ -2267,7 +2273,50 @@ fn lowering_diagnostics(source: &str, module: &Module, metadata: &crate::Compile
         });
     }
 
+    for function in &metadata.functions {
+        if function.elf_compatible && function.fail_closed_runtime_features.is_empty() {
+            continue;
+        }
+        let span = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(def) if def.name == function.name => Some(def.span),
+                _ => None,
+            })
+            .unwrap_or_default();
+        diagnostics.push(Diagnostic {
+            range: span_to_range(source, span),
+            severity: DiagnosticSeverity::Warning,
+            code: None,
+            code_description: None,
+            message: format!(
+                "fn '{}' {}; fail-closed runtime features: {}; CKB runtime features: {}; CKB accesses: {}",
+                function.name,
+                if function.elf_compatible { "emits fail-closed runtime traps" } else { "is not currently ELF-compatible" },
+                diagnostic_fail_closed_features(&function.fail_closed_runtime_features, &function.verifier_obligations),
+                diagnostic_list(&function.ckb_runtime_features),
+                diagnostic_access_list(&function.ckb_runtime_accesses)
+            ),
+            source: "cellscript-lowering".to_string(),
+        });
+    }
+
     diagnostics
+}
+
+fn diagnostic_fail_closed_features(features: &[String], obligations: &[crate::VerifierObligationMetadata]) -> String {
+    let descriptions = features
+        .iter()
+        .map(|feature| {
+            obligations
+                .iter()
+                .find(|obligation| obligation.feature == *feature && obligation.status == "fail-closed")
+                .map(|obligation| format!("{} ({})", feature, obligation.detail))
+                .unwrap_or_else(|| feature.clone())
+        })
+        .collect::<Vec<_>>();
+    diagnostic_list(&descriptions)
 }
 
 fn diagnostic_list(items: &[String]) -> String {
@@ -3405,6 +3454,60 @@ action update(amount: u64) -> u64 {
     }
 
     #[test]
+    fn test_lowering_diagnostics_explain_deferred_runtime_in_locks_and_helpers() {
+        let fixtures = [
+            (
+                "lock 'unlock'",
+                "lock:unlock",
+                "lock unlock",
+                "module deferred_digest\nlock unlock() -> bool { verification let value = env::sighash_all(source::group_input(0)) return value == value }\n",
+            ),
+            (
+                "fn 'digest'",
+                "fn:digest",
+                "fn digest",
+                "module deferred_digest\nfn digest() -> Hash { return env::sighash_all(source::group_input(0)) }\n",
+            ),
+            (
+                "fn 'digest'",
+                "fn:digest",
+                "fn digest",
+                "module deferred_digest\nfn digest() -> Hash { return env::sighash_all(source::group_input(0)) }\nlock unlock() -> bool { verification let value = digest() return value == value }\n",
+            ),
+        ];
+        for edition in [crate::CURRENT_EDITION, crate::NEXT_EDITION] {
+            for (callable, scope, declaration, source) in fixtures {
+                let source = if edition == crate::NEXT_EDITION { source.replace("verification", "") } else { source.to_string() };
+                let metadata = crate::compile_metadata(&source, edition, None).expect("audit metadata remains available");
+                let obligation = metadata
+                    .runtime
+                    .verifier_obligations
+                    .iter()
+                    .find(|obligation| {
+                        obligation.scope == scope
+                            && obligation.feature == "ckb-sighash-all-deferred"
+                            && obligation.status == "fail-closed"
+                    })
+                    .expect("shared metadata must explain the deferred operation");
+                let mut server = LspServer::new();
+                let uri = "file:///deferred_digest.cell".to_string();
+                server.open_document_with_edition(uri.clone(), source.clone(), edition);
+                let diagnostics = server.get_diagnostics(&uri);
+                assert!(diagnostics.iter().all(|diagnostic| diagnostic.severity != DiagnosticSeverity::Error), "{diagnostics:?}");
+                let warning = diagnostics
+                    .iter()
+                    .find(|diagnostic| diagnostic.source == "cellscript-lowering" && diagnostic.message.contains(callable))
+                    .expect("a lock or helper must expose its unsupported runtime operation");
+                assert_eq!(warning.severity, DiagnosticSeverity::Warning);
+                assert!(warning.message.contains(&obligation.feature), "{warning:?}");
+                assert!(warning.message.contains(&obligation.detail), "{warning:?}");
+                assert_eq!(warning.range.start, offset_to_position(&source, source.find(declaration).unwrap()));
+                assert!(warning.range.end.line >= warning.range.start.line);
+            }
+        }
+    }
+
+    #[test]
     fn test_code_actions_for_lowering_diagnostics() {
         let mut server = LspServer::new();
         let uri = "file:///metadata_action.cell".to_string();
@@ -3449,7 +3552,7 @@ action update(amount: u64) -> u64 {
             "[package]\nedition = \"2027\"\nname = \"preview\"\nversion = \"0.1.0\"\nentry = \"src/main.cell\"\n",
         )
         .unwrap();
-        let source = "module preview\naction main(value: u64) -> u64 { verification return value }\n";
+        let source = "module preview\naction main(value: u64) -> u64 { return value }\n";
         let source_path = root.join("src/main.cell");
         std::fs::write(&source_path, source).unwrap();
 
@@ -3458,16 +3561,15 @@ action update(amount: u64) -> u64 {
         server.open_document(uri.clone(), source.to_string());
 
         let diagnostics = server.get_diagnostics(&uri);
-        assert!(diagnostics.iter().any(|diagnostic| diagnostic.message.contains("has no explicit source")));
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {diagnostics:?}");
         let completions = server.completion(&uri, Position { line: 1, character: 64 });
-        assert!(!completions.iter().any(|item| item.label == "consume" || item.label == "consume_each"));
+        assert!(server.keyword_completions(&uri).iter().any(|item| item.label == "consume"));
+        assert!(server.keyword_completions(&uri).iter().any(|item| item.label == "consume_each"));
         assert!(completions.iter().any(|item| item.label == "type_script"));
         assert!(completions.iter().any(|item| item.label == "lock_script"));
-        assert!(server.keyword_completions(&uri).iter().any(|item| item.label == "effects"));
-        assert!(server.keyword_completions(&uri).iter().any(|item| item.label == "pool"));
-        assert!(server.keyword_completions(&uri).iter().any(|item| item.label == "retire"));
-        assert!(server.keyword_completions(&uri).iter().any(|item| item.label == "fresh"));
-        assert!(server.keyword_completions(&uri).iter().any(|item| item.label == "audit"));
+        for label in ["effects", "pool", "retire", "fresh", "audit"] {
+            assert!(!server.keyword_completions(&uri).iter().any(|item| item.label == label));
+        }
 
         let native = r#"module preview
 resource Token has store, replace, relock { owner: Address, amount: u64 }
@@ -3494,6 +3596,10 @@ type_script TokenTransfer on type_group<Token> {
         std::fs::write(&source_path, native).unwrap();
         server.update_document(uri.clone(), native.to_string());
         assert!(server.get_diagnostics(&uri).is_empty());
+        for label in ["effects", "pool", "retire", "fresh", "audit"] {
+            assert!(server.keyword_completions(&uri).iter().any(|item| item.label == label));
+        }
+        assert!(!server.keyword_completions(&uri).iter().any(|item| item.label == "consume" || item.label == "consume_each"));
         let edits = server.format_document(&uri);
         assert_eq!(edits.len(), 1);
         assert!(edits[0].new_text.contains("type_script TokenTransfer on type_group<Token>"));

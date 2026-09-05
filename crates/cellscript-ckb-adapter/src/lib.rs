@@ -19,6 +19,8 @@ use std::{
     path::Path,
 };
 
+pub mod policy_witness;
+
 pub const ACTION_PLAN_POLICY: &str = "cellscript-action-builder-plan-v1";
 pub const ADAPTER_CONTRACT_SCHEMA: &str = "cellscript-ckb-adapter-contract-v0.19";
 pub const ACTION_ACCEPTANCE_REPORT_SCHEMA: &str = "cellscript-ckb-action-acceptance-report-v0.19";

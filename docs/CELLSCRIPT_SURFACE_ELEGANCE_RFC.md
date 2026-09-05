@@ -96,11 +96,12 @@ The security-sensitive boundary remains deliberately narrow:
 - `lock_args` binds fixed-width lock parameters to bytes decoded from the
   executing lock script's `Script.args`; explicit sighash verification remains
   separate.
-- Sighash building blocks (`source::group_input`, `witness::lock`,
-  `env::sighash_all`) are implemented and exercised in
-  `examples/language/core/canonical_style.cell` and
-  `examples/language/ckb/witness_source.cell`; the high-level
-  `verify_sighash_all(sig, owner)` composition is not part of 0.13.
+- `source::group_input` and `witness::lock` are executable building blocks.
+  `env::sighash_all` has source syntax but canonical digest construction is
+  deferred: production policy rejects it and audit artifacts exit with error
+  `66 sighash-all-unsupported`. The language examples retain it only as an
+  inspectable deferred boundary. High-level `verify_sighash_all(sig, owner)`
+  composition is also unavailable.
 - First-class verified signer values are deferred.
 - `protects T { self ... }` sugar is deferred until protected-input selection
   and lock-group aggregation semantics are exact.
@@ -440,6 +441,13 @@ the seven-example CKB production matrix.
 It should be the idiomatic reference for documentation, generated examples, and
 future regression tests.
 
+This is a syntax/formatting fixture, not an ownership-authorization reference.
+Its `env::sighash_all` call is the explicitly deferred signing-message boundary:
+production policy rejects it and audit execution exits with error 66. The
+public-owner equality does not authenticate a spender. Use real signed Lock
+fixtures for authorization evidence; comments inside this canonical fixture
+are not retained by the current formatter.
+
 ## Acceptance Criteria
 
 - Bundled examples use namespace-style module declarations.
@@ -467,7 +475,8 @@ This list is the living implementation tracker for the RFC.
 | `witness` parameter classification | Done | Records `source: "witness"` metadata; this is still transaction witness data, never signer authority. |
 | `require` lock assertion form | Done | Lowers false conditions to the same fail-closed script validation failure path while producing `true` on success for bool-returning locks. |
 | `lock_args` data-source binding | Implemented for fixed-width lock parameters | Entry wrapper decodes the executing Script.args bytes and rejects trailing bytes after declared typed parameters. |
-| Sighash building blocks (`source::group_input`, `witness::lock`, `env::sighash_all`) | Done | Low-level CKB syscall wrappers for source view construction, witness lock field loading, and sighash-all digest computation. Exercised in `canonical_style.cell` and `ckb/witness_source.cell`. |
+| Source and witness building blocks (`source::group_input`, `witness::lock`) | Done | Executable source view construction and witness lock field loading. |
+| Canonical `env::sighash_all` digest construction | Deferred | Syntax remains inspectable; `ckb-sighash-all-deferred` rejects production compilation and audit execution exits with runtime error 66. No digest is produced. |
 | High-level `verify_sighash_all` composition | Not started | Must compose building blocks into a single check and define digest mode, script group scope, witness layout, and replay assumptions. |
 | First-class verified signer abstraction | Deferred | Only after explicit verification primitives are proven and documented. |
 | Hidden sighash defaults | Rejected | Digest mode and signature scope must be visible. |

@@ -63,6 +63,7 @@ Production compilation means `--production` or `--deny-fail-closed`; both stop b
 | `ir:bounded-output-verify` | instruction | bounded | accepted only when the shape classifier reports no fail-closed feature | Plan-relative GroupOutput data, lock, Type Script role, and declared capacity-floor verification. | `none` |
 | `ir:bounded-output-end` | instruction | bounded | accepted only when the shape classifier reports no fail-closed feature | Exact plan-count to current Type Script GroupOutput-count correspondence. | `none` |
 | `ir:call` | instruction | bounded | accepted only when the shape classifier reports no fail-closed feature | Resolved typed callable with a closed ABI and effect summary. | `none` |
+| `artifact:ckb-sighash-all` | artifact-policy | reserved | rejected by production policy | Canonical transaction sighash construction is deferred. Audit artifacts unconditionally exit with runtime error 66 when called, including discarded results and helper calls. | `ckb-sighash-all-deferred` |
 | `ir:read-ref` | instruction | bounded | accepted | Explicit Input or CellDep read-only Cell view. | `none` |
 | `ir:move` | instruction | complete | accepted | Typed local move; ownership validity is checked before lowering. | `none` |
 | `ir:tuple` | instruction | bounded | accepted only when the shape classifier reports no fail-closed feature | Deterministic fixed aggregate construction. | `none` |

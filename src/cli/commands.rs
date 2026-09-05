@@ -153,6 +153,7 @@ pub struct BuildArgs {
     pub target_profile: Option<String>,
     pub entry_action: Option<String>,
     pub entry_lock: Option<String>,
+    pub artifact: Option<String>,
     pub jobs: Option<usize>,
     pub features: Vec<String>,
     pub all_features: bool,
@@ -267,6 +268,7 @@ pub struct PackageLockArgs {
 #[derive(Debug, Default)]
 pub struct CheckArgs {
     pub all_targets: bool,
+    pub artifact: Option<String>,
     pub target_profile: Option<String>,
     pub features: Vec<String>,
     pub all_features: bool,
@@ -290,6 +292,7 @@ pub struct CheckArgs {
 #[derive(Debug, Default)]
 pub struct MetadataArgs {
     pub input: Option<PathBuf>,
+    pub artifact: Option<String>,
     pub output: Option<PathBuf>,
     pub target: Option<String>,
     pub target_profile: Option<String>,
@@ -298,6 +301,7 @@ pub struct MetadataArgs {
 #[derive(Debug, Default)]
 pub struct ExpandArgs {
     pub input: Option<PathBuf>,
+    pub artifact: Option<String>,
     pub output: Option<PathBuf>,
     pub target: Option<String>,
     pub target_profile: Option<String>,
@@ -521,6 +525,7 @@ pub struct ActionBuildArgs {
 #[derive(Debug, Default)]
 pub struct GenBuilderArgs {
     pub input: Option<PathBuf>,
+    pub artifact: Option<String>,
     pub metadata: Option<PathBuf>,
     pub lockfile: Option<PathBuf>,
     pub deployed: Option<PathBuf>,
@@ -537,6 +542,8 @@ pub struct GenBuilderArgs {
 #[derive(Debug, Default)]
 pub struct EntryWitnessArgs {
     pub input: Option<PathBuf>,
+    pub artifact: Option<String>,
+    pub script_hash: Option<String>,
     pub action: Option<String>,
     pub lock: Option<String>,
     pub args: Vec<String>,
@@ -822,13 +829,11 @@ impl RunOutcome {
 
 #[cfg(feature = "vm-runner")]
 fn run_entry_outcome(metadata: &CompileMetadata) -> Option<RunEntryOutcome> {
-    metadata
-        .actions
-        .iter()
-        .find(|action| action.name == "main")
-        .or_else(|| metadata.actions.iter().find(|action| action.params.is_empty()))
-        .map(|action| RunEntryOutcome { kind: "action".to_string(), name: action.name.clone() })
-        .or_else(|| metadata.locks.first().map(|lock| RunEntryOutcome { kind: "lock".to_string(), name: lock.name.clone() }))
+    let (kind, name) = metadata.typed_semantics.foundation.entry_contract.exact_entry.split_once(':')?;
+    match kind {
+        "action" | "lock" => Some(RunEntryOutcome { kind: kind.to_string(), name: name.to_string() }),
+        _ => None,
+    }
 }
 
 fn collect_workspace_incremental_caches(root: &Path, caches: &mut Vec<PathBuf>) -> Result<()> {
@@ -977,6 +982,7 @@ impl CommandExecutor {
     }
 
     fn build(args: BuildArgs) -> Result<()> {
+        validate_build_entry_selection(&args)?;
         // Workspace mode: build all members or a specific member.
         if args.workspace || args.package.is_some() {
             return Self::build_workspace(args);
@@ -1018,7 +1024,11 @@ impl CommandExecutor {
         let cache_options = options.clone();
         let resolution_options = build_resolution_options(&args, crate::package::DependencyScope::Runtime);
         let result = crate::package::with_resolution_options(resolution_options, || {
-            compile_path_with_executable_surface_policy(input, options, entry_scope, executable_surface_policy)
+            if let Some(name) = args.artifact.as_deref() {
+                crate::compile_path_with_artifact_name(input, options, name, executable_surface_policy)
+            } else {
+                compile_path_with_executable_surface_policy(input, options, entry_scope, executable_surface_policy)
+            }
         })?;
         validate_check_policy(&result.metadata, &policy_args)?;
         let resolved = resolve_input_path(input)?;
@@ -1031,7 +1041,7 @@ impl CommandExecutor {
         if !args.frozen {
             refresh_lockfile_from_build(std::path::Path::new("."), &result.metadata)?;
         }
-        if args.entry_action.is_none() && args.entry_lock.is_none() {
+        if args.entry_action.is_none() && args.entry_lock.is_none() && args.artifact.is_none() {
             crate::refresh_incremental_cache_for_input(input, &cache_options, &result)?;
         }
 
@@ -1042,6 +1052,7 @@ impl CommandExecutor {
         let mut summary = serde_json::json!({
             "status": "ok",
             "artifact": output_path.to_string(),
+            "policy_artifact": args.artifact,
             "metadata": metadata_path.to_string(),
             "artifact_format": result.artifact_format.display_name(),
             "opt_level": opt_level,
@@ -1115,6 +1126,7 @@ impl CommandExecutor {
     }
 
     fn build_workspace(args: BuildArgs) -> Result<()> {
+        validate_build_entry_selection(&args)?;
         let ws_root = crate::find_workspace_root(Utf8Path::new("."))?.ok_or_else(|| {
             crate::error::CompileError::without_span(
                 "no workspace root found; run from a directory containing a [workspace] Cell.toml",
@@ -1172,7 +1184,11 @@ impl CommandExecutor {
                 }
             };
             let compile_result = crate::package::with_resolution_options(resolution_options, || {
-                compile_path_with_executable_surface_policy(member_dir, options, entry_scope, executable_surface_policy)
+                if let Some(name) = args.artifact.as_deref() {
+                    crate::compile_path_with_artifact_name(member_dir, options, name, executable_surface_policy)
+                } else {
+                    compile_path_with_executable_surface_policy(member_dir, options, entry_scope, executable_surface_policy)
+                }
             });
 
             match compile_result {
@@ -1858,9 +1874,14 @@ impl CommandExecutor {
             };
             let resolution_options = check_resolution_options(&args, crate::package::DependencyScope::Runtime);
             let result = match crate::package::with_resolution_options(resolution_options, || {
-                compile_path_with_executable_surface_policy(".", compile_options.clone(), None, executable_surface_policy(&args))
+                if let Some(name) = args.artifact.as_deref() {
+                    crate::compile_path_with_artifact_name(".", compile_options.clone(), name, executable_surface_policy(&args))
+                } else {
+                    compile_path_with_executable_surface_policy(".", compile_options.clone(), None, executable_surface_policy(&args))
+                }
             }) {
                 Ok(result) => result,
+                Err(error) if args.artifact.is_some() => return Err(error),
                 Err(error) => {
                     let diagnostics = compile_failure_diagnostics(Utf8Path::new("."), compile_options, error);
                     return Err(diagnostics_to_error(&diagnostics));
@@ -1925,6 +1946,7 @@ impl CommandExecutor {
         let summary = serde_json::json!({
             "status": "ok",
             "checked_targets": checked_target_json,
+            "policy_artifact": args.artifact,
             "all_targets": args.all_targets,
             "policy_verified": policy_verified,
             "policy": {
@@ -1981,7 +2003,11 @@ impl CommandExecutor {
             };
             let resolution_options = check_resolution_options(&args, crate::package::DependencyScope::Runtime);
             let compile_result = crate::package::with_resolution_options(resolution_options, || {
-                compile_path_with_executable_surface_policy(member_dir, compile_options, None, executable_surface_policy(&args))
+                if let Some(name) = args.artifact.as_deref() {
+                    crate::compile_path_with_artifact_name(member_dir, compile_options, name, executable_surface_policy(&args))
+                } else {
+                    compile_path_with_executable_surface_policy(member_dir, compile_options, None, executable_surface_policy(&args))
+                }
             });
 
             match compile_result {
@@ -2055,11 +2081,15 @@ impl CommandExecutor {
             target_profile: args.target_profile,
             primitive_compat: None,
         };
-        let result = match compile_path(input, options.clone()) {
-            Ok(result) => result,
-            Err(error) => return Err(diagnostics_to_error(&compile_failure_diagnostics(input, options, error))),
+        let metadata = if let Some(name) = args.artifact.as_deref() {
+            crate::artifact::compile_path_artifact_metadata(input, options, name)?
+        } else {
+            match compile_path(input, options.clone()) {
+                Ok(result) => result.metadata,
+                Err(error) => return Err(diagnostics_to_error(&compile_failure_diagnostics(input, options, error))),
+            }
         };
-        let json = serde_json::to_string_pretty(&result.metadata)
+        let json = serde_json::to_string_pretty(&metadata)
             .map_err(|error| crate::error::CompileError::without_span(format!("failed to serialize metadata: {}", error)))?;
 
         if let Some(output_path) = args.output.as_ref() {
@@ -2088,15 +2118,19 @@ impl CommandExecutor {
             target_profile: args.target_profile,
             primitive_compat: None,
         };
-        let result = match compile_path(input, options.clone()) {
-            Ok(result) => result,
-            Err(error) => return Err(diagnostics_to_error(&compile_failure_diagnostics(input, options, error))),
+        let metadata = if let Some(name) = args.artifact.as_deref() {
+            crate::artifact::compile_path_artifact_metadata(input, options, name)?
+        } else {
+            match compile_path(input, options.clone()) {
+                Ok(result) => result.metadata,
+                Err(error) => return Err(diagnostics_to_error(&compile_failure_diagnostics(input, options, error))),
+            }
         };
         let rendered = if args.json {
-            serde_json::to_string_pretty(&result.metadata.typed_semantics.foundation)
+            serde_json::to_string_pretty(&metadata.typed_semantics.foundation)
                 .map_err(|error| CompileError::without_span(format!("failed to serialize semantic foundation: {error}")))?
         } else {
-            crate::semantic_expansion::render(&result.metadata)?
+            crate::semantic_expansion::render(&metadata)?
         };
         if let Some(output_path) = args.output.as_ref() {
             if let Some(parent) = output_path.parent() {
@@ -3550,20 +3584,31 @@ impl CommandExecutor {
             let input = Utf8Path::from_path(&input_path).ok_or_else(|| {
                 crate::error::CompileError::without_span(format!("path '{}' is not valid UTF-8", input_path.display()))
             })?;
-            compile_path(
-                input,
-                CompileOptions {
-                    edition: crate::CURRENT_EDITION,
-                    opt_level: 1,
-                    output: None,
-                    debug: false,
-                    target: None,
-                    target_profile: args.target_profile.or_else(|| Some("ckb".to_string())),
-                    primitive_compat: None,
-                },
-            )?
-            .metadata
+            let options = CompileOptions {
+                edition: crate::CURRENT_EDITION,
+                opt_level: 1,
+                output: None,
+                debug: false,
+                target: None,
+                target_profile: args.target_profile.clone().or_else(|| Some("ckb".to_string())),
+                primitive_compat: None,
+            };
+            if let Some(name) = args.artifact.as_deref() {
+                crate::compile_path_with_artifact_name(input, options, name, ExecutableSurfacePolicy::DenyFailClosed)?.metadata
+            } else {
+                compile_path(input, options)?.metadata
+            }
         };
+
+        if args.artifact.is_some() || metadata.runtime.policy_artifact.is_some() {
+            crate::validate_compile_metadata(&metadata, ArtifactFormat::from_display_name(&metadata.artifact_format)?)?;
+            let policy = metadata.runtime.policy_artifact.as_ref().ok_or_else(|| {
+                CompileError::without_span("gen-builder --artifact requires metadata for an explicitly selected policy artifact")
+            })?;
+            if args.artifact.as_deref().is_some_and(|name| name != policy.declaration.name) {
+                return Err(CompileError::without_span("gen-builder --artifact does not match the selected metadata declaration"));
+            }
+        }
 
         let metadata_hash = hash_json_value("metadata", &metadata)?;
         let selected_actions = selected_builder_actions(&metadata, args.action.as_deref())?;
@@ -3621,6 +3666,12 @@ impl CommandExecutor {
         let input_path = args.input.clone().unwrap_or_else(|| PathBuf::from("."));
         let input = Utf8Path::from_path(&input_path)
             .ok_or_else(|| crate::error::CompileError::without_span(format!("path '{}' is not valid UTF-8", input_path.display())))?;
+        if args.artifact.is_some() {
+            return policy_entry_witness(&args, input);
+        }
+        if args.script_hash.is_some() {
+            return Err(CompileError::without_span("entry-witness --script-hash requires --artifact"));
+        }
         let result = compile_path(
             input,
             CompileOptions {
@@ -7546,6 +7597,30 @@ fn print_or_text_json(json: bool, value: &serde_json::Value, label: &str) -> Res
 }
 
 fn selected_builder_actions<'a>(metadata: &'a CompileMetadata, action_name: Option<&str>) -> Result<Vec<&'a crate::ActionMetadata>> {
+    if let Some(policy) = &metadata.runtime.policy_artifact {
+        policy.validate()?;
+        let variants = policy
+            .declaration
+            .actions
+            .iter()
+            .filter(|variant| action_name.is_none_or(|name| variant.action == name))
+            .map(|variant| {
+                let matches = metadata.actions.iter().filter(|action| action.name == variant.action).collect::<Vec<_>>();
+                if matches.len() != 1 {
+                    return Err(CompileError::without_span(format!("policy action '{}' must resolve exactly once", variant.action)));
+                }
+                Ok(matches[0])
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if variants.is_empty() {
+            return Err(CompileError::without_span(format!(
+                "action '{}' is not an exported variant of policy '{}'",
+                action_name.unwrap_or(""),
+                policy.declaration.name
+            )));
+        }
+        return Ok(variants);
+    }
     if let Some(action_name) = action_name {
         let action =
             metadata.actions.iter().find(|action| action.name == action_name).ok_or_else(|| {
@@ -7559,6 +7634,84 @@ fn selected_builder_actions<'a>(metadata: &'a CompileMetadata, action_name: Opti
     }
 
     Ok(metadata.actions.iter().collect())
+}
+
+fn policy_entry_witness(args: &EntryWitnessArgs, input: &Utf8Path) -> Result<()> {
+    let artifact_name = args.artifact.as_deref().expect("policy branch selected");
+    if args.lock.is_some() {
+        return Err(CompileError::without_span("entry-witness --artifact supports Type policies, not --lock"));
+    }
+    let action_name =
+        args.action.as_deref().ok_or_else(|| CompileError::without_span("entry-witness --artifact requires --action"))?;
+    let hash = args.script_hash.as_deref().ok_or_else(|| {
+        CompileError::without_span("entry-witness --artifact requires --script-hash with the full deployed Script hash")
+    })?;
+    let script_hash: [u8; 32] = decode_hex_arg("script-hash", hash, Some(32))?.try_into().expect("validated full Script hash");
+    let metadata = crate::artifact::compile_path_artifact_metadata(
+        input,
+        CompileOptions {
+            edition: crate::CURRENT_EDITION,
+            target: args.target.clone(),
+            target_profile: args.target_profile.clone(),
+            ..Default::default()
+        },
+        artifact_name,
+    )?;
+    let selected = selected_builder_actions(&metadata, Some(action_name))?;
+    let action = selected[0];
+    let runtime_bound = crate::runtime_bound_param_names(&action.params);
+    let params =
+        action.params.iter().filter(|param| crate::param_consumes_entry_witness_payload(param, &runtime_bound)).collect::<Vec<_>>();
+    if args.args.len() != params.len() {
+        return Err(CompileError::without_span(format!(
+            "policy action '{action_name}' expects {} witness payload arg(s), got {}",
+            params.len(),
+            args.args.len()
+        )));
+    }
+    let values =
+        params.iter().zip(&args.args).map(|(param, value)| parse_entry_witness_arg(param, value)).collect::<Result<Vec<_>>>()?;
+    let record = crate::artifact::encode_policy_action_record(&metadata, &script_hash, action_name, &values)?;
+    let bundle = crate::policy_witness::encode_policy_witness_bundle(std::slice::from_ref(&record))
+        .map_err(|error| CompileError::without_span(format!("failed to encode policy witness: {error}")))?;
+    if let Some(path) = &args.output {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, &bundle)?;
+    }
+    let witness_hex = crate::hex_encode(&bundle);
+    CommandOutcome {
+        machine: serde_json::json!({
+            "status": "ok",
+            "abi": crate::policy_witness::POLICY_WITNESS_ABI,
+            "placement_abi": crate::artifact::POLICY_WITNESS_PLACEMENT_ABI,
+            "witness_args_field": crate::artifact::POLICY_WITNESS_PLACEMENT_FIELD,
+            "witness_source": crate::artifact::POLICY_WITNESS_PLACEMENT_SOURCE,
+            "policy_artifact": artifact_name,
+            "entry_kind": "type-policy-action",
+            "entry": action_name,
+            "role": "type",
+            "tag": record.tag,
+            "script_hash": crate::hex_encode(&script_hash),
+            "script_hash_is_authentication": false,
+            "placement_performed": false,
+            "requires_shared_witness_aggregation": true,
+            "requires_pre_signing_placement": true,
+            "raw_v1_compatible": false,
+            "witness_hex": witness_hex,
+            "witness_size_bytes": bundle.len(),
+            "payload_args": values.len(),
+            "payload_params": params.iter().map(|param| &param.name).collect::<Vec<_>>(),
+            "output": args.output.as_ref().map(|path| path.display().to_string()),
+        }),
+        human_lines: vec![
+            format!("Policy witness encoded: {artifact_name} / {action_name} (tag {})", record.tag),
+            "Full Script hash is caller-supplied, not authentication; aggregate and place before signing.".to_string(),
+            witness_hex,
+        ],
+    }
+    .emit(args.json)
 }
 
 fn read_lockfile_path(path: &Path) -> Result<Lockfile> {
@@ -8089,6 +8242,15 @@ fn write_typescript_builder_package(
         typescript_builder_index(package_name, metadata, actions, metadata_hash, locked_identity, deployment_identity)?,
     )?;
     std::fs::write(&test_path, typescript_builder_test(actions)?)?;
+    let policy_test_path = test_dir.join("policy-witness.test.mjs");
+    let policy_test_source = include_str!("policy_builder_test.mjs");
+    if metadata.runtime.policy_artifact.is_some() {
+        std::fs::write(&policy_test_path, policy_test_source)?;
+    } else if std::fs::read(&policy_test_path).is_ok_and(|bytes| bytes == policy_test_source.as_bytes()) {
+        // Remove only our exact generated policy test when this output is
+        // regenerated for the legacy path; preserve any user-edited test.
+        std::fs::remove_file(&policy_test_path)?;
+    }
 
     Ok(serde_json::json!({
         "status": "ok",
@@ -8139,6 +8301,11 @@ fn runtime_error_catalog_json() -> Vec<serde_json::Value> {
         .collect()
 }
 
+fn action_requires_entry_witness(action: &crate::ActionMetadata) -> bool {
+    let runtime_bound = crate::runtime_bound_param_names(&action.params);
+    action.params.iter().any(|param| crate::param_consumes_entry_witness_payload(param, &runtime_bound))
+}
+
 fn builder_action_error_contexts_json(actions: &[&crate::ActionMetadata]) -> Vec<serde_json::Value> {
     actions
         .iter()
@@ -8165,7 +8332,7 @@ fn builder_action_error_contexts_json(actions: &[&crate::ActionMetadata]) -> Vec
                         })
                     })
                     .collect::<Vec<_>>(),
-                "entry_witness_required": !action.params.is_empty(),
+                "entry_witness_required": action_requires_entry_witness(action),
                 "runtimeInputRequirements": action.transaction_runtime_input_requirements,
                 "actionScanSelectors": action_scan_selectors_json(action),
                 "verifierObligations": action.verifier_obligations,
@@ -8183,7 +8350,7 @@ fn typescript_builder_manifest(
     locked_identity: Option<&serde_json::Value>,
     deployment_identity: Option<&serde_json::Value>,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut manifest = serde_json::json!({
         "schema": "cellscript-generated-action-builder-v0.23-edition-2026",
         "target": "typescript",
         "package_name": package_name,
@@ -8211,7 +8378,7 @@ fn typescript_builder_manifest(
                     "mutated_outputs": action.mutate_set.len(),
                     "runtime_input_requirements": action.transaction_runtime_input_requirements.len(),
                     "action_scan_selectors": action_scan_selectors_json(action),
-                    "entry_witness_required": !action.params.is_empty(),
+                    "entry_witness_required": action_requires_entry_witness(action),
                 })
             })
             .collect::<Vec<_>>(),
@@ -8229,7 +8396,21 @@ fn typescript_builder_manifest(
             "action_scan_selectors_schema": "cellscript-action-scan-selectors-v0.21",
             "action_scan_selector_source": "transaction_runtime_input_requirements",
         }
-    })
+    });
+    if let Some(policy) = &metadata.runtime.policy_artifact {
+        manifest["policy_artifact"] = serde_json::json!(policy);
+        manifest["runtime_contract"]["requires_policy_witness_bundle"] = serde_json::json!(true);
+        manifest["runtime_contract"]["requires_full_script_hash"] = serde_json::json!(true);
+        manifest["runtime_contract"]["requires_shared_witness_aggregation"] = serde_json::json!(true);
+        manifest["runtime_contract"]["requires_pre_signing_placement"] = serde_json::json!(true);
+        manifest["runtime_contract"]["policy_args_encoding"] = serde_json::json!("pre-encoded-inner-CSARGv1");
+        for action in manifest["actions"].as_array_mut().expect("generated actions array") {
+            let name = action["name"].as_str().expect("generated action name");
+            action["policy_tag"] = serde_json::json!(policy.declaration.action(name).expect("selected exported action").tag);
+            action["policy_witness_required"] = serde_json::json!(true);
+        }
+    }
+    manifest
 }
 
 fn typescript_package_json(package_name: &str) -> serde_json::Value {
@@ -9094,6 +9275,29 @@ fn typescript_builder_index(
          }\n",
     );
 
+    if let Some(policy) = &metadata.runtime.policy_artifact {
+        // The existing typed runtime contract remains intact. Its plan now
+        // carries an explicit outer-envelope obligation for policy artifacts.
+        ts = ts.replace("canSubmit: false;\n", "canSubmit: false;\n  policyWitness?: Readonly<Record<string, unknown>>;\n");
+        ts = ts.replace(
+            "    state: \"GeneratedActionPlan\",\n",
+            "    state: \"GeneratedActionPlan\",\n    policyWitness: policyWitnessRequest(action),\n",
+        );
+        ts = ts.replace("edition: \"2026\";", "edition: \"2026\" | \"2027\";");
+        ts.push_str(&format!("\nexport const policyArtifact = {} as const;\n", json_string_pretty("policy artifact", policy)?));
+        let tags = actions
+            .iter()
+            .map(|action| {
+                let variant = policy.declaration.action(&action.name).expect("selected exported action");
+                (action.name.clone(), serde_json::json!({ "tag": variant.tag, "requiresArgs": action_requires_entry_witness(action) }))
+            })
+            .collect::<BTreeMap<_, _>>();
+        ts.push_str(&format!(
+            "const POLICY_VARIANTS: Readonly<Record<string, {{ tag: number; requiresArgs: boolean }}>> = Object.freeze(JSON.parse({}));\n",
+            typescript_string_literal(&json_string_pretty("policy variants", &tags)?)
+        ));
+        ts.push_str(include_str!("policy_builder.ts"));
+    }
     Ok(ts)
 }
 
@@ -12950,9 +13154,18 @@ fn ckb_hash_type_byte(value: &str) -> Option<u8> {
     }
 }
 
+fn validate_build_entry_selection(args: &BuildArgs) -> Result<()> {
+    let selected = [args.artifact.is_some(), args.entry_action.is_some(), args.entry_lock.is_some()];
+    if selected.into_iter().filter(|selected| *selected).count() > 1 {
+        return Err(crate::error::CompileError::without_span("--artifact, --entry-action, and --entry-lock are mutually exclusive"));
+    }
+    Ok(())
+}
+
 fn effective_build_check_args(args: &BuildArgs) -> Result<CheckArgs> {
     effective_check_args(CheckArgs {
         all_targets: false,
+        artifact: args.artifact.clone(),
         target_profile: args.target_profile.clone(),
         features: args.features.clone(),
         all_features: args.all_features,
@@ -13422,6 +13635,7 @@ impl CompileTestExpectation {
     fn check_args(&self) -> CheckArgs {
         CheckArgs {
             all_targets: false,
+            artifact: None,
             target_profile: None,
             features: Vec::new(),
             all_features: false,
@@ -13867,13 +14081,7 @@ fn select_entry_witness_metadata<'a>(
             kind: "action",
             name: action.name.as_str(),
             params: &action.params,
-            runtime_bound_param_names: action
-                .consume_set
-                .iter()
-                .map(|pattern| pattern.binding.clone())
-                .chain(action.read_refs.iter().map(|pattern| pattern.binding.clone()))
-                .chain(action.mutate_set.iter().map(|pattern| pattern.binding.clone()))
-                .collect(),
+            runtime_bound_param_names: crate::runtime_bound_param_names(&action.params),
         });
     }
     if let Some(name) = lock {
@@ -13886,13 +14094,7 @@ fn select_entry_witness_metadata<'a>(
             kind: "lock",
             name: lock.name.as_str(),
             params: &lock.params,
-            runtime_bound_param_names: lock
-                .consume_set
-                .iter()
-                .map(|pattern| pattern.binding.clone())
-                .chain(lock.read_refs.iter().map(|pattern| pattern.binding.clone()))
-                .chain(lock.mutate_set.iter().map(|pattern| pattern.binding.clone()))
-                .collect(),
+            runtime_bound_param_names: crate::runtime_bound_param_names(&lock.params),
         });
     }
 
@@ -13904,27 +14106,13 @@ fn select_entry_witness_metadata<'a>(
             kind: "action",
             name: action.name.as_str(),
             params: action.params.as_slice(),
-            runtime_bound_param_names: action
-                .consume_set
-                .iter()
-                .map(|pattern| pattern.binding.clone())
-                .chain(action.read_refs.iter().map(|pattern| pattern.binding.clone()))
-                .chain(action.mutate_set.iter().map(|pattern| pattern.binding.clone()))
-                .collect(),
+            runtime_bound_param_names: crate::runtime_bound_param_names(&action.params),
         })
-        .chain(metadata.locks.iter().filter(|lock| !lock.params.is_empty()).map(|lock| {
-            SelectedEntryWitnessMetadata {
-                kind: "lock",
-                name: lock.name.as_str(),
-                params: lock.params.as_slice(),
-                runtime_bound_param_names: lock
-                    .consume_set
-                    .iter()
-                    .map(|pattern| pattern.binding.clone())
-                    .chain(lock.read_refs.iter().map(|pattern| pattern.binding.clone()))
-                    .chain(lock.mutate_set.iter().map(|pattern| pattern.binding.clone()))
-                    .collect(),
-            }
+        .chain(metadata.locks.iter().filter(|lock| !lock.params.is_empty()).map(|lock| SelectedEntryWitnessMetadata {
+            kind: "lock",
+            name: lock.name.as_str(),
+            params: lock.params.as_slice(),
+            runtime_bound_param_names: crate::runtime_bound_param_names(&lock.params),
         }))
         .collect::<Vec<_>>();
 
@@ -14153,6 +14341,13 @@ impl CliParser {
                             .conflicts_with("entry-action")
                             .help("Compile only this lock as the artifact entrypoint"),
                     )
+                    .arg(
+                        Arg::new("artifact")
+                            .long("artifact")
+                            .value_name("NAME")
+                            .conflicts_with_all(["entry-action", "entry-lock"])
+                            .help("Compile the explicitly tagged policy artifact declared in Cell.toml"),
+                    )
                     .arg(Arg::new("jobs").long("jobs").short('j').value_name("N").help("Number of parallel jobs"))
                     .arg(Arg::new("features").long("features").value_delimiter(',').num_args(1..).value_name("FEATURES").help("Activate package features"))
                     .arg(Arg::new("all-features").long("all-features").action(ArgAction::SetTrue).help("Activate all package features"))
@@ -14325,6 +14520,12 @@ impl CliParser {
                     .display_order(20)
                     .about("Type-check and lower the current package without writing artifacts")
                     .arg(
+                        Arg::new("artifact")
+                            .long("artifact")
+                            .value_name("NAME")
+                            .help("Check the explicitly tagged policy artifact declared in Cell.toml"),
+                    )
+                    .arg(
                         Arg::new("all-targets")
                             .long("all-targets")
                             .action(ArgAction::SetTrue)
@@ -14396,6 +14597,7 @@ impl CliParser {
                     .display_order(30)
                     .about("Emit compile metadata for lowering, scheduler, and CKB runtime auditing")
                     .arg(Arg::new("input").value_name("INPUT").help("Input .cell file, package directory, or Cell.toml"))
+                    .arg(Arg::new("artifact").long("artifact").value_name("NAME").help("Inspect the declared policy artifact without generating machine code"))
                     .arg(Arg::new("output").long("output").short('o').value_name("FILE").help("Write JSON metadata to a file"))
                     .arg(Arg::new("target").long("target").short('t').value_name("TARGET").help("Target architecture"))
                     .arg(Arg::new("target-profile").long("target-profile").value_name("PROFILE").help("Target profile: ckb")),
@@ -14405,6 +14607,7 @@ impl CliParser {
                     .display_order(31)
                     .about("Render the canonical typed semantic foundation; the rendering is not a hash boundary")
                     .arg(Arg::new("input").value_name("INPUT").help("Input .cell file, package directory, or Cell.toml"))
+                    .arg(Arg::new("artifact").long("artifact").value_name("NAME").help("Expand the declared policy artifact without generating machine code"))
                     .arg(Arg::new("output").long("output").short('o').value_name("FILE").help("Write the expansion to a file"))
                     .arg(Arg::new("target").long("target").short('t').value_name("TARGET").help("Target architecture"))
                     .arg(Arg::new("target-profile").long("target-profile").value_name("PROFILE").help("Target profile: ckb")),
@@ -14797,6 +15000,7 @@ impl CliParser {
                     .display_order(60)
                     .about("Generate a registry-bound action builder package from CellScript metadata")
                     .arg(Arg::new("input").value_name("INPUT").help("Input .cell file, package directory, or Cell.toml"))
+                    .arg(Arg::new("artifact").long("artifact").value_name("NAME").help("Select one declared policy artifact; metadata input must match"))
                     .arg(
                         Arg::new("metadata")
                             .long("metadata")
@@ -14839,6 +15043,8 @@ impl CliParser {
                 ClapCommand::new("entry-witness")
                     .about("Encode witness bytes for the generated _cellscript_entry wrapper")
                     .arg(Arg::new("input").value_name("INPUT").help("Input .cell file, package directory, or Cell.toml"))
+                    .arg(Arg::new("artifact").long("artifact").value_name("NAME").requires_all(["action", "script-hash"]).conflicts_with("lock").help("Encode one declared Type-policy request; requires action and full Script hash"))
+                    .arg(Arg::new("script-hash").long("script-hash").value_name("HEX").requires("artifact").help("Full deployed 32-byte Script hash; caller-supplied routing identity, not authentication"))
                     .arg(Arg::new("action").long("action").value_name("NAME").help("Encode witness bytes for this action"))
                     .arg(Arg::new("lock").long("lock").value_name("NAME").help("Encode witness bytes for this lock"))
                     .arg(
@@ -15848,6 +16054,7 @@ impl CliParser {
                 target_profile: m.get_one::<String>("target-profile").cloned(),
                 entry_action: m.get_one::<String>("entry-action").cloned(),
                 entry_lock: m.get_one::<String>("entry-lock").cloned(),
+                artifact: m.get_one::<String>("artifact").cloned(),
                 jobs: m.get_one::<String>("jobs").and_then(|s| s.parse().ok()),
                 features: m.get_many::<String>("features").map(|values| values.cloned().collect()).unwrap_or_default(),
                 all_features: m.get_flag("all-features"),
@@ -15934,6 +16141,7 @@ impl CliParser {
             Some(("repl", _)) => Command::Repl,
             Some(("check", m)) => Command::Check(CheckArgs {
                 all_targets: m.get_flag("all-targets"),
+                artifact: m.get_one::<String>("artifact").cloned(),
                 target_profile: m.get_one::<String>("target-profile").cloned(),
                 json: json_output(m),
                 production: m.get_flag("production"),
@@ -15956,12 +16164,14 @@ impl CliParser {
             }),
             Some(("metadata", m)) => Command::Metadata(MetadataArgs {
                 input: m.get_one::<String>("input").map(PathBuf::from),
+                artifact: m.get_one::<String>("artifact").cloned(),
                 output: m.get_one::<String>("output").map(PathBuf::from),
                 target: m.get_one::<String>("target").cloned(),
                 target_profile: m.get_one::<String>("target-profile").cloned(),
             }),
             Some(("expand", m)) => Command::Expand(ExpandArgs {
                 input: m.get_one::<String>("input").map(PathBuf::from),
+                artifact: m.get_one::<String>("artifact").cloned(),
                 output: m.get_one::<String>("output").map(PathBuf::from),
                 target: m.get_one::<String>("target").cloned(),
                 target_profile: m.get_one::<String>("target-profile").cloned(),
@@ -16243,6 +16453,7 @@ impl CliParser {
             },
             Some(("gen-builder", m)) => Command::GenBuilder(GenBuilderArgs {
                 input: m.get_one::<String>("input").map(PathBuf::from),
+                artifact: m.get_one::<String>("artifact").cloned(),
                 metadata: m.get_one::<String>("metadata").map(PathBuf::from),
                 lockfile: m.get_one::<String>("lockfile").map(PathBuf::from),
                 deployed: m.get_one::<String>("deployed").map(PathBuf::from),
@@ -16256,6 +16467,8 @@ impl CliParser {
             }),
             Some(("entry-witness", m)) => Command::EntryWitness(EntryWitnessArgs {
                 input: m.get_one::<String>("input").map(PathBuf::from),
+                artifact: m.get_one::<String>("artifact").cloned(),
+                script_hash: m.get_one::<String>("script-hash").cloned(),
                 action: m.get_one::<String>("action").cloned(),
                 lock: m.get_one::<String>("lock").cloned(),
                 args: m.get_many::<String>("arg").map(|values| values.cloned().collect()).unwrap_or_default(),
@@ -16585,6 +16798,118 @@ fn resolve_primitive_compat(compat: Option<String>, strict: Option<String>) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_artifact_selection_is_explicit_and_preserved_by_build_and_check() {
+        let build = CliParser::command().try_get_matches_from(["cellc", "build", "--artifact", "token-policy"]).unwrap();
+        let Command::Build(build) = CliParser::parse_matches(build) else {
+            panic!("expected build command");
+        };
+        assert_eq!(build.artifact.as_deref(), Some("token-policy"));
+        assert!(build.entry_action.is_none() && build.entry_lock.is_none());
+        validate_build_entry_selection(&build).unwrap();
+
+        let check =
+            CliParser::command().try_get_matches_from(["cellc", "check", "--artifact", "token-policy", "--all-targets"]).unwrap();
+        let Command::Check(check) = CliParser::parse_matches(check) else {
+            panic!("expected check command");
+        };
+        assert_eq!(check.artifact.as_deref(), Some("token-policy"));
+        assert!(check.all_targets);
+
+        for command in ["build", "check"] {
+            let matches = CliParser::command().try_get_matches_from(["cellc", command]).unwrap();
+            match CliParser::parse_matches(matches) {
+                Command::Build(args) => assert!(args.artifact.is_none()),
+                Command::Check(args) => assert!(args.artifact.is_none()),
+                _ => panic!("unexpected command"),
+            }
+        }
+    }
+
+    #[test]
+    fn policy_artifact_selection_rejects_mixed_entry_authorities() {
+        for flag in ["--entry-action", "--entry-lock"] {
+            let error =
+                CliParser::command().try_get_matches_from(["cellc", "build", "--artifact", "token-policy", flag, "main"]).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+        for args in [
+            BuildArgs { artifact: Some("token-policy".into()), entry_action: Some("main".into()), ..Default::default() },
+            BuildArgs { artifact: Some("token-policy".into()), entry_lock: Some("main".into()), ..Default::default() },
+            BuildArgs { entry_action: Some("main".into()), entry_lock: Some("main".into()), ..Default::default() },
+        ] {
+            assert!(validate_build_entry_selection(&args).unwrap_err().message.contains("mutually exclusive"));
+        }
+    }
+
+    #[test]
+    fn generated_builder_witness_requirement_matches_the_entry_payload_contract() {
+        let cases = [
+            ("action main() -> u64 { verification return 0 }", false),
+            (
+                "resource Token has consume { amount: u64 }\n\
+                 action main(input token: Token) -> u64 { verification consume token return 0 }",
+                false,
+            ),
+            (
+                "shared Config { value: u64 }\n\
+                 action main(read config: Config) -> u64 { verification require config.value > 0 return 0 }",
+                false,
+            ),
+            (
+                "resource Token has consume { amount: u64 }\n\
+                 action main(token: Token) -> u64 { verification consume token return 0 }",
+                false,
+            ),
+            (
+                "shared Config { value: u64 }\n\
+                 action main(read config: Config, witness expected: u64) -> u64 {\n\
+                     verification require config.value == expected return 0\n\
+                 }",
+                true,
+            ),
+            // A zero-byte unit still selects the canonical entry payload
+            // envelope; testing whether encoding [] fails would miss it.
+            ("action main(witness marker: ()) -> u64 { verification return 0 }", true),
+        ];
+        for edition in [crate::CURRENT_EDITION, crate::NEXT_EDITION] {
+            for (declarations, expected) in cases {
+                let source = format!("module generated_builder_witness\n{declarations}\n");
+                let metadata = crate::compile_metadata(&source, edition, None).expect("builder fixture compiles");
+                let action = &metadata.actions[0];
+                assert_eq!(action_requires_entry_witness(action), expected, "{edition:?}: {declarations}");
+                let contexts = builder_action_error_contexts_json(&[action]);
+                assert_eq!(contexts[0]["entry_witness_required"], expected, "error context must agree with payload ABI");
+                let manifest = typescript_builder_manifest("@test/bindings", &metadata, &[action], "test-metadata", None, None);
+                assert_eq!(manifest["actions"][0]["entry_witness_required"], expected, "builder manifest must agree with payload ABI");
+            }
+        }
+    }
+
+    #[cfg(feature = "vm-runner")]
+    #[test]
+    fn run_outcome_uses_the_resolved_entry_contract() {
+        let metadata = crate::compile_metadata(
+            r#"
+module selected_entry
+lock decoy() -> bool {
+    verification
+        false
+}
+action selected(witness value: u64) -> u64 {
+    verification
+        return value
+}
+"#,
+            crate::CURRENT_EDITION,
+            None,
+        )
+        .unwrap();
+        let entry = run_entry_outcome(&metadata).expect("one resolved action entry");
+        assert_eq!(entry.kind, "action");
+        assert_eq!(entry.name, "selected");
+    }
 
     #[test]
     fn test_command_execution() {

@@ -16,16 +16,31 @@ edition = "2026"
 
 `edition` is mandatory in every package manifest. A missing or unknown value is
 an error. The `0.26b` implementation branch also recognizes `edition = "2027"`
-as `cellscript-source-semantics-2027-preview4`. That preview is deliberately not
+as `cellscript-source-semantics-2027-authoring1`. That experiment is deliberately not
 the current default, accepted grammar, migration promise, or 1.0 release
-contract. It has a separately routed frontend, requires explicit sources for
-transaction-facing parameters, rejects ambiguous `consume`/`consume_each`, and
-initially emits only `SingleEntry` artifacts. Its implemented native subset is
+contract. Its separately routed authoring frontend shares Edition 2026's full
+declaration, value, and statement grammar and preserves their checked meaning.
+The `verification` marker is optional in ordinary action/lock bodies; the
+formatter currently retains the established explicit-marker form. Multiple
+source actions and locks are allowed, but compiled artifacts still select one
+entry. This is not shared-policy dispatch. Its retained bounded native subset is
 specified in [the Edition 2027 preview grammar](CELLSCRIPT_2027_PREVIEW_GRAMMAR.md).
 
+The [authoring target adopted on 2026-09-05](CELLSCRIPT_AUTHORING_TARGET.md)
+guides the next frontend iteration. It preserves the Edition 2026 authoring
+vocabulary and requires genuine multi-action operation under one deployed
+policy. `authoring1` advances source and cache identities for the restored
+authoring surface, while keeping the native preview4 grammar and existing wire
+ABIs. Schema acknowledgement, concise successor relations, shared-policy
+dispatch, and new type/placement contracts remain implementation work. The
+[implementation checklist](CELLSCRIPT_AUTHORING_IMPLEMENTATION.md) records the
+full goal and its evidence requirements.
+
 `cellc migrate --to 2027` is a bounded review tool, not a migration promise.
-It recognizes only the self-contained legacy Type/Lock shapes with a total
-mapping to preview4, preserves source outside the final entry, and emits no
+It recognizes only the existing self-contained bounded legacy Type/Lock shapes.
+Type Script candidates retain ordinary `action` authoring and absolute Cell
+locations; their conversion to native group ports is not an equivalent rewrite.
+The tool preserves source outside the final entry, and emits no
 candidate unless `CoreSemanticId` and RISC-V ELF bytes match. It never changes
 `Cell.toml`, `Cell.lock`, deployment state, or source files by default.
 
@@ -41,13 +56,21 @@ An edition owns rules that can change the meaning of the same source text:
 
 Edition 2026 identifies those rules as `cellscript-source-semantics-2026` and
 keeps its legacy frontend path frozen. Edition 2027 preview uses the distinct
-`cellscript-source-semantics-2027-preview4` route. Both currently lower through
-the shared checked AST/IR into typed-semantics v4 and may have identical
-`CoreSemanticId` values for the explicitly equivalent subset. Preview4 admits
+`cellscript-source-semantics-2027-authoring1` route. Both currently lower through
+the shared checked AST/IR into typed-semantics v5 and may have identical
+`CoreSemanticId` values for the explicitly equivalent subset. Absolute
+transaction locations and current-group locations are not such an equivalent
+subset. Correcting physical binding records does not redefine deployed bytes.
+Preview4 admits
 one final native `type_script` or `lock_script` container; it does not admit
 both in one source module. Its bounded Type Script surface distinguishes
 successor, fixed-role pooled accounting, retirement, and fresh output origin,
-and its `audit` surface is metadata-only by construction.
+and its `audit` surface is metadata-only by construction. These native-container
+restrictions do not apply to ordinary authoring modules. Existing terminal
+`consume`/`consume_each` operations retain their legacy semantic records; they
+are not reinterpreted as explicit retirement or native pooled accounting.
+Default parameters keep their existing type-directed entry provenance,
+including read-only references. Provenance remains distinct from authorization.
 
 Additive syntax, diagnostics, formatter improvements, and optimizer changes do
 not require a new edition when existing source keeps its meaning. A new edition
@@ -65,13 +88,13 @@ resolved compatibility profile:
 | Axis | Current `0.26b` value |
 |---|---|
 | Source edition | stable `2026`; experimental `2027` |
-| Source semantics | `cellscript-source-semantics-2026` or `cellscript-source-semantics-2027-preview4` |
+| Source semantics | `cellscript-source-semantics-2026` or `cellscript-source-semantics-2027-authoring1` |
 | Compiler release | workspace SemVer (`0.x.y`), recorded separately |
 | Target profile | selected independently, normally `ckb` |
 | Primitive assurance | selected independently, or `default` |
-| Payload ABI | `cellscript-entry-witness-v1` (`CSARGv1\0`) |
-| Placement ABI | `cellscript-witnessargs-input-type-v2` |
-| Metadata schemas | metadata 63, source 2, artifact 1, constraints 3 |
+| Payload ABI | Single entry: `cellscript-entry-witness-v1` (`CSARGv1\0`); explicit Type policy: `cellscript-policy-witness-v1` (`CSPOLv1\0`) |
+| Placement ABI | Single entry: `cellscript-witnessargs-input-type-v2`; explicit Type policy: `cellscript-policy-witnessargs-input-type-v1` |
+| Metadata schemas | metadata 64, source 2, artifact 1, constraints 3 |
 
 The compiler release is recorded next to the profile but is not part of the
 profile itself. A compiler patch may change diagnostics or optimization
@@ -79,7 +102,13 @@ without changing compatibility. Conversely, an urgent wire-ABI or metadata
 fix can advance its own version immediately without waiting for a new calendar
 year or source edition.
 
-For the current CKB placement profile:
+Policy selection is explicit and changes the entry compatibility profile, not
+the source edition or inner CSARG argument bytes. The
+[policy witness ABI](CELLSCRIPT_POLICY_WITNESS_ABI.md) defines its bounded
+multi-record ownership and exact current Script-hash selection. Unselected
+builds retain the single-entry profile even if a package declares policies.
+
+For the current single-entry CKB placement profile:
 
 | Contract | Value |
 |---|---|

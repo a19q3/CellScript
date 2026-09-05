@@ -165,6 +165,11 @@ impl CodeGenerator {
     }
 
     pub(super) fn emit_call(&mut self, dest: Option<&IrVar>, func: &str, args: &[IrOperand]) -> Result<()> {
+        if let Some(deferred) = crate::ir::IrDeferredRuntimeFeature::from_helper(func) {
+            self.emit(format!("# cellscript deferred runtime contract: {}", deferred.feature()));
+            self.emit_process_failure(deferred.runtime_error());
+            return Ok(());
+        }
         if matches!(func, crate::ir::BOUNDED_CONSUME_EACH_FAIL_CLOSED_HELPER | crate::ir::BOUNDED_CREATE_EACH_FAIL_CLOSED_HELPER) {
             self.emit(format!(
                 "# cellscript bounded collection: {} has no executable source-selection/codec/correspondence contract; fail closed",
@@ -381,14 +386,14 @@ impl CodeGenerator {
             self.emit("# cellscript abi: scalar runtime helper status check (a1 == 0)");
             self.emit(format!("beqz a1, {}", ok_label));
             self.emit("addi a0, a1, 0");
-            self.emit_epilogue();
+            self.emit_process_failure_status();
             self.emit_label(&ok_label);
         }
 
-        if dest.is_none() && is_void_runtime_requirement_call(func) {
+        if is_void_runtime_requirement_call(func) {
             let ok_label = self.fresh_label("runtime_requirement_ok");
             self.emit(format!("beqz a0, {}", ok_label));
-            self.emit_epilogue();
+            self.emit_process_failure_status();
             self.emit_label(&ok_label);
         }
 
@@ -482,7 +487,7 @@ impl CodeGenerator {
         self.emit("call __ckb_current_script_hash");
         let ok_label = self.fresh_label("current_script_hash_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         self.emit_sp_addi("t0", buffer_offset);
         self.emit_stack_store("t0", dest.id * 8);
@@ -519,7 +524,7 @@ impl CodeGenerator {
         self.emit("call __ckb_input_out_point_tx_hash");
         let ok_label = self.fresh_label("input_out_point_tx_hash_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         self.emit_sp_addi("t0", buffer_offset);
         self.emit_stack_store("t0", dest.id * 8);
@@ -565,7 +570,7 @@ impl CodeGenerator {
         self.emit(format!("call {}", func));
         let ok_label = self.fresh_label("script_ref_hash_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         self.emit_sp_addi("t0", buffer_offset);
         self.emit_stack_store("t0", dest.id * 8);
@@ -603,7 +608,7 @@ impl CodeGenerator {
         self.emit("call __ckb_cell_data_hash_at");
         let ok_label = self.fresh_label("cell_data_hash_at_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         self.emit_sp_addi("t0", buffer_offset);
         self.emit_stack_store("t0", dest.id * 8);
@@ -639,7 +644,7 @@ impl CodeGenerator {
         self.emit(format!("call {}", func));
         let ok_label = self.fresh_label("witness_hash_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         self.emit_sp_addi("t0", buffer_offset);
         self.emit_stack_store("t0", dest.id * 8);
@@ -698,7 +703,7 @@ impl CodeGenerator {
         self.emit("call ".to_string() + func);
         let ok_label = self.fresh_label("runtime_hash_requirement_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         Ok(true)
     }
@@ -736,7 +741,7 @@ impl CodeGenerator {
         self.emit("call __ckb_require_bounded_cell_dep_data_hash");
         let ok_label = self.fresh_label("bounded_cell_dep_requirement_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         Ok(true)
     }
@@ -775,7 +780,7 @@ impl CodeGenerator {
         self.emit("call __ckb_require_sha256d_merkle_root");
         let ok = self.fresh_label("sha256d_merkle_requirement_ok");
         self.emit(format!("beqz a0, {}", ok));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok);
         Ok(true)
     }
@@ -822,7 +827,7 @@ impl CodeGenerator {
         self.emit("call ".to_string() + func);
         let ok_label = self.fresh_label("runtime_script_identity_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         Ok(true)
     }
@@ -872,7 +877,7 @@ impl CodeGenerator {
         self.emit("call ".to_string() + func);
         let ok_label = self.fresh_label("runtime_script_args_exact_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         Ok(true)
     }
@@ -919,7 +924,7 @@ impl CodeGenerator {
         self.emit("call __ckb_require_input_out_point");
         let ok_label = self.fresh_label("runtime_input_out_point_requirement_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         Ok(true)
     }
@@ -964,7 +969,7 @@ impl CodeGenerator {
         self.emit("call __xudt_require_owner_mode_type_args");
         let ok_label = self.fresh_label("runtime_xudt_args_requirement_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         Ok(true)
     }
@@ -1006,7 +1011,7 @@ impl CodeGenerator {
         self.emit("call ".to_string() + func);
         let ok_label = self.fresh_label("runtime_xudt_delta_requirement_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         Ok(true)
     }
@@ -1056,7 +1061,7 @@ impl CodeGenerator {
         self.emit("call ".to_string() + func);
         let ok_label = self.fresh_label("runtime_metapoint_filtered_pair_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         Ok(true)
     }
@@ -1104,7 +1109,7 @@ impl CodeGenerator {
         self.emit("call ".to_string() + func);
         let ok_label = self.fresh_label("runtime_c256_requirement_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         Ok(true)
     }
@@ -1155,7 +1160,7 @@ impl CodeGenerator {
         self.emit("call ".to_string() + func);
         let ok_label = self.fresh_label("runtime_c256_sum_requirement_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_epilogue();
+        self.emit_process_failure_status();
         self.emit_label(&ok_label);
         Ok(true)
     }
@@ -1334,6 +1339,11 @@ impl CodeGenerator {
         };
         if let Some(size_offset) = size_offset {
             self.emit_stack_load(&register, size_offset);
+        } else if let (IrOperand::Var(var), CallLengthKind::Schema) = (arg, kind)
+            && let Some(width) = self.local_schema_value_widths.get(&var.id).copied()
+        {
+            self.emit(format!("# cellscript abi: locally materialized schema value var{} has exact width {}", var.id, width));
+            self.emit(format!("li {}, {}", register, width));
         } else if let (IrOperand::Var(var), CallLengthKind::FixedBytes) = (arg, kind) {
             if let Some(width) = self.fixed_named_type_width(&var.ty) {
                 self.emit(format!("li {}, {}", register, width));

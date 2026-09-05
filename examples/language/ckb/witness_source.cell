@@ -10,6 +10,8 @@ lock owner_witness(protected wallet: Wallet, lock_args owner: Address, witness c
         // and `sig` are witness data; neither is signer authority by name alone.
         let view = source::group_input(0)
         let sig = witness::lock(view)
+        // Canonical sighash construction is deferred: metadata-only example;
+        // audit execution exits with error 66 and produces no digest.
         let sighash = env::sighash_all(view)
         require owner == wallet.owner
         require claimed_owner == owner

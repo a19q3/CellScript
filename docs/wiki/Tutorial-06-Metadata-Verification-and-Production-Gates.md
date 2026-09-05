@@ -25,10 +25,10 @@ The profile combines that with independently versioned target,
 primitive-assurance, entry payload, witness placement, and metadata-schema
 axes. Verification rejects a sidecar whose profile does not resolve from those
 inputs; it never guesses another contract. Current `0.26b` outputs use metadata
-schema 63, source schema 2, artifact schema 1, and constraints schema 3.
+schema 65, source schema 2, artifact schema 1, and constraints schema 3.
 Metadata includes canonical `public_interface` / `interface_hash` and
-`typed_semantics` / `typed_semantics_hash` pairs. Typed semantics v4 embeds the
-semantic-foundation v1 record. Registry,
+`typed_semantics` / `typed_semantics_hash` pairs. Typed semantics v6 embeds the
+semantic-foundation v2 record and resolved fixed-Cell binding tables. Registry,
 lock, deployment, receipt, and generated-builder readers require the same
 resolved-profile identity.
 
@@ -62,11 +62,35 @@ Compile normally:
 cellc build --json
 ```
 
+For a persistent Type policy explicitly declared in the package's
+`[[artifacts]]`, select that declaration for both checks and builds:
+
+```bash
+cellc check --artifact token-policy --all-targets
+cellc build --artifact token-policy --target riscv64-elf --json
+```
+
+The build flag is mutually exclusive with `--entry-action` and `--entry-lock`.
+It selects the versioned policy envelope, not the old single-entry witness ABI.
+Inspect `runtime.policy_artifact` and the compatibility profile in the emitted
+metadata. A valid declaration is not authentication or deployment evidence;
+see the [policy witness contract](../CELLSCRIPT_POLICY_WITNESS_ABI.md) before
+constructing and signing a transaction. `entry-witness --artifact` requires an
+exported action and a full Script hash and emits only the policy payload;
+`gen-builder --artifact` exports the declared variants and records the runtime's
+aggregation, placement, and signing responsibilities. Its raw-inner-argument
+helper does not replace typed argument encoding.
+
 Or request metadata directly:
 
 ```bash
 cellc metadata src/main.cell --target riscv64-elf --target-profile ckb -o /tmp/main.meta.json
 ```
+
+Add `--artifact token-policy` to inspect the explicitly selected policy through
+the metadata-only compiler path. This does not produce an ELF, assembly,
+sidecars, or a machine artifact hash; `--output` writes only the inspection JSON.
+Without the flag, the existing default-entry path remains unchanged.
 
 Open the metadata when something is unclear. It is often easier to understand a
 compiler decision by reading the emitted facts than by guessing from the source
@@ -77,12 +101,20 @@ Inspect the canonical semantic foundation separately:
 ```bash
 cellc expand src/main.cell
 cellc --json expand src/main.cell
+cellc expand --artifact token-policy
+cellc expand --artifact token-policy --json
 ```
 
 The foundation exposes value provenance, artifact entry selection, transaction
 roles, Cell dispositions, enforcement-classified claims, and layered semantic
 IDs. The human rendering is deterministic but is not hashed. Source paths and
 spans are intentionally excluded from `CoreSemanticId`.
+
+The selected-policy view includes exported numeric tags, entry IDs, payload
+schema hashes, exact group input/output counts, selector bounds, and common
+checks in declaration order. It does not treat retained helper actions as
+dispatch variants. Like selected `metadata`, selected `expand` does not invoke
+machine-code generation.
 
 For an executable source `require` or Edition 2027 `enforce`, inspect its
 `entry-condition` claim. `evidence_reference` selects the typed
@@ -221,7 +253,7 @@ records the exact `identity(...)` condition declared by the same resource.
 No proof may source authority from a container or another Cell type.
 
 Top-level `enum_layouts` for concrete payload ADTs first appeared in schema 53
-and remain in current metadata schema 63 on the experimental `0.26b` branch. Audit the
+and remain in current metadata schema 65 on the experimental `0.26b` branch. Audit the
 `packed-tagged-union-v1` layout, one-byte tag, sequential variant tags, packed
 field offsets, encoded size, ownership, storage, and ABI together. A
 `linear-cell-handle` field is exactly eight bytes and forces
@@ -260,7 +292,7 @@ emit runtime error 24 in permissive artifacts and stop at E2105 under the
 production policy; a static `N` alone is never evidence that a scan ran.
 
 The validity record first appeared in schema 55 during the 0.22 line and is
-retained by current metadata schema 63 on the experimental `0.26b` branch as
+retained by current metadata schema 65 on the experimental `0.26b` branch as
 `types[].validity_predicates`. Review each predicate's
 `expression`, `dependencies`, `evidence_tier`,
 `runtime_checked_on_create`, `create_paths_selected`,
@@ -281,7 +313,7 @@ module-qualified dependency names; lifecycle helpers and transaction-view
 reads are rejected in validity predicates.
 
 Explicit borrow blocks first appeared in schema 55 and current metadata schema
-58 records them in
+64 records them in
 `runtime.borrow_regions`. Review
 `root`, `binding`, `view_type`, `storage`, `abi`, `allowed_effects`,
 `evidence_tier`, and `source_span`. A canonical record has `View<T>`,

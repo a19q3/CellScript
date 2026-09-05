@@ -6,8 +6,15 @@
 1.0 grammar, migration promise, production-equivalence claim, or release
 commitment.**
 
-This document is the source contract for the bounded native syntax implemented
-by `cellscript-source-semantics-2027-preview4`. It records what the compiler
+The [authoring target adopted on 2026-09-05](CELLSCRIPT_AUTHORING_TARGET.md)
+retains `resource`, `action`, `lock`, and `require` and calls for concise
+successor relations and multiple actions under one deployed policy. This
+document remains the exact implemented preview4 reference. Its verbose text
+is not the final authoring grammar or a required intermediate language.
+
+This document is the source contract for the bounded native syntax introduced
+by `cellscript-source-semantics-2027-preview4` and retained by
+`cellscript-source-semantics-2027-authoring1`. It records what the native parser
 accepts now so parser, formatter, lowering, metadata, LSP, editor tooling,
 examples, and tests can agree while the broader 1.0 design remains under
 review.
@@ -32,8 +39,10 @@ entry = "src/main.cell"
 Edition 2026 remains the stable default semantic epoch. Edition 2026 rejects
 the native `type_script` and `lock_script` surfaces. An Edition 2027 package
 uses a separately routed frontend and records
-`cellscript-source-semantics-2027-preview4` in its resolved compatibility
-profile.
+`cellscript-source-semantics-2027-authoring1` in its resolved compatibility
+profile. Ordinary `action`/`lock` modules now use the separately routed familiar
+authoring grammar described in the [edition policy](CELLSCRIPT_EDITION_POLICY.md);
+this native-container reference does not restrict that surface.
 
 The compiler release, source edition, payload ABI, witness placement ABI,
 metadata schema, target profile, and artifact identity remain independent
@@ -139,12 +148,19 @@ lock_script VaultOwner on lock_group {
 }
 ```
 
-The runnable Lock Script package is
+The runnable Lock Script syntax fixture is
 [`examples/lock-script-2027`](../examples/lock-script-2027/README.md).
-Its protected role has an explicit `AuthorizationOnly` disposition: the Lock
-Script authorizes spending, while a Type Script or explicit transaction policy
-owns the business-level successor, retirement, data, identity, Type Script,
-and capacity rules.
+Its equality predicates demonstrate parameter provenance and checking only.
+Both owner values are public, so copying the owner into the witness satisfies
+the comparison without proving credential control. This is not a reference
+ownership lock. Real ownership authorization requires an actual proof bound to
+the transaction and an authenticated owner credential.
+
+Its protected role has an explicit `AuthorizationOnly` disposition recording
+the Lock boundary. That classification alone proves neither owner authentication
+nor that another particular policy checks successor, retirement, data, identity,
+Type Script, or capacity rules. See authoring contract A2 for reference-policy
+requirements.
 
 ## Implemented Grammar
 

@@ -27,44 +27,167 @@ impl CodeGenerator {
         self.emit_runtime_memzero_fixed();
         self.emit_runtime_memcpy_fixed();
         self.emit_runtime_size_guards();
+        if ir.items.iter().any(|item| {
+            let body = match item {
+                IrItem::Action(entry) => &entry.body,
+                IrItem::Lock(entry) => &entry.body,
+                IrItem::PureFn(entry) => &entry.body,
+                _ => return false,
+            };
+            body.cell_bindings.iter().any(|binding| binding.membership != IrCellMembership::Unproven)
+        }) {
+            self.emit_runtime_cell_membership();
+        }
+        // These scalar getters have no runtime-to-runtime callers. Emit their
+        // complete checked implementation only when a retained IR call needs
+        // it, rather than adding unused failure paths to every artifact.
+        let scalar_helpers = ir
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                IrItem::Action(entry) => Some(&entry.body),
+                IrItem::Lock(entry) => Some(&entry.body),
+                IrItem::PureFn(entry) => Some(&entry.body),
+                _ => None,
+            })
+            .flat_map(|body| &body.blocks)
+            .flat_map(|block| &block.instructions)
+            .filter_map(|instruction| match instruction {
+                IrInstruction::Call { func, .. } if is_runtime_header_u64_call(func) => Some(func.as_str()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
         // CKB exposes epoch-number based timepoints here, not Unix timestamps.
-        self.emit_runtime_header_field_u64(
-            "__env_current_timepoint",
-            "ckb_epoch_number",
-            CKB_HEADER_FIELD_EPOCH_NUMBER,
-            true,
-            "env::current_timepoint is required for CKB profile",
-        );
-        self.emit_runtime_header_field_u64(
-            "__ckb_header_epoch_number",
-            "ckb_epoch_number",
-            CKB_HEADER_FIELD_EPOCH_NUMBER,
-            self.options.target_profile == TargetProfile::Ckb,
-            "ckb::header_epoch_number is rejected outside the ckb target profile",
-        );
-        self.emit_runtime_header_field_u64(
-            "__ckb_header_epoch_start_block_number",
-            "ckb_epoch_start_block_number",
-            CKB_HEADER_FIELD_EPOCH_START_BLOCK_NUMBER,
-            self.options.target_profile == TargetProfile::Ckb,
-            "ckb::header_epoch_start_block_number is rejected outside the ckb target profile",
-        );
-        self.emit_runtime_header_field_u64(
-            "__ckb_header_epoch_length",
-            "ckb_epoch_length",
-            CKB_HEADER_FIELD_EPOCH_LENGTH,
-            self.options.target_profile == TargetProfile::Ckb,
-            "ckb::header_epoch_length is rejected outside the ckb target profile",
-        );
-        self.emit_runtime_input_field_u64(
-            "__ckb_input_since",
-            "ckb_input_since",
-            CKB_INPUT_FIELD_SINCE,
-            self.options.target_profile == TargetProfile::Ckb,
-            "ckb::input_since is rejected outside the ckb target profile",
-        );
+        for (symbol, field_name, field_id, enabled, disabled_reason) in [
+            (
+                "__env_current_timepoint",
+                "ckb_epoch_number",
+                CKB_HEADER_FIELD_EPOCH_NUMBER,
+                true,
+                "env::current_timepoint is required for CKB profile",
+            ),
+            (
+                "__ckb_header_epoch_number",
+                "ckb_epoch_number",
+                CKB_HEADER_FIELD_EPOCH_NUMBER,
+                self.options.target_profile == TargetProfile::Ckb,
+                "ckb::header_epoch_number is rejected outside the ckb target profile",
+            ),
+            (
+                "__ckb_header_epoch_start_block_number",
+                "ckb_epoch_start_block_number",
+                CKB_HEADER_FIELD_EPOCH_START_BLOCK_NUMBER,
+                self.options.target_profile == TargetProfile::Ckb,
+                "ckb::header_epoch_start_block_number is rejected outside the ckb target profile",
+            ),
+            (
+                "__ckb_header_epoch_length",
+                "ckb_epoch_length",
+                CKB_HEADER_FIELD_EPOCH_LENGTH,
+                self.options.target_profile == TargetProfile::Ckb,
+                "ckb::header_epoch_length is rejected outside the ckb target profile",
+            ),
+        ] {
+            if scalar_helpers.contains(symbol) {
+                self.emit_runtime_header_field_u64(symbol, field_name, field_id, enabled, disabled_reason);
+            }
+        }
+        if scalar_helpers.contains("__ckb_input_since") {
+            self.emit_runtime_input_field_u64(
+                "__ckb_input_since",
+                "ckb_input_since",
+                CKB_INPUT_FIELD_SINCE,
+                self.options.target_profile == TargetProfile::Ckb,
+                "ckb::input_since is rejected outside the ckb target profile",
+            );
+        }
         let v014_helpers = referenced_v014_runtime_helpers(ir);
         self.emit_runtime_ckb_v014_surface_helpers(&v014_helpers);
+    }
+
+    /// Internal ABI: a0=Cell source, a1=ordinal, a2=expected Script hash field.
+    /// Returns 0, ScriptRoleMismatch, or ExactSizeMismatch. Only caller-saved
+    /// registers are touched; the 96-byte private frame holds both aligned
+    /// hashes and syscall arguments. No nested calls or caller buffers are used.
+    fn emit_runtime_cell_membership(&mut self) {
+        self.entry_frame_sizes.insert("__cellscript_require_cell_membership".to_string(), 96);
+        self.emit_global("__cellscript_require_cell_membership");
+        self.emit_label("__cellscript_require_cell_membership");
+        let failed = self.fresh_label("membership_role_failed");
+        let malformed = self.fresh_label("membership_hash_malformed");
+        let loaded = self.fresh_label("membership_opposite_loaded");
+        let success = self.fresh_label("membership_valid");
+        let done = self.fresh_label("membership_done");
+        self.emit("addi sp, sp, -96");
+        self.emit_stack_store("a0", 72);
+        self.emit_stack_store("a1", 80);
+        self.emit_stack_store("a2", 88);
+        self.emit("li t0, 32");
+        self.emit_stack_store("t0", 0);
+        self.emit_sp_addi("a0", 8);
+        self.emit_sp_addi("a1", 0);
+        self.emit("li a2, 0");
+        self.emit(format!("li a7, {}", self.runtime_abi().load_script_hash));
+        self.emit("ecall");
+        self.emit(format!("bnez a0, {}", failed));
+        self.emit_stack_load("t0", 0);
+        self.emit("li t1, 32");
+        self.emit(format!("bne t0, t1, {}", malformed));
+
+        for opposite in [false, true] {
+            self.emit("li t0, 32");
+            self.emit_stack_store("t0", 0);
+            self.emit_sp_addi("a0", 40);
+            self.emit_sp_addi("a1", 0);
+            self.emit("li a2, 0");
+            self.emit_stack_load("a3", 80);
+            self.emit_stack_load("a4", 72);
+            self.emit_stack_load("a5", 88);
+            if opposite {
+                // Both allowed field numbers are compiler-selected constants.
+                // XOR with their difference swaps LockHash and TypeHash.
+                self.emit(format!("xori a5, a5, {}", CKB_CELL_FIELD_LOCK_HASH ^ CKB_CELL_FIELD_TYPE_HASH));
+            }
+            self.emit(format!("li a7, {}", self.runtime_abi().load_cell_by_field));
+            self.emit("ecall");
+            if opposite {
+                self.emit(format!("beqz a0, {}", loaded));
+                self.emit_stack_load("t0", 88);
+                self.emit(format!("li t1, {}", CKB_CELL_FIELD_LOCK_HASH));
+                self.emit(format!("bne t0, t1, {}", failed));
+                self.emit(format!("li t0, {}", CKB_ITEM_MISSING));
+                self.emit(format!("beq a0, t0, {}", success));
+                self.emit(format!("j {}", failed));
+                self.emit_label(&loaded);
+            } else {
+                self.emit(format!("bnez a0, {}", failed));
+            }
+            self.emit_stack_load("t0", 0);
+            self.emit("li t1, 32");
+            self.emit(format!("bne t0, t1, {}", malformed));
+            for word in 0..4 {
+                self.emit_stack_load("t0", 8 + word * 8);
+                self.emit_stack_load("t1", 40 + word * 8);
+                if word == 0 {
+                    self.emit("xor t2, t0, t1");
+                } else {
+                    self.emit("xor t0, t0, t1");
+                    self.emit("or t2, t2, t0");
+                }
+            }
+            self.emit(format!("{} t2, {}", if opposite { "beqz" } else { "bnez" }, failed));
+        }
+        self.emit_label(&success);
+        self.emit("li a0, 0");
+        self.emit(format!("j {}", done));
+        self.emit_label(&malformed);
+        self.emit(format!("li a0, {}", CellScriptRuntimeError::ExactSizeMismatch.code()));
+        self.emit(format!("j {}", done));
+        self.emit_label(&failed);
+        self.emit(format!("li a0, {}", CellScriptRuntimeError::ScriptRoleMismatch.code()));
+        self.emit_label(&done);
+        self.emit("addi sp, sp, 96");
+        self.emit("ret");
     }
 
     fn emit_runtime_ckb_v014_surface_helpers(&mut self, referenced_helpers: &BTreeSet<String>) {
@@ -380,6 +503,12 @@ impl CodeGenerator {
             ("__ckb_occupied_capacity", "compile-visible occupied capacity floor"),
         ] {
             if !referenced_helpers.contains(name) {
+                continue;
+            }
+            if let Some(deferred) = crate::ir::IrDeferredRuntimeFeature::from_helper(name) {
+                self.emit_global(name);
+                self.emit_label(name);
+                self.emit_process_failure(deferred.runtime_error());
                 continue;
             }
             match name {
@@ -2030,11 +2159,22 @@ impl CodeGenerator {
             self.emit("ret");
             return;
         }
-        self.emit(format!("li t0, {}", source_view));
+        let invalid = self.fresh_label("source_view_index_invalid");
+        let done = self.fresh_label("source_view_encoded");
+        // Bits at or above the shift would carry into the view tag and
+        // silently re-route the request to another source family.
         self.emit(format!("li t1, {}", CKB_SOURCE_VIEW_SHIFT));
+        self.emit("sltu t2, a0, t1");
+        self.emit(format!("beqz t2, {}", invalid));
+        self.emit(format!("li t0, {}", source_view));
         self.emit("mul t0, t0, t1");
         self.emit("add a0, a0, t0");
         self.emit("li a1, 0");
+        self.emit(format!("j {}", done));
+        self.emit_label(&invalid);
+        self.emit("li a0, 0");
+        self.emit(format!("li a1, {}", CellScriptRuntimeError::CkbSourceViewInvalid.code()));
+        self.emit_label(&done);
         self.emit("ret");
     }
 
@@ -6820,9 +6960,7 @@ impl CodeGenerator {
         self.emit_label(symbol);
         if !enabled {
             self.emit(format!("# cellscript abi: {}", disabled_reason));
-            self.emit_runtime_error_comment(CellScriptRuntimeError::ConsumeInvalidOperand);
-            self.emit(format!("li a0, {}", CellScriptRuntimeError::ConsumeInvalidOperand.code()));
-            self.emit("ret");
+            self.emit_process_failure(CellScriptRuntimeError::ConsumeInvalidOperand);
             return;
         }
 
@@ -6840,6 +6978,8 @@ impl CodeGenerator {
         self.emit(format!("li a5, {}", field_id));
         self.emit(format!("li a7, {}", abi.load_header_by_field));
         self.emit("ecall");
+        self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
+        self.emit_loaded_schema_exact_size_check(8, 8, "header scalar return");
         self.emit_stack_load("a0", 16);
         self.emit_stack_load("ra", 24);
         self.emit_large_addi("sp", "sp", 32);
@@ -6851,9 +6991,7 @@ impl CodeGenerator {
         self.emit_label(symbol);
         if !enabled {
             self.emit(format!("# cellscript abi: {}", disabled_reason));
-            self.emit_runtime_error_comment(CellScriptRuntimeError::ConsumeInvalidOperand);
-            self.emit(format!("li a0, {}", CellScriptRuntimeError::ConsumeInvalidOperand.code()));
-            self.emit("ret");
+            self.emit_process_failure(CellScriptRuntimeError::ConsumeInvalidOperand);
             return;
         }
 
@@ -6871,6 +7009,8 @@ impl CodeGenerator {
         self.emit(format!("li a5, {}", field_id));
         self.emit(format!("li a7, {}", abi.load_input_by_field));
         self.emit("ecall");
+        self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
+        self.emit_loaded_schema_exact_size_check(8, 8, "input scalar return");
         self.emit_stack_load("a0", 16);
         self.emit_stack_load("ra", 24);
         self.emit_large_addi("sp", "sp", 32);

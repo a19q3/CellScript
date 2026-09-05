@@ -14,7 +14,7 @@ Use the error name first when debugging. Numeric codes are retained for VM,
 wallet, explorer, and acceptance-script compatibility.
 
 The table was introduced in compile metadata schema 30 and is emitted by the
-current metadata schema 63 on the experimental `0.26b` branch under
+current metadata schema 65 on the experimental `0.26b` branch under
 `constraints.runtime_errors`, so `cellc constraints`, `cellc check --json`, and
 sidecar metadata all expose the same machine-readable registry.
 The verified lowering record also identifies mapped runtime-error exits, and
@@ -39,6 +39,16 @@ CKB-VM as a VM-level failure, not as the verifier's normal `a0` return value.
 
 Use the table below only for normal CellScript verifier exit codes. Do not
 interpret raw syscall status registers or VM trap diagnostics with this table.
+
+On `0.26b`, the versioned `current-vm-process-exit-v1` contract makes generated
+fatal verification failures terminate the current VM process, including failures
+inside helpers whose results the caller discards. Ordinary nonzero integers,
+false predicates, wide/aggregate values and explicitly exposed raw status APIs
+remain values; they are not implicit exceptions. The machine exit uses the
+[CKB EXIT ABI](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0009-vm-syscalls/0009-vm-syscalls.md#exit).
+A spawning parent can still observe a child's exit through its explicit status
+API. See the [verified artifact boundary](CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md#fatal-verifier-failures)
+for the independent check's exact scope.
 
 | Code | Name | Meaning | Debugging hint |
 |---:|---|---|---|
@@ -100,10 +110,11 @@ interpret raw syscall status registers or VM trap diagnostics with this table.
 | 63 | `bounded-cell-dep-not-found` | A bounded resolved CellDep scan did not find the required data hash. | Check the compile-time scan bound, resolved CellDep order, expected data hash, and builder manifest. |
 | 64 | `merkle-root-mismatch` | A bounded SHA256d Merkle proof did not reconstruct the expected root. | Check leaf byte order, sibling order, depth, leaf index, hash algorithm, and expected root. |
 | 65 | `shift-amount-invalid` | A runtime integer shift amount was greater than or equal to the left operand width. | Keep runtime shift amounts below the bit width of the shifted integer value. |
+| 66 | `sighash-all-unsupported` | Canonical CKB transaction sighash construction is deferred and cannot produce a digest. | Use an authenticated standard Lock or an explicit verifier with an independently specified message contract. |
 
 ## Stability
 
 - Existing numeric codes must not be reused for a different condition.
 - New generated fail-closed paths must add a registry entry before they can
   emit a new non-zero code.
-- Codes `6`, `19`, `27` through `31`, and values above `65` are currently reserved.
+- Codes `6`, `19`, `27` through `31`, and values above `66` are currently reserved.

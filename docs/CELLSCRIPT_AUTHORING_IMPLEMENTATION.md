@@ -1,0 +1,507 @@
+# Authoring Implementation and Production Acceptance
+
+## Objective and current state
+
+Implement the [adopted authoring target](CELLSCRIPT_AUTHORING_TARGET.md) to
+production quality, with no loss of Edition 2026's supported functionality or
+feature completeness. This includes the complete language and toolchain, not
+only a Token example or acceptance of old source text.
+
+Work is in progress on `0.26b`. No production-completion claim is made here.
+The current source contract is
+`cellscript-source-semantics-2027-authoring1`; the workspace release version and
+existing single-entry payload/placement ABIs are unchanged. Explicit persistent
+Type policies have a separate, opt-in `cellscript-policy-witness-v1` envelope.
+
+The first implementation step restores familiar authoring over the shared
+declaration, type, value, and statement grammar. Ordinary action/lock bodies
+may omit `verification`; the formatter currently emits the established explicit
+marker. Multiple source entries, default parameter provenance, read references,
+and existing lifecycle operations are retained. A legacy consume keeps its
+existing semantics and evidence classification. It does not acquire a native
+retirement or pooled-accounting guarantee.
+
+The bounded native preview4 grammar remains accepted as an implementation
+reference. It is not the final authoring surface. Complete shared-policy product
+support, concise branch-local relations, and schema acknowledgement are still required.
+Neither reuse of the 2026 parser kernel nor successful scoped action ELFs
+satisfies those requirements.
+
+## Completion requirements
+
+Every row needs current-state evidence before the objective can be called
+complete. A passing test must actually exercise the stated behavior. Missing
+evidence, a metadata label, and an unsupported construct that rejects safely
+are not implementation of a required supported feature.
+
+| Requirement | Required implementation and evidence | Current disposition |
+|---|---|---|
+| Complete authoring language | Shared declarations, expressions, statements, types, and full callable bodies; meaningful edits and readable diagnostics on the adopted corpus. | Shared kernel and optional marker implemented; final relations and corpus evaluation pending. |
+| No 2026 feature regression | Positive and negative cross-edition source, typed obligation, format, artifact, and runtime checks for the feature families below. | Dedicated differential tests and cross-edition syntax matrix being established; complete gates pending. |
+| Direct semantic elaboration | Structured relation nodes with spans, typed schema resolution, and checked lowering; no generated preview4 text reparsing. | Existing AST path reused; new relation nodes and elaboration pending. |
+| Path-sensitive successor relations | Assigned/preserved fields, identity, lock, capacity and output correspondence compose inside ordinary `if`/`match`; every accepting path accounts for roles. | Pending; flat native disposition lists are insufficient. |
+| `same except` and upgrades | Concrete schema identity, exhaustive expansion, reproducible focused acknowledgement, changed/stale/missing acknowledgement rejection, no implicit repin. | Pending. |
+| Constructor defaults | A1-A6 policies are total under resolved context; lock omission, capacity alternatives, identity, group coverage, alias rejection and pool domains have one checked meaning. | Pending. |
+| Exact artifact entry | Codegen, semantic metadata, CLI execution and explicit entry scoping agree, including selected actions calling other retained actions. | Shared selection, terminal scalar/Unit helper failure and VM regressions implemented; policy Cell-bearing and complex-ABI callee closure remains pending. |
+| Resolved physical bindings | One typed per-binding source/ordinal/identity plan drives codegen, provenance, roles and independent checks; mixed Cell/read/witness/Script.args layouts cannot disagree. | Fixed-Cell runtime plan and typed projection checks implemented; full ABI and machine-dataflow closure remain pending. |
+| One deployed multi-action policy | Declared action set and explicit versioned dispatch bind selectors, payloads, common checks, artifact identity and builders. | Bounded fixed-role Type policy implemented in compiler/VM, metadata/expansion and package/builders; full consumer and deployment closure remains pending. |
+| Dispatch rejection | Reject unknown/duplicate/ambiguous tags, wrong versions, malformed/oversized/trailing payload, branch confusion and missing policy checks. | Focused real VM negatives implemented for the bounded envelope and all four fixed cardinalities; independent machine dispatch verification remains pending. |
+| Lock authorization | Actual transaction-bound credential proof; reject copied owner values, missing/invalid proof and signed-transaction tampering. | Real multisig policy spending tests implemented for transfer/burn; complete issuer-authorized lifecycle and the precise author API remain pending. |
+| Script identity API | Distinguish address decoding, full Script construction/hash comparison and signature verification; wrong-domain values fail typing or checked conversion. | Pending. |
+| Orthogonal obligations | Compose lifecycle, identity, asset accounting, capacity and authorization without double counting; scope and authenticated external guarantees remain distinct. | Existing dimensions retained; new relation composition pending. |
+| Witness ABI contexts | Type input/output-only entries, Lock entries and shared witnesses have bounded, non-overlapping ownership; preserve old ABI bytes where compatible. | Empty-group fallback, canonical bounded multi-record Type envelope, independent host/adapter codecs and pre-signing placement implemented; full signed shared-policy integration remains pending. |
+| Token lifecycle | Execute generated Token Type Script under one persistent policy through authorized mint, transfer, merge and burn, with positive/negative VM and chain evidence. | Pending; no `always_success` resource substitute. |
+| Schema-change lifecycle | Add `approval_nonce`, require reviewed reset on transfer, reject unchanged preservation and stale acknowledgement; retain old deployed-byte meaning. | Pending. |
+| Remaining business corpus | NFT capacity adjustment, fungible splits/merges, partial order, authenticated dependencies and interacting Script groups. | Pending. |
+| Independent artifact checking | Version and validate any new records, recompute identities, bind selected entries/relations/dispatch to machine evidence, and add adversarial mutations. | Typed policy, declaration/ABI and builder parameter projection checks implemented; independent selector/adapter machine proof remains pending. |
+| Language services and products | Parser, recovering diagnostics, formatter, LSP, editor, native CLI, WASM, package loading, public interfaces and builders agree. | Authoring route wired through existing consumers; complete new-surface coverage pending. |
+| Reproducibility and compatibility | Source/cache/profile versions, package locks, mixed editions, interfaces and deployment changes are explicit and reproducible. | Source/cache identity advanced; later ABI/dispatch/schema migration pending. |
+| Production acceptance | Applicable `dev`, `ci`, `backend` and clean-source release evidence, exact artifacts, runtime negatives, cycle/size/capacity measurements and required independent review. | Pending for the complete target. |
+
+The target includes all A1-A6 contracts, all acceptance fixtures in the authoring
+target, and the applicable RFC gates. This checklist does not remove their
+requirements or turn an experimental source identity into a release identity.
+Public publication or a mainnet deployment is not implied by local acceptance.
+
+## Edition 2026 parity inventory
+
+The authoritative baseline is the current Edition 2026 implementation and its
+positive/negative evidence, not an older minimal tutorial. Preserve existing
+supported behavior and the exact unsupported boundaries. An already unsupported
+dynamic collection does not become a new parity obligation; a supported
+bounded 0.26 collection cannot be downgraded to a fixed-role preview.
+
+| Feature family | Evidence to retain and extend |
+|---|---|
+| Modules and interfaces | Imports and aliases, qualified names, project resolution, public/package/private visibility, stable interface extraction and compatibility diagnostics. |
+| Declarations | Resources, shared Cells, receipts, structs, enums, constants, invariants, flows, helpers, actions and locks; attributes and documentation survive. |
+| Types and generics | Scalars, fixed bytes, tuples/arrays, value abilities, phantom identity, bounded monomorphization, imported generic instantiation and unsupported-layout rejection. |
+| Policies | Capabilities and entailment, identity and destruction policies, type/hash declarations, capacity floors, validity and effect annotations. |
+| Values and control flow | Checked arithmetic, wide integers, bitwise/shifts, casts, calls, assignments, aggregates, nested patterns/guards, branching, loops, labels, early returns and borrow regions. |
+| Entry roles | Existing value, witness, input/output, protected, lock-args and read-only sources, rich ABI marshalling and named outputs; provenance is not authorization. |
+| Verification | Individual/block `require`, custom failures, pure/read-only helper calls, flow transitions, terminal evidence, invariants and bounded quantifiers. |
+| Lifecycle | Create, consume, destroy, claim, settle, unique creation/replacement and continuity; equivalent new forms must exist before any old supported operation is removed. |
+| Bounded collections | Exact GroupInput scanning, fixed-width decoding, zero/one/N/N+1, checked accumulation, output-plan codec and complete output correspondence, including negative cases. |
+| Consumers and evidence | Metadata, ProofPlan, scheduler/effects, source maps, checker, CLI/builders, project/lock handling, formatter, LSP, editor and WASM. |
+
+`tests/authoring_parity.rs` provides representative differential and runtime
+cases. `tests/syntax_combo/matrix.toml` drives the generated cross-edition
+combination audit. Neither corpus by itself proves the whole table: imported
+packages, runtime ABI, deployment and product evidence need their matching
+integration suites and gates.
+
+## Binding correctness found during parity work
+
+The comparison exposed existing truthfulness gaps. The fixed-Cell implementation
+now addresses these rather than copying inaccurate records as reference semantics:
+
+- Ordinary consume and Cell-backed parameter/output lowering retains transaction
+  `Input`/`Output` positions and reports them accurately. Native ports use actual
+  GroupInput/GroupOutput locations with membership and complete fixed-group
+  coverage checks. Nonzero-group VM regressions reject foreign same-layout
+  Cells disguising an invalid active group.
+- Ordinary and native `protected` Lock parameters use the current Lock group,
+  correcting the implementation against the documented contract. They do not
+  impose a new exact lock-group cardinality requirement. The role guard rejects
+  ambiguous Cells whose Lock and Type hashes both equal the executing Script
+  hash; this is a deliberate acceptance-set tightening, not unchanged behavior.
+- Explicit `read` parameters use positional CellDep loads. These loads do not
+  implicitly authenticate a deployed Type Script identity. Provenance and role
+  records now classify that membership as `unproven`.
+- Read parameters and standalone `read_ref` expressions share one CellDep
+  ordinal allocation. Four-dependency VM cases check each slot and reject the
+  previous parameter/expression alias bypass. Repeated generated names and
+  source aliases do not replace local binding identity.
+- Anonymous creates retain distinct output/local identities and distinct
+  role/disposition records even when generated names repeat.
+- Witness arguments omit runtime-bound parameters from their encoded sequence,
+  and Script.args uses byte offsets. Signature parameter indexes alone do not
+  describe either physical layout. Full shared-layout ABI contracts remain
+  part of production acceptance.
+
+The mandatory fixed-Cell table introduced in typed semantics v5 is retained in
+`cellscript-typed-semantics-v7`. The
+independent checker cross-checks typed locals, roles and provenance, including
+hash-rebound source/ordinal/identity and missing-record mutations. This does
+not establish general syscall dataflow equivalence. The source-set artifact
+cache identity now uses `project-source-set-v27-verifier-failure`.
+Fixed membership checks share a demand-driven runtime helper with an explicit
+96-byte frame in lowering evidence. This avoids repeating the full hash and
+role checks in every callable; it does not relax membership or group coverage.
+
+The bounded migration command preserves ordinary Type Script `action` syntax
+instead of silently rewriting absolute locations into native group ports.
+Its existing equivalence checks remain mandatory; graph-wide migration is
+still outside that command's bounded contract.
+
+These findings are grounded in the compiler binding paths, not a complete
+security assessment. The implementation must distinguish preserved ordinary
+2026 behavior, fixes to inaccurate records, and deliberate new group semantics.
+Hash equality with an inaccurate record is not a reason to retain the error.
+
+## Fatal verification and ordinary helper values
+
+The helper call boundary previously allowed a numeric verification error to
+return as an ordinary value, which a caller could discard or compare as business
+data. Generated fatal checks now use a demand-driven current-process EXIT sink.
+Explicit typed failures end in `verifier-failure`; ordinary values and deliberate
+raw statuses keep their existing channels. The [artifact boundary](CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md#fatal-verifier-failures)
+specifies the new typed, core-identity and machine records and their limits.
+
+Optimization must preserve an expression unless it is both side-effect-free
+and proven non-failing. Unused checked arithmetic, casts, indexing, schema
+reads and transitive failing calls therefore remain evaluations. A bounded
+constant specialization can still fold proven-total literal helper calls;
+it cannot substitute a partial callee expression into a differently typed
+caller context. The optimizer regressions changed from four failing families
+to 16 passing tests, including existing controls. The lexical-shadowing test
+is defensive AST coverage: ordinary type checking already rejects duplicate
+bindings, so it is not evidence of an accepted-source shadowing vulnerability.
+
+Real VM regression work covers both editions and optimization levels 0–3,
+including discarded/used calls, Unit action chains, imported aliases and
+malformed dependency reads. That corpus also exposed and now covers fixes for
+ordinary tuple projection and locally constructed schema-reference ABI failures.
+Repeated tuple projections, reference aliases, and valid/truncated/trailing
+external schema forwarding pass in both editions at all four optimization
+levels. The 11-family ordinary VM suite and three policy helper/common-check
+families pass; full gates on the final source are still required.
+These fixes do not complete branch-local successor relations,
+schema acknowledgements or the complete persistent policy product.
+
+## Deferred signing-message boundary
+
+Authorization integration also exposed a pre-existing unsupported path:
+`env::sighash_all` did not construct a canonical transaction digest. It could
+reach a runtime placeholder returning a zero pointer instead. This is not an
+implemented signing primitive and cannot be used as an authorization reference.
+
+The shared deferred-call classification now reports
+`ckb-sighash-all-deferred`. Production policy rejects it before artifact
+generation. Audit artifacts terminate the process with runtime error 66 at the
+call, rather than treating an error integer as a Hash or returning through a
+helper whose caller could ignore the result. Optimizer call-purity checks retain
+deferred, unresolved and imported evaluations; argument substitution cannot
+erase or duplicate an evaluation without the required purity evidence.
+
+Real VM tests cover direct verifier arguments, discarded and wildcard results,
+local wrappers, imported aliases and Lock execution in both editions. The
+existing explicit-message BIP340 and real signed-multisig routes remain distinct
+supported controls. Browser metadata exposes module-wide scoped fail-closed
+reasons, and LSP diagnostics include defining helpers as well as actions/locks.
+
+The independent checker rejects reclassification of this known deferred helper
+after outer-hash rebinding. Its terminal-failure records now independently check
+the recorded static error assignment and jump to the exact current-process EXIT
+sink. That does not establish that every deferred call reaches the required
+failure site: complete call-to-failure machine binding remains an explicit
+checker completion requirement. The deferred-call behavior has direct VM
+evidence, separate from the classification and static-site checks.
+
+## Bounded persistent Type policy
+
+An explicit package `[[artifacts]]` declaration selects a concrete resource,
+numeric action tags, `policy-witness-v1` dispatch and ordered common checks.
+There is no inferred selector, implicit export from source order, or builder
+choice that can replace a stored Cell's verifier. Package, in-memory and virtual
+source APIs use the same checked policy resolver; executable and metadata-only
+paths retain the same selected contract. Explicit builds do not read or overwrite
+the default entry's artifact cache.
+
+The first implementation has deliberately bounded executable scope:
+
+- A policy has 1–64 exported Unit actions and at most 16 ordered zero-argument
+  Unit common-check actions. Numeric tags are unique `u32` values, including
+  zero and the maximum value; canonical serialization sorts tags numerically.
+  Common-check order is preserved because the first failure is observable.
+- Exactly one concrete Cell-backed schema owns the non-dependency roles.
+  Those roles become current Type-group inputs/outputs with exact dense
+  cardinality, membership, alias and coverage checks. Read-only CellDeps keep
+  their independent ordinals and unproven asset identity. A 0-to-0 variant
+  cannot prove invocation membership and is rejected.
+- Fixed lifecycle operations must account for the same roles on every
+  successful path. Bounded collections, mixed-resource physical roles,
+  Cell-bearing action reuse and complex callee ABIs are not
+  supported by this initial policy path. They remain available through their
+  existing supported ordinary/scoped paths. These restrictions are unfinished
+  feature work, not satisfaction of the Edition 2026 parity requirement.
+- Retained scalar/Unit helpers and actions may perform checked arithmetic,
+  narrowing and `require` in acyclic bodies. They use terminal verification
+  failure, preserving ordinary results such as `5`, `20`, `49` and `false`.
+  Immutable concrete-schema reference parameters remain supported; reference
+  returns remain forbidden by the existing public type-checking contract.
+  Field/index access, physical Cell operations, mutable/wide/aggregate call
+  ABIs and recursive calls remain outside this bounded policy callee contract.
+- Common checks run once before a selected action and may call the same
+  retained bounded graph; unknown generic calls are rejected. Every common
+  check remains a zero-parameter Unit action. A Bool predicate is used by
+  `require predicate(...)`; simply returning false is not an authorization
+  check. Common checks are not exported variants. The independent checker
+  validates their retained call contracts and excludes physical Cell effects,
+  unsupported operations and cycles; full machine dispatch proof is pending.
+
+The [policy ABI](CELLSCRIPT_POLICY_WITNESS_ABI.md) uses a bounded canonical
+Molecule envelope keyed by Script role and complete Script hash. It validates
+the entire record vector before selection, rejects duplicate or unsorted keys,
+and leaves each selected action's existing `CSARGv1` payload unchanged. The
+whole WitnessArgs limit is 4,096 bytes with at most eight records. Host and CKB
+adapter codecs are independently implemented; placement preserves other fields,
+rejects occupied `input_type`, and must occur before signing.
+
+Metadata schema 65, `cellscript-typed-semantics-v7` and
+`cellscript-semantic-foundation-v3` bind the declared policy, selector provenance,
+resource layout, variant payload schemas, fixed counts and ordered common
+checks. Lowering record v6 includes separate terminal-failure sites and requires the exact new
+nested versions. The parser-free checker also derives builder encoding flags
+and parameter order/source/type from the typed record. This is not independent
+proof of machine scanner/adapter dataflow or deployment authentication.
+
+Focused CKB-VM tests execute mint, transfer, merge and burn against the same
+compiled policy bytes, including optimization levels 0–3, nonzero group
+positions, output-only creation, shared witness positions for two complete
+Script identities, and rejection cases for role/hash/tag/version/length errors,
+extra or missing group members and failing common checks. These are mechanics
+fixtures without issuance or ownership authentication. They are not the
+required authenticated, stateful Token lifecycle acceptance fixture.
+
+`tests/policy_authorization.rs` separately spends a Token under a real bundled
+multisig-v2 Lock at a nonzero input position. Transfer and burn reject missing,
+partial and wrong-key signatures. Post-signing changes to the selector, action
+memo and sibling record change the actual signing message without changing the
+raw transaction hash, and fail specifically at the owner Lock. Permitted memo
+and sibling-record edits succeed after legitimate re-signing. This establishes
+spending authorization for that witness group, not authorization of arbitrary
+other groups, issuer-authorized minting or the full required Token lifecycle.
+
+`tests/policy_lifecycle.rs` separately runs the issuer-authorized Token
+lifecycle in real CKB-VM: positive Token Cells are always outputs of earlier
+verified transactions, and every action runs under the identical persistent
+policy Script. Six committed transactions per edition and optimization level
+cover authorized mint, transfer, merge and burn, replay rejection, wrong
+amounts, missing/extra outputs and wrong-key credentials. Its negatives also
+pin the issuer bound itself: an attacker Cell, an issuer Cell reachable only
+through CellDeps, and out-of-range issuer indexes must all fail. The last case
+exposed a generated-code defect now fixed: the runtime SourceView helper added
+an unchecked dynamic index to the tagged view word, so an index at or above
+2^32 carried into the view tag and re-routed an `Input` request to an
+`Output` view, letting an issuer-locked output counterfeit input authority.
+The helper now fails closed with `ckb-source-view-invalid` (44) before
+encoding. This is local live-Cell bookkeeping against the workspace SDK, not
+node admission, chain confirmation or clean-tag release evidence, and the
+complete required lifecycle fixture remains pending.
+
+`build`, `check`, `metadata`, `expand`, `gen-builder` and `entry-witness` accept
+explicit artifact selection. Metadata/expansion use the checked metadata-only
+path and do not generate an ELF. Builders expose only declared variants. The
+CLI encodes typed action arguments; generated TypeScript's policy helper takes
+pre-encoded inner argument bytes and leaves typed materialization, shared-index
+aggregation, placement and signing to its runtime contract. Native full/metadata
+transport tests cover scalar, fixed-byte, nested aggregate, schema, enum and
+Unit payloads. Imported concrete resources and failure-free helpers have
+file/virtual-source differential coverage in both editions. The Rust
+WASM-feature path retains bounded policy metadata without serializing native
+typed/machine evidence; it is not a browser ELF compiler. A public browser
+policy-selection binding and editor integration remain product work.
+
+The next independent machine-proof increment must begin at the actual ELF entry
+and derive instruction successors/call returns, not trust source labels or
+declared reachability. It must bind canonical witness parsing to the selected
+tag and argument range, numeric tag branches to actual adapter targets, ordered
+common calls to unchanged nonzero rejection, and adapter pointer/length/copy
+and decoding behavior to the typed parameter contract. Callee memory effects
+and predicate semantics remain separate obligations: proving a call dominates
+dispatch does not prove what that call checks. Fixed, dynamic and enum payload
+families need explicit verification coverage without silently removing accepted
+language features to obtain a simpler proof.
+
+## Next implementation boundaries
+
+The next vertical slices must share an explicit resolved entry context. They
+must not infer group ownership from the source edition or from the presence of
+the retained preview AST annotation.
+
+- A policy declaration is the sole authority for its exported variants,
+  explicit tags, common checks, group resource and versioned dispatch ABI.
+  Package, in-memory and virtual-source compilation must resolve the same
+  declaration model before producing executable or metadata-only products.
+  Builders must not expose retained helper actions as dispatch variants.
+- Group rebinding applies to the exact resolved policy resource, not every
+  resource-shaped parameter. Read dependencies keep their CellDep locations.
+  Mixed absolute/group lifecycle roles need physical alias and coverage checks;
+  changing every role to GroupInput is not a substitute. Unsupported combinations
+  in the new policy path need explicit diagnostics without removing the existing
+  ordinary/scoped compilation path.
+- Internal calls and entry adapters are distinct. Current action preludes can
+  reload transaction Cells instead of using passed Cell pointers. A retained
+  action must not silently acquire either a public tag or a new binding context.
+  Cell-bearing action reuse needs caller-anchored bindings, not merely disabling
+  one parameter-loading flag.
+- Direct successor nodes must carry individual occurrence identity and their
+  actual CFG position. Every successful path must cover its lifecycle roles;
+  no successful path may dispose of one role twice. Explicit failure exits need
+  not finish a transition. A global union of branch dispositions cannot prove
+  those properties. Field, identity, capacity and authorization obligations remain
+  separate from unique lifecycle accounting.
+- `same except` expands after concrete schema resolution and instantiation.
+  Every field treatment must be explicit in the resulting semantic record.
+  Schema acknowledgement remains separate review evidence bound to the relation
+  and old/new schema identities. Existing preview envelope labels are not a
+  substitute for deriving policies from the actual relation and its checks.
+- The policy witness encoder must preserve existing single-entry CSARGv1 bytes.
+  Introduce a separate bounded, versioned multi-record envelope for overlapping
+  Script groups, with explicit field ownership and rejection of duplicate or
+  unknown selectors. Assemble it before signing; never silently overwrite or
+  merge an occupied signature or argument field.
+
+The signed multisig fixture in `tests/entry_witness_abi.rs` is a useful existing
+authorization anchor: it combines a real Lock and generated Type Script at a
+nonzero input position and rejects witness tampering after signing. It is not
+yet the shared-policy lifecycle fixture. Its current local SDK dependency is
+not clean-tag release evidence; release validation must use the required pinned
+SDK without overwriting unrelated checkout changes.
+
+## Local differential-evidence refresh
+
+The fixed-binding runtime and exact-size guard optimization satisfy the existing
+example size and machine-shape budgets without increasing them. The ensuing
+backend gate exposed stale measured iCKB snapshots. The supported refresh path
+reran all 218 `ickb_diff` tests; each retained its asserted transaction outcome.
+A recursive comparison of the 187 matrix rows found no added or removed scenario,
+fixture change, accepted/rejected outcome change, original binary change, or
+capacity, fee or transaction-size change.
+
+There are 92 changed generated-artifact hashes and eight lower CellScript cycle
+measurements: two deposit positives each save eight cycles, and six limit-order
+positives each save 22. Error-URL code hashes and dynamic transaction context
+hashes also change. Three malformed-deposit negatives require an explicit
+additional qualification:
+
+- Nonzero DAO data previously reported the DAO Script at `Outputs[0].Type` with
+  error -19; it now reports the generated policy at `Outputs[1].Type` with error 11.
+- Short and long DAO data previously reported the DAO Script with error -4;
+  each now reports the generated policy with error 11.
+
+The pinned `ckb-script` 1.1.0 verifier iterates Script groups by full Script hash
+and returns the first failure. The changed generated ELF changes its Script
+identity and moves its explicit malformed-deposit rejection before the DAO
+rejection. These are first-reported-error changes, not identical exit-code
+evidence. The named failure modes and rejection outcomes remain unchanged.
+
+This is a working-tree evidence refresh, not a new production-equivalence claim
+for the authoring target. The matrix's pre-existing `cellscript_source_commit`
+marker still names `0be86497a0c1918a9b11bd74f9ccbf234f6c49fe`; the refresh command
+does not update it or prove current-source reproducibility. The compiler source
+pin and locally refreshed benchmark submodule must be closed together before
+release. No benchmark submodule publication is authorized by this refresh.
+
+### Terminal-failure snapshot refresh
+
+A second supported refresh after the terminal-failure backend changes passed
+all 218 tests. Compared with the preceding working-tree matrix, all 187
+differential outcomes remain unchanged: 37 accepting and 150 rejecting rows.
+The 22 supporting evidence rows are unchanged. Fees, capacities and transaction
+sizes are unchanged. The new matrix SHA-256 is
+`1d7e3d07797b96fbbfe080981b1fad1a16963f01327e3c9974a0f93c770756bb`.
+
+All 37 measured positive transactions use fewer cycles on both sides of the
+comparison: the CellScript-side reductions range from 238 to 480 cycles,
+totaling 9,540, and the original-side reductions total 5,310. These are complete
+transaction measurements, including shared generated auxiliary Scripts, not
+isolated measurements of either principal verifier. Rejecting rows retain zero
+cycle placeholders, not measured zero-cycle executions. The matrix does not
+record ELF byte sizes, so this comparison supplies no iCKB ELF-size delta.
+
+Generated artifact and shared auxiliary hashes change. Four normalized fixtures
+change only their derived related-Type hashes; the wrong-Type relationships and
+checked data-rule failures remain intact. Fourteen expected patched Owned-Owner
+artifacts also change with their embedded related-Type hash. Source pins,
+pinned original binary inputs, test assertions and failure-mode classifications
+are unchanged.
+
+One negative changes its first reported failure: the receipt wrong-XUDT-owner
+case previously reported generated error 48 at `Inputs[0].Type`, and now reports
+standard XUDT error -52 at `Outputs[0].Type`. Recomputed full Script hashes put
+the unchanged XUDT group between the old and new generated group in the pinned
+verifier's ordered map. Thus this transaction still rejects, but this row no
+longer independently executes the later generated failure. A separate
+receipt-group wrong-XUDT case still reaches generated error 48. This is a
+qualified diagnostic change, not identical exit-code evidence or a new
+production-equivalence claim. The earlier source-pin and submodule-publication
+limitations continue to apply.
+
+### Source-view bound snapshot refresh
+
+A third supported refresh after the SourceView index-bound fix passed all 218
+tests. All 187 differential rows keep their scenario, normalized fixture,
+fee, capacity and transaction-size values, and all accepting/rejecting
+outcomes are unchanged: 37 accepting and 150 rejecting rows. The new matrix
+SHA-256 is
+`899eb2844bd940132a3936f17aca264ac7fc57c55599b1e1dbb2eebd74c2725d`.
+
+Every generated artifact hash changes because each measured artifact
+references the hardened SourceView helper. The 37 measured positive
+transactions use more cycles to execute the added bounds check: increases
+range from 15 to 83 cycles, totaling 1,926. Rejecting rows keep their zero
+cycle placeholders. The 150 rejecting rows' diagnostic URLs embed the new
+Script hashes; error codes and reported sources are otherwise unchanged.
+
+One negative again changes its first reported failure, reversing the earlier
+qualified direction: the receipt wrong-XUDT-args case previously reported
+standard XUDT error -52 at `Outputs[0].Type`, and now reports generated error
+48 at `Inputs[0].Type`. The recomputed full Script hashes reorder the pinned
+verifier's ordered group map back. The transaction still rejects on both
+sides with the recorded `wrong_xudt_binding` failure mode. This is a
+qualified diagnostic change, not identical exit-code evidence or a new
+production-equivalence claim. The earlier source-pin and
+submodule-publication limitations continue to apply.
+
+## Verification workflow
+
+The policy tranche passed the complete `dev` gate on 2026-09-05. Its strict
+quick audit report is
+`target/cellscript-strict-backend-audit/strict-backend-audit-quick-20260905-205049.json`;
+the accompanying quick syntax audit accepted 66 and rejected 56 of 122 generated
+cases, with zero failures. Focused evidence also includes 868 compiler unit
+tests, native compiler/checker clippy, real policy VM/authorization tests,
+outer-hash-rebound checker mutations, CLI/builders, imports, native transport
+parity and the metadata-only WASM-feature test. Generated TypeScript typechecks
+and all nine generated Node tests pass. These are working-tree development
+results; `ci` and clean-source production evidence are
+separate requirements.
+
+The policy tranche's full backend run also passed compiler, checker and Fiber
+tests, clippy, both package scenario backends, and the strict audit checks except
+the final clean-source stateful stage. Its report is
+`target/cellscript-strict-backend-audit/strict-backend-audit-full-20260905-205657.json`.
+That stage stopped before scenario execution because the source tree is dirty.
+Both policy gate runs predate the terminal-verifier-failure changes; they are
+not evidence for those newer bytes.
+
+The pre-policy backend run on 2026-09-05 passed compiler tests (including the
+218-case iCKB suite), checker/Fiber tests, clippy, both package scenario backends,
+and the 166-case syntax combination audit. Its final stateful CKB stage rejected
+the dirty source tree before scenario execution. The report is
+`target/cellscript-strict-backend-audit/strict-backend-audit-full-20260905-202015.json`.
+That is an incomplete backend gate, predates the policy tranche, and cannot be
+reused as current-source production evidence. Existing user-owned worktree and
+external SDK changes have not been cleared to bypass the gate.
+
+Focused tests are development feedback. They do not replace the unified gates:
+
+```bash
+cargo test --locked -p cellscript --test authoring_parity
+cargo test --locked -p cellscript --test entry_selection
+cargo test --locked -p cellscript --test native_group_binding --test protected_group_binding
+cargo test --locked -p cellscript --test read_ref_binding --test resolved_binding_metadata
+cargo test --locked -p cellscript --test policy_artifact_checker --test policy_artifact_cli --test policy_imports
+cargo test --locked -p cellscript --test policy_authorization --test policy_witness_codec_parity
+cargo test --locked -p cellscript-tools syntax_combo::tests
+./scripts/cellscript_gate.sh dev
+./scripts/cellscript_gate.sh backend
+./scripts/cellscript_gate.sh ci
+```
+
+The release gate remains subject to its clean-source, pinned-toolchain,
+artifact, external-tooling and chain-evidence requirements. Do not weaken a gate
+or clear unrelated worktree changes to obtain a passing result. Current test
+outputs and gate reports, rather than this command list, are the evidence.

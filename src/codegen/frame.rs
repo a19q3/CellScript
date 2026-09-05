@@ -22,9 +22,41 @@ impl CodeGenerator {
             self.emit(format!("j .L{}_fail_{}", function, error.code()));
             return;
         }
+        self.emit_process_failure(error);
+    }
+
+    /// Terminate the VM process even inside a value-returning helper. Returning
+    /// an error in a0 would let a caller mistake it for a scalar or byte pointer.
+    /// A fresh label makes the exact error constant independently addressable
+    /// in machine evidence. No frame/RA or caller-live registers must survive.
+    pub(super) fn emit_process_failure(&mut self, error: CellScriptRuntimeError) {
+        let failure = self.fresh_label(&format!("verifier_failure_{}", error.code()));
+        self.emit_label(&failure);
         self.emit_runtime_error_comment(error);
         self.emit(format!("li a0, {}", error.code()));
-        self.emit_epilogue_body();
+        self.emit_process_failure_status();
+    }
+
+    /// a0 holds a nonzero verifier status already checked by the caller. This
+    /// does not apply to ordinary scalar returns or deliberate raw status APIs.
+    pub(super) fn emit_process_failure_status(&mut self) {
+        self.needs_process_failure_helper = true;
+        self.emit("j __cellscript_abort");
+    }
+
+    pub(super) fn emit_process_failure_helper(&mut self) {
+        if !self.needs_process_failure_helper {
+            return;
+        }
+        self.entry_frame_sizes.insert("__cellscript_abort".to_string(), 0);
+        self.emit_global("__cellscript_abort");
+        self.emit_label("__cellscript_abort");
+        self.emit("# cellscript verifier failure: terminate current VM process; a0 is the nonzero error");
+        self.emit(format!("li a7, {}", ckb_abi::syscall::EXIT));
+        self.emit("ecall");
+        // The VM EXIT ABI never returns. Retain a terminal fallback even under
+        // a nonstandard syscall runner; never manufacture a normal value.
+        self.emit("j __cellscript_abort");
     }
 
     pub(super) fn emit_shared_epilogue(&mut self) {
@@ -34,9 +66,7 @@ impl CodeGenerator {
         let fail_codes = self.fail_handler_codes.iter().copied().collect::<Vec<_>>();
         for error in fail_codes {
             self.emit_label(&format!(".L{}_fail_{}", function, error.code()));
-            self.emit_runtime_error_comment(error);
-            self.emit(format!("li a0, {}", error.code()));
-            self.emit(format!("j .L{}_epilogue", function));
+            self.emit_process_failure(error);
         }
         self.emit_label(&format!(".L{}_epilogue", function));
         self.emit_epilogue_body();
@@ -158,6 +188,12 @@ impl CodeGenerator {
     }
 
     pub(super) fn prepare_function_layout(&mut self, body: &IrBody, params: &[IrParam]) {
+        self.cell_bindings.clone_from(&body.cell_bindings);
+        self.cell_locations_by_local = body
+            .cell_bindings
+            .iter()
+            .filter_map(|binding| binding.local_id.map(|id| (id, (cell_source_value(binding.source), binding.ordinal))))
+            .collect();
         let mut max_var_id = None;
         let mut fixed_byte_locals = HashMap::<usize, usize>::new();
         let mut named_vars = BTreeSet::<String>::new();
@@ -190,7 +226,6 @@ impl CodeGenerator {
         self.consume_indices.clear();
         self.consume_type_names.clear();
         self.consume_binding_ids.clear();
-        self.read_ref_order.clear();
         self.read_ref_indices.clear();
         self.read_ref_param_ids.clear();
         self.read_ref_param_input_indices.clear();
@@ -198,6 +233,7 @@ impl CodeGenerator {
         self.output_param_ids.clear();
         self.mutate_param_ids.clear();
         self.schema_pointer_size_offsets.clear();
+        self.local_schema_value_widths.clear();
         self.fixed_byte_param_size_offsets.clear();
         self.param_type_hash_pointer_offsets.clear();
         self.param_type_hash_size_offsets.clear();
@@ -205,6 +241,16 @@ impl CodeGenerator {
         self.u128_value_offsets.clear();
         self.collection_region_start = 0;
         self.next_collection_slot = 0;
+
+        for instruction in body.blocks.iter().flat_map(|block| &block.instructions) {
+            if let IrInstruction::Tuple { dest, .. } = instruction
+                && let IrType::Named(name) = &dest.ty
+                && !self.cell_type_names.contains(name)
+                && let Some(width) = self.type_fixed_sizes.get(name).copied()
+            {
+                self.local_schema_value_widths.insert(dest.id, width);
+            }
+        }
 
         let schema_param_ids = params
             .iter()
@@ -273,9 +319,6 @@ impl CodeGenerator {
         if self.bind_readonly_schema_params {
             let consumed_param_names = body.consume_set.iter().map(|pattern| pattern.binding.as_str()).collect::<BTreeSet<_>>();
             let mutate_param_names = body.mutate_set.iter().map(|pattern| pattern.binding.as_str()).collect::<BTreeSet<_>>();
-            let read_ref_indices_by_binding =
-                body.read_refs.iter().enumerate().map(|(index, pattern)| (pattern.binding.as_str(), index)).collect::<HashMap<_, _>>();
-            let mut read_ref_param_index = 0usize;
             for param in params {
                 if matches!(param.source, ParamSource::Output | ParamSource::LockArgs) {
                     continue;
@@ -287,12 +330,16 @@ impl CodeGenerator {
                     continue;
                 }
                 self.read_ref_param_ids.insert(param.name.clone(), param.binding.id);
-                if let Some(dep_index) = read_ref_indices_by_binding.get(param.name.as_str()).copied() {
-                    self.read_ref_param_dep_indices.insert(param.binding.id, dep_index);
-                } else {
-                    let input_index = body.consume_set.len() + body.mutate_set.len() + read_ref_param_index;
-                    self.read_ref_param_input_indices.insert(param.binding.id, input_index);
-                    read_ref_param_index += 1;
+                if let Some(binding) = body.cell_binding_for_local(param.binding.id) {
+                    match binding.source {
+                        IrCellSource::CellDep => {
+                            self.read_ref_param_dep_indices.insert(param.binding.id, binding.ordinal);
+                        }
+                        IrCellSource::Input | IrCellSource::GroupInput => {
+                            self.read_ref_param_input_indices.insert(param.binding.id, binding.ordinal);
+                        }
+                        IrCellSource::Output | IrCellSource::GroupOutput => {}
+                    }
                 }
                 self.schema_pointer_size_offsets.insert(param.binding.id, next_cell_slot);
                 self.cell_buffer_size_offsets.insert(param.binding.id, next_cell_slot);
@@ -308,15 +355,21 @@ impl CodeGenerator {
             self.mutate_param_ids.insert(pattern.binding.clone(), param.binding.id);
             self.consume_type_names.insert(param.binding.id, pattern.ty.clone());
             self.consume_binding_ids.insert(pattern.binding.clone(), param.binding.id);
-            self.consume_indices.insert(param.binding.id, pattern.input_index);
+            if let Some(binding) = body.cell_binding(IrCellBindingRole::Input, &pattern.binding) {
+                self.consume_indices.insert(param.binding.id, binding.ordinal);
+            }
             self.schema_pointer_size_offsets.insert(param.binding.id, next_cell_slot);
             self.cell_buffer_size_offsets.insert(param.binding.id, next_cell_slot);
             self.cell_buffer_offsets.insert(param.binding.id, next_cell_slot + 8);
             next_cell_slot += RUNTIME_CELL_SLOT_SIZE;
         }
 
-        let consume_pattern_indices =
-            body.consume_set.iter().enumerate().map(|(index, pattern)| (pattern.binding.as_str(), index)).collect::<HashMap<_, _>>();
+        let consume_pattern_indices = body
+            .cell_bindings
+            .iter()
+            .filter(|binding| binding.role == IrCellBindingRole::Input)
+            .map(|binding| (binding.binding.as_str(), binding.ordinal))
+            .collect::<HashMap<_, _>>();
         for pattern in &body.consume_set {
             let Some(param) = params.iter().find(|param| param.name == pattern.binding) else {
                 continue;
@@ -358,16 +411,17 @@ impl CodeGenerator {
             }
         }
 
-        let mut read_ref_index = 0usize;
         for block in &body.blocks {
             for instruction in &block.instructions {
                 if let IrInstruction::ReadRef { dest, .. } = instruction {
                     self.cell_buffer_size_offsets.insert(dest.id, next_cell_slot);
                     self.cell_buffer_offsets.insert(dest.id, next_cell_slot + 8);
-                    self.read_ref_order.push(dest.id);
-                    self.read_ref_indices.insert(dest.id, read_ref_index);
+                    if let Some(binding) = body.cell_binding_for_local(dest.id)
+                        && binding.source == IrCellSource::CellDep
+                    {
+                        self.read_ref_indices.insert(dest.id, binding.ordinal);
+                    }
                     next_cell_slot += RUNTIME_CELL_SLOT_SIZE;
-                    read_ref_index += 1;
                 }
             }
         }
@@ -401,8 +455,6 @@ impl CodeGenerator {
         }
 
         let mut create_dest_outputs = HashMap::new();
-        let mut next_create_output_index =
-            body.create_set.iter().position(|pattern| pattern.operation == "create").unwrap_or(body.create_set.len());
         for block in &body.blocks {
             for instruction in &block.instructions {
                 match instruction {
@@ -426,20 +478,22 @@ impl CodeGenerator {
                         }
                     }
                     IrInstruction::Create { dest, pattern } => {
-                        let output_index = if pattern.operation == "create" {
-                            let output_index = next_create_output_index;
-                            next_create_output_index += 1;
-                            Some(output_index)
-                        } else {
-                            Self::create_output_index(body, &pattern.operation, &pattern.binding, &pattern.ty)
-                        };
-                        if let Some(output_index) = output_index {
+                        if let Some(binding) = body
+                            .cell_binding_for_local(dest.id)
+                            .or_else(|| body.cell_binding(IrCellBindingRole::Output, &pattern.binding))
+                        {
+                            let output_index = binding.ordinal;
+                            self.cell_locations_by_local.insert(dest.id, (cell_source_value(binding.source), output_index));
                             create_dest_outputs.insert(dest.id, output_index);
                         }
                     }
                     IrInstruction::CreateUnique { dest, pattern, .. } | IrInstruction::ReplaceUnique { dest, pattern, .. } => {
-                        if let Some(output_index) = Self::create_output_index(body, &pattern.operation, &pattern.binding, &pattern.ty)
+                        if let Some(binding) = body
+                            .cell_binding_for_local(dest.id)
+                            .or_else(|| body.cell_binding(IrCellBindingRole::Output, &pattern.binding))
                         {
+                            let output_index = binding.ordinal;
+                            self.cell_locations_by_local.insert(dest.id, (cell_source_value(binding.source), output_index));
                             create_dest_outputs.insert(dest.id, output_index);
                         }
                     }
@@ -459,8 +513,10 @@ impl CodeGenerator {
                         }
                     }
                     IrInstruction::TypeHash { dest, operand: IrOperand::Var(var) } => {
-                        if let Some(output_index) = create_dest_outputs.get(&var.id).copied() {
-                            self.output_type_hash_sources.insert(dest.id, output_index);
+                        if create_dest_outputs.contains_key(&var.id) {
+                            if let Some(location) = self.cell_locations_by_local.get(&var.id).copied() {
+                                self.output_type_hash_sources.insert(dest.id, location);
+                            }
                             self.cell_buffer_size_offsets.insert(dest.id, next_cell_slot);
                             self.cell_buffer_offsets.insert(dest.id, next_cell_slot + 8);
                             next_cell_slot += RUNTIME_CELL_SLOT_SIZE;
@@ -1268,6 +1324,151 @@ impl CodeGenerator {
         for (index, byte) in bytes.iter().enumerate() {
             self.emit(format!("li t0, {}", byte));
             self.emit_stack_store_byte("t0", offset + index);
+        }
+    }
+}
+
+#[cfg(test)]
+mod verifier_failure_tests {
+    use super::*;
+
+    fn generator() -> CodeGenerator {
+        CodeGenerator::new(CodegenOptions::default())
+    }
+
+    #[test]
+    fn abort_helper_is_demand_driven_frame_free_and_non_returning() {
+        let mut codegen = generator();
+        codegen.emit_process_failure_helper();
+        assert!(codegen.assembly.is_empty());
+
+        codegen.emit_process_failure(CellScriptRuntimeError::AssertionFailed);
+        codegen.emit_process_failure_helper();
+        let assembly = codegen.assembly.join("\n");
+        assert!(assembly.contains(
+            ".Lverifier_failure_5_0:\n    # cellscript runtime error 5 assertion-failed\n    li a0, 5\n    j __cellscript_abort"
+        ));
+        assert!(assembly.ends_with("    li a7, 93\n    ecall\n    j __cellscript_abort"));
+        assert!(!assembly.contains("ret"));
+        assert!(!assembly.contains("(sp)"));
+        assert_eq!(codegen.entry_frame_sizes.get("__cellscript_abort"), Some(&0));
+    }
+
+    #[test]
+    fn scalar_context_helpers_are_demand_driven_and_keep_load_checks() {
+        for (statement, expected) in [
+            ("", None),
+            ("let number = ckb::header_epoch_number()", Some("__ckb_header_epoch_number")),
+            ("let since = ckb::input_since()", Some("__ckb_input_since")),
+        ] {
+            let source = format!("module scalar_context\naction main() -> u64 {{ verification\n{statement}\nreturn 0 }}");
+            let ast = crate::frontend::parse(&source, crate::CellScriptEdition::Edition2026).unwrap();
+            let ir = crate::ir::generate(&ast).unwrap();
+            let generated = generator().generate(&ir, ArtifactFormat::RiscvAssembly).unwrap();
+            let assembly = String::from_utf8(generated).unwrap();
+            for name in [
+                "__env_current_timepoint",
+                "__ckb_header_epoch_number",
+                "__ckb_header_epoch_start_block_number",
+                "__ckb_header_epoch_length",
+                "__ckb_input_since",
+            ] {
+                assert_eq!(assembly.contains(&format!("\n{name}:")), expected == Some(name));
+            }
+            if expected.is_some() {
+                assert!(assembly.contains(".Lverifier_failure_1_"), "value getter must check syscall status");
+                assert!(assembly.contains(".Lverifier_failure_4_"), "value getter must check exact returned width");
+            } else {
+                assert!(!assembly.contains("__cellscript_abort:"), "unused getters must not demand a terminal helper");
+            }
+        }
+    }
+
+    #[test]
+    fn cold_error_handler_exits_instead_of_returning_a_value() {
+        let mut codegen = generator();
+        codegen.current_function = Some("checked".to_string());
+        codegen.emit_fail(CellScriptRuntimeError::NumericOrDiscriminantInvalid);
+        codegen.emit_shared_epilogue();
+        let assembly = codegen.assembly.join("\n");
+        let (failure, ordinary_return) = assembly.split_once(".Lchecked_epilogue:").unwrap();
+        assert!(failure.contains("j .Lchecked_fail_20"));
+        assert!(failure.contains(".Lverifier_failure_20_0:"));
+        assert!(failure.contains("li a0, 20\n    j __cellscript_abort"));
+        assert!(!failure.contains("j .Lchecked_epilogue"));
+        assert!(ordinary_return.contains("ret"));
+    }
+
+    #[test]
+    fn structured_failure_marker_overrides_value_return() {
+        for operand in [IrOperand::Const(IrConst::U64(5)), IrOperand::Const(IrConst::Bool(false))] {
+            let mut codegen = generator();
+            codegen.current_function = Some("check".to_string());
+            let block = IrBlock {
+                id: BlockId(3),
+                instructions: Vec::new(),
+                terminator: IrTerminator::Return(Some(operand)),
+                runtime_error: Some(CellScriptRuntimeError::AssertionFailed),
+            };
+            codegen.generate_block(&block, None).unwrap();
+            let assembly = codegen.assembly.join("\n");
+            assert!(assembly.contains("li a0, 5\n    j __cellscript_abort"));
+            assert!(!assembly.contains("epilogue"));
+        }
+    }
+
+    #[test]
+    fn ordinary_error_shaped_scalars_and_false_still_return_normally() {
+        for value in [IrConst::U64(5), IrConst::U64(20), IrConst::U64(49), IrConst::Bool(false), IrConst::Unit] {
+            let mut codegen = generator();
+            codegen.current_function = Some("value".to_string());
+            codegen.generate_terminator(&IrTerminator::Return(Some(IrOperand::Const(value))), None).unwrap();
+            let assembly = codegen.assembly.join("\n");
+            assert!(assembly.contains("j .Lvalue_epilogue"));
+            assert!(!codegen.needs_process_failure_helper);
+            assert!(!assembly.contains("verifier_failure"));
+        }
+    }
+
+    #[test]
+    fn deliberate_status_apis_do_not_acquire_implicit_failure_checks() {
+        for name in ["__ckb_close", "__ckb_wait"] {
+            let mut codegen = generator();
+            codegen.current_function = Some("caller".to_string());
+            codegen.emit_call(None, name, &[IrOperand::Const(IrConst::U64(99))]).unwrap();
+            assert!(!codegen.needs_process_failure_helper, "{name}");
+            assert!(!codegen.assembly.join("\n").contains("__cellscript_abort"));
+        }
+    }
+
+    #[test]
+    fn wide_value_return_keeps_both_payload_registers() {
+        let mut codegen = generator();
+        codegen.current_function = Some("wide".to_string());
+        let value = (49u128 << 64) | 20;
+        codegen.generate_terminator(&IrTerminator::Return(Some(IrOperand::Const(IrConst::U128(value)))), None).unwrap();
+        let assembly = codegen.assembly.join("\n");
+        assert!(assembly.contains("li a0, 0"));
+        assert!(assembly.contains("li a1, 0"));
+        assert!(assembly.contains("li t6, 20"));
+        assert!(assembly.contains("li t6, 49"));
+        assert!(assembly.contains("or a0, a0, t6"));
+        assert!(assembly.contains("or a1, a1, t6"));
+        assert!(assembly.contains("j .Lwide_epilogue"));
+        assert!(!codegen.needs_process_failure_helper);
+    }
+
+    #[test]
+    fn runtime_requirements_and_scalar_status_failures_exit_before_continuation() {
+        for name in ["__ckb_require_time", "__ckb_cell_capacity"] {
+            let mut codegen = generator();
+            codegen.current_function = Some("caller".to_string());
+            codegen.emit_call(None, name, &[IrOperand::Const(IrConst::U64(99))]).unwrap();
+            let assembly = codegen.assembly.join("\n");
+            assert!(codegen.needs_process_failure_helper, "{name}");
+            assert!(assembly.contains("j __cellscript_abort"));
+            assert!(!assembly.contains("j .Lcaller_epilogue"));
+            assert!(!assembly.contains(".Lverifier_failure_"), "dynamic status must not fabricate a static error code");
         }
     }
 }

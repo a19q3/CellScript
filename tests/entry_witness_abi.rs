@@ -750,6 +750,18 @@ fn witnessargs_input_type_falls_back_to_group_output_zero() {
 }
 
 #[test]
+fn missing_input_group_witness_must_not_fall_back_to_an_output_witness() {
+    let elf = compile_cellscript_source_to_elf(PARAMETERIZED_ENTRY, "verify", None);
+    let mut fixture = build_simple_fixture(Bytes::default(), 2, 1);
+    fixture.current_type_script_input_indices = vec![1];
+    // The active input group exists at transaction input 1, but its witness
+    // does not. GroupOutput#0 can resolve this unrelated, valid witness at 0.
+    fixture.witnesses = vec![canonical_multisig_v2_witness(raw_entry_payload(42)).as_bytes()];
+    let result = execute_cellscript_script(&elf, &fixture);
+    assert_eq!(result.exit_code, 25, "an existing input group must never use output fallback: {:?}", result.captured_debug);
+}
+
+#[test]
 fn u128_division_and_modulo_execute_exact_wide_values_in_ckb_vm() {
     let elf = compile_cellscript_source_to_elf(U128_DIV_REM_ENTRY, "verify", None);
     let vectors = [(0, 1), (u64::MAX as u128 + 17, 97), (1u128 << 127, 3), (u128::MAX, (1u128 << 127) + 123), (u128::MAX, u128::MAX)];

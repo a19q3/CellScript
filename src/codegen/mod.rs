@@ -19,8 +19,11 @@ mod cell_ops;
 mod collections;
 mod expr;
 mod frame;
+mod policy;
 mod runtime;
 mod schema;
+#[cfg(not(feature = "wasm"))]
+pub(crate) use abi::{entry_param_abi_sources, EntryParamAbiSource};
 pub use assembler::BackendShapeMetrics;
 use assembler::*;
 use cell_ops::{CellFieldHashCheck, CellFieldHashLocation};
@@ -60,6 +63,16 @@ const CKB_SOURCE_HEADER_DEP: u64 = ckb_abi::source::HEADER_DEP;
 const CKB_SOURCE_GROUP_FLAG: u64 = ckb_abi::source::GROUP_FLAG;
 const CKB_SOURCE_GROUP_INPUT: u64 = ckb_abi::source::GROUP_INPUT;
 const CKB_SOURCE_GROUP_OUTPUT: u64 = ckb_abi::source::GROUP_OUTPUT;
+
+fn cell_source_value(source: IrCellSource) -> u64 {
+    match source {
+        IrCellSource::Input => CKB_SOURCE_INPUT,
+        IrCellSource::Output => CKB_SOURCE_OUTPUT,
+        IrCellSource::GroupInput => CKB_SOURCE_GROUP_INPUT,
+        IrCellSource::GroupOutput => CKB_SOURCE_GROUP_OUTPUT,
+        IrCellSource::CellDep => CKB_SOURCE_CELL_DEP,
+    }
+}
 const CKB_SOURCE_VIEW_INPUT: u64 = ckb_abi::source_view::INPUT;
 const CKB_SOURCE_VIEW_OUTPUT: u64 = ckb_abi::source_view::OUTPUT;
 const CKB_SOURCE_VIEW_CELL_DEP: u64 = ckb_abi::source_view::CELL_DEP;
@@ -600,6 +613,9 @@ fn pure_const_return(body: &IrBody) -> Option<IrConst> {
     let [block] = body.blocks.as_slice() else {
         return None;
     };
+    if block.runtime_error.is_some() {
+        return None;
+    }
     match (&block.instructions[..], &block.terminator) {
         ([], IrTerminator::Return(Some(IrOperand::Const(value)))) => Some(value.clone()),
         ([IrInstruction::LoadConst { dest, value }], IrTerminator::Return(Some(IrOperand::Var(var)))) if dest.id == var.id => {
@@ -852,6 +868,9 @@ pub struct CodeGenerator {
     param_vars: BTreeSet<usize>,
     /// Schema pointer slots backed by a VM-loaded cell buffer size word.
     schema_pointer_size_offsets: HashMap<usize, usize>,
+    /// Exact widths of locally constructed fixed schema values and their
+    /// aliases. External Cells and unknown returned pointers never enter this map.
+    local_schema_value_widths: HashMap<usize, usize>,
     /// Fixed-byte parameter pointer slots backed by a separate ABI length word.
     fixed_byte_param_size_offsets: HashMap<usize, usize>,
     /// Fixed-width aggregate pointer slots backed by ABI bytes, keyed by IR variable id.
@@ -885,6 +904,9 @@ pub struct CodeGenerator {
     cell_buffer_offsets: HashMap<usize, usize>,
     /// Per-CKB-runtime cell size words keyed by IR variable id.
     cell_buffer_size_offsets: HashMap<usize, usize>,
+    /// Authoritative Cell locations resolved before backend storage layout.
+    cell_bindings: Vec<IrCellBinding>,
+    cell_locations_by_local: HashMap<usize, (u64, usize)>,
     /// Byte-size slots for dynamic Molecule values projected from schema table fields.
     dynamic_value_size_offsets: HashMap<usize, usize>,
     /// Empty collection temporaries that can be verified as empty Molecule vectors.
@@ -898,7 +920,7 @@ pub struct CodeGenerator {
     /// Collection variable ids whose full construction is covered by create-output vector verification.
     verified_collection_construction_vectors: BTreeSet<usize>,
     /// `type_hash()` temporaries that can be loaded from a created Output cell's TypeHash field.
-    output_type_hash_sources: HashMap<usize, usize>,
+    output_type_hash_sources: HashMap<usize, (u64, usize)>,
     /// Schema parameter TypeHash pointer slots, keyed by source parameter variable id.
     param_type_hash_pointer_offsets: HashMap<usize, usize>,
     /// Schema parameter TypeHash length slots, keyed by source parameter variable id.
@@ -913,8 +935,6 @@ pub struct CodeGenerator {
     consume_type_names: HashMap<usize, String>,
     /// Consumed IR operand variable id keyed by source binding name.
     consume_binding_ids: HashMap<String, usize>,
-    /// Read-ref IR destination variable ids in source lowering order.
-    read_ref_order: Vec<usize>,
     /// Read-ref CellDep index keyed by IR destination variable id.
     read_ref_indices: HashMap<usize, usize>,
     /// Read-only schema parameter variable ids keyed by source binding name.
@@ -937,8 +957,10 @@ pub struct CodeGenerator {
     verified_operation_outputs: BTreeSet<usize>,
     /// Collection push value ids whose effect is covered by a mutate append verifier.
     verified_collection_push_values: BTreeSet<usize>,
-    /// Function-local cold fail handlers keyed by returned verifier error code.
+    /// Function-local cold fail handlers keyed by terminal verifier error code.
     fail_handler_codes: BTreeSet<CellScriptRuntimeError>,
+    /// Whether generated fatal paths need the frame-free process EXIT routine.
+    needs_process_failure_helper: bool,
     /// Unique label counter for runtime checks.
     next_runtime_label: usize,
     /// Final stack-frame size for typed action/lock/helper entries.
@@ -1016,9 +1038,7 @@ impl CodeGenerator {
     }
 
     fn param_is_runtime_bound(&self, param: &IrParam) -> bool {
-        param.source == ParamSource::LockArgs
-            || param.is_ref
-            || named_type_name(&param.ty).is_some_and(|name| self.cell_type_names.contains(name))
+        abi::param_is_runtime_bound(param, &self.cell_type_names)
     }
 
     pub fn new(options: CodegenOptions) -> Self {
@@ -1045,6 +1065,7 @@ impl CodeGenerator {
             schema_pointer_vars: BTreeSet::new(),
             param_vars: BTreeSet::new(),
             schema_pointer_size_offsets: HashMap::new(),
+            local_schema_value_widths: HashMap::new(),
             fixed_byte_param_size_offsets: HashMap::new(),
             aggregate_pointer_sources: HashMap::new(),
             tuple_call_return_vars: HashMap::new(),
@@ -1062,6 +1083,8 @@ impl CodeGenerator {
             pure_const_returns: HashMap::new(),
             cell_buffer_offsets: HashMap::new(),
             cell_buffer_size_offsets: HashMap::new(),
+            cell_bindings: Vec::new(),
+            cell_locations_by_local: HashMap::new(),
             dynamic_value_size_offsets: HashMap::new(),
             empty_molecule_vector_vars: BTreeSet::new(),
             stack_collection_vars: BTreeSet::new(),
@@ -1076,7 +1099,6 @@ impl CodeGenerator {
             consume_indices: HashMap::new(),
             consume_type_names: HashMap::new(),
             consume_binding_ids: HashMap::new(),
-            read_ref_order: Vec::new(),
             read_ref_indices: HashMap::new(),
             read_ref_param_ids: HashMap::new(),
             read_ref_param_input_indices: HashMap::new(),
@@ -1089,6 +1111,7 @@ impl CodeGenerator {
             verified_operation_outputs: BTreeSet::new(),
             verified_collection_push_values: BTreeSet::new(),
             fail_handler_codes: BTreeSet::new(),
+            needs_process_failure_helper: false,
             next_runtime_label: 0,
             entry_frame_sizes: BTreeMap::new(),
         }
@@ -1098,11 +1121,46 @@ impl CodeGenerator {
         runtime_syscall_abi(self.options.target_profile)
     }
 
+    pub(super) fn resolved_cell_location(&self, role: IrCellBindingRole, binding: &str) -> Option<(u64, usize)> {
+        self.cell_bindings
+            .iter()
+            .find(|entry| entry.role == role && entry.binding == binding)
+            .map(|entry| (cell_source_value(entry.source), entry.ordinal))
+    }
+
+    pub(super) fn resolved_cell_location_for_local(&self, local: usize) -> Option<(u64, usize)> {
+        self.cell_locations_by_local.get(&local).copied()
+    }
+
+    pub(super) fn require_cell_location(&mut self, role: IrCellBindingRole, binding: &str) -> (u64, usize) {
+        if let Some(location) = self.resolved_cell_location(role, binding) {
+            return location;
+        }
+        self.emit(format!("# cellscript abi: unresolved {:?} Cell binding {}", role, binding));
+        self.emit_fail(CellScriptRuntimeError::CellLoadFailed);
+        // Unreachable after the emitted failure; never substitute a live Cell.
+        (CKB_SOURCE_INPUT, usize::MAX)
+    }
+
+    fn require_output_slot(&mut self, binding: &str, ordinal: usize) -> (u64, usize) {
+        if let Some(record) = self
+            .cell_bindings
+            .iter()
+            .find(|record| record.role == IrCellBindingRole::Output && record.binding == binding && record.ordinal == ordinal)
+        {
+            return (cell_source_value(record.source), record.ordinal);
+        }
+        self.emit(format!("# cellscript abi: unresolved output Cell binding {} at {}", binding, ordinal));
+        self.emit_fail(CellScriptRuntimeError::CellLoadFailed);
+        (CKB_SOURCE_OUTPUT, usize::MAX)
+    }
+
     pub fn generate(self, ir: &IrModule, format: ArtifactFormat) -> Result<Vec<u8>> {
         self.generate_with_evidence(ir, format).map(|generated| generated.bytes)
     }
 
     pub fn generate_with_evidence(mut self, ir: &IrModule, format: ArtifactFormat) -> Result<GeneratedArtifact> {
+        ir.validate_entry_selection()?;
         let has_entrypoint = ir.items.iter().any(|item| matches!(item, IrItem::Action(_) | IrItem::Lock(_)));
         self.enum_fixed_sizes = ir.enum_fixed_sizes.clone();
         self.enum_layouts = ir.enum_layouts.clone();
@@ -1127,7 +1185,10 @@ impl CodeGenerator {
         }
 
         self.emit_section(".text");
-        if let Some((entry_name, entry_params)) = first_entrypoint(ir) {
+        if let IrEntrySelection::Artifact(declaration) = &ir.entry_selection {
+            self.emit_policy_entry_wrapper(declaration, ir).map_err(|error| with_codegen_code(error, "E2101"))?;
+        } else if let Some(entry) = ir.resolved_entry() {
+            let (entry_name, entry_params) = (entry.name(), entry.params());
             if entry_params.is_empty() {
                 self.emit_entry_direct_wrapper(entry_name);
             } else {
@@ -1153,7 +1214,11 @@ impl CodeGenerator {
             }
         }
 
+        // Runtime helpers own their frames and must never reuse the final
+        // source function's cold handlers or epilogue.
+        self.current_function = None;
         self.generate_runtime_support(ir);
+        self.emit_process_failure_helper();
         self.emit_const_data_pool();
 
         let generated = match format {
@@ -1341,36 +1406,8 @@ impl CodeGenerator {
             };
             let param_indices = params.iter().enumerate().map(|(index, param)| (param.binding.id, index)).collect::<HashMap<_, _>>();
             let mut type_hash_param_indices = BTreeSet::new();
-            let mut runtime_bound_param_indices = params
-                .iter()
-                .enumerate()
-                .filter_map(|(index, param)| self.param_is_runtime_bound(param).then_some(index))
-                .collect::<BTreeSet<_>>();
-            let mut bounded_plan_param_indices = BTreeSet::new();
-            for pattern in body.consume_set.iter().chain(body.read_refs.iter()) {
-                if let Some(param) = params.iter().position(|param| param.name == pattern.binding) {
-                    runtime_bound_param_indices.insert(param);
-                }
-            }
-            for pattern in &body.mutate_set {
-                if let Some(param) = params.iter().position(|param| param.name == pattern.binding) {
-                    runtime_bound_param_indices.insert(param);
-                }
-            }
-            for operation in &body.bounded_collection_ops {
-                if operation.operation == "consume_each"
-                    && operation.runtime_contract.as_deref() == Some(crate::ir::BOUNDED_TYPE_GROUP_INPUTS_V1)
-                    && let Some(param) = params.iter().position(|param| param.name == operation.collection_binding)
-                {
-                    runtime_bound_param_indices.insert(param);
-                }
-                if operation.operation == "create_each"
-                    && operation.runtime_contract.as_deref() == Some(crate::ir::BOUNDED_OUTPUT_PLAN_V1)
-                    && let Some(param) = params.iter().position(|param| param.name == operation.collection_binding)
-                {
-                    bounded_plan_param_indices.insert(param);
-                }
-            }
+            let (runtime_bound_param_indices, bounded_plan_param_indices) =
+                abi::entry_abi_parameter_indices(params, body, &self.cell_type_names);
             for block in &body.blocks {
                 for instruction in &block.instructions {
                     if let IrInstruction::TypeHash { operand: IrOperand::Var(var), .. } = instruction
@@ -1509,7 +1546,7 @@ impl CodeGenerator {
                 self.emit("call __xudt_require_group_amount_conserved");
                 let ok_label = self.fresh_label("auto_aggregate_xudt_conserved_ok");
                 self.emit(format!("beqz a0, {}", ok_label));
-                self.emit_epilogue();
+                self.emit_process_failure_status();
                 self.emit_label(&ok_label);
             }
         }
@@ -1701,11 +1738,21 @@ impl CodeGenerator {
                     let Some((dest, src)) = alias else {
                         continue;
                     };
+                    if let Some(location) = self.cell_locations_by_local.get(&src.id).copied()
+                        && self.cell_locations_by_local.insert(dest.id, location) != Some(location)
+                    {
+                        changed = true;
+                    }
                     if self.schema_pointer_vars.contains(&src.id) && self.schema_pointer_vars.insert(dest.id) {
                         changed = true;
                     }
                     if let Some(size_offset) = self.schema_pointer_size_offsets.get(&src.id).copied()
                         && self.schema_pointer_size_offsets.insert(dest.id, size_offset) != Some(size_offset)
+                    {
+                        changed = true;
+                    }
+                    if let Some(width) = self.local_schema_value_widths.get(&src.id).copied()
+                        && self.local_schema_value_widths.insert(dest.id, width) != Some(width)
                     {
                         changed = true;
                     }
@@ -1800,7 +1847,7 @@ impl CodeGenerator {
                             .and_then(|ty| tuple_return_field_type(ty, field))
                             .is_some_and(|field_ty| field_ty == dest.ty)
                         {
-                            self.tuple_call_return_field_slots.insert((obj.id, field.clone()), dest.id);
+                            self.tuple_call_return_field_slots.entry((obj.id, field.clone())).or_insert(dest.id);
                             continue;
                         }
                         let source = if self.schema_pointer_vars.contains(&obj.id) {
@@ -2040,13 +2087,11 @@ impl CodeGenerator {
         for block in &body.blocks {
             for instruction in &block.instructions {
                 match instruction {
-                    IrInstruction::Create { dest, pattern }
-                    | IrInstruction::CreateUnique { dest, pattern, .. }
-                    | IrInstruction::ReplaceUnique { dest, pattern, .. } => {
-                        if pattern.operation != "create"
-                            && let Some(output_index) =
-                                Self::create_output_index(body, &pattern.operation, &pattern.binding, &pattern.ty)
-                        {
+                    IrInstruction::Create { dest, .. }
+                    | IrInstruction::CreateUnique { dest, .. }
+                    | IrInstruction::ReplaceUnique { dest, .. } => {
+                        if let Some((source, output_index)) = self.resolved_cell_location_for_local(dest.id) {
+                            self.cell_locations_by_local.insert(dest.id, (source, output_index));
                             self.operation_output_indices.insert(dest.id, output_index);
                         }
                     }
@@ -2071,13 +2116,11 @@ impl CodeGenerator {
         }
     }
 
-    fn create_output_index(body: &IrBody, operation: &str, binding: &str, ty: &str) -> Option<usize> {
-        body.create_set.iter().position(|pattern| pattern.operation == operation && pattern.binding == binding && pattern.ty == ty)
-    }
-
     fn create_output_index_for_dest(body: &IrBody, operation: &str, dest: &IrVar) -> Option<usize> {
-        let ty = named_type_name(&dest.ty)?;
-        Self::create_output_index(body, operation, &dest.name, ty)
+        let binding = body.cell_binding_for_local(dest.id)?;
+        (binding.role == IrCellBindingRole::Output
+            && body.create_set.get(binding.ordinal).is_some_and(|pattern| pattern.operation == operation))
+        .then_some(binding.ordinal)
     }
 
     fn record_verified_operation_output(&mut self, body: &IrBody, output_index: usize, dest: &IrVar, operation: &str) {
@@ -2315,20 +2358,17 @@ impl CodeGenerator {
     }
 
     fn generate_body(&mut self, body: &IrBody) -> Result<()> {
+        self.emit_resolved_cell_membership_checks();
         self.emit_read_ref_parameter_bindings();
 
         for (index, pattern) in body.consume_set.iter().enumerate() {
             self.generate_consume(pattern, index)?;
         }
 
-        let mut read_ref_index = 0usize;
-        for pattern in &body.read_refs {
-            if self.read_ref_param_ids.contains_key(&pattern.binding) {
-                continue;
+        for instruction in body.blocks.iter().flat_map(|block| &block.instructions) {
+            if let IrInstruction::ReadRef { dest, .. } = instruction {
+                self.generate_read_ref(dest)?;
             }
-            let index = read_ref_index;
-            read_ref_index += 1;
-            self.generate_read_ref(pattern, index)?;
         }
 
         // Signature-bound outputs are loaded in the entry prelude so
@@ -2366,6 +2406,13 @@ impl CodeGenerator {
     }
 
     fn emit_read_ref_parameter_bindings(&mut self) {
+        if self.read_ref_param_ids.values().any(|var_id| {
+            !self.read_ref_param_input_indices.contains_key(var_id) && !self.read_ref_param_dep_indices.contains_key(var_id)
+        }) {
+            self.emit("# cellscript abi: fail closed because a read-only parameter has no resolved Cell binding");
+            self.emit_fail(CellScriptRuntimeError::ConsumeInvalidOperand);
+            return;
+        }
         let mut input_bindings = self
             .read_ref_param_ids
             .iter()
@@ -2375,16 +2422,29 @@ impl CodeGenerator {
             .collect::<Vec<_>>();
         input_bindings.sort_by_key(|(input_index, _, _)| *input_index);
         for (input_index, binding, var_id) in input_bindings {
+            let Some((source, resolved_index)) = self.resolved_cell_location_for_local(var_id) else {
+                self.emit_fail(CellScriptRuntimeError::ConsumeInvalidOperand);
+                return;
+            };
+            if resolved_index != input_index || !matches!(source, CKB_SOURCE_INPUT | CKB_SOURCE_GROUP_INPUT) {
+                self.emit_fail(CellScriptRuntimeError::ConsumeInvalidOperand);
+                return;
+            }
             let Some(size_offset) = self.cell_buffer_size_offsets.get(&var_id).copied() else {
                 continue;
             };
             let Some(buffer_offset) = self.cell_buffer_offsets.get(&var_id).copied() else {
                 continue;
             };
-            self.emit(format!("# cellscript abi: bind read-only param {} to Input#{} cell data", binding, input_index));
+            self.emit(format!(
+                "# cellscript abi: bind read-only param {} to {}#{} cell data",
+                binding,
+                ckb_source_name(source),
+                input_index
+            ));
             self.emit_load_cell_data_syscall_to_offsets(
                 "read_ref_param_input",
-                CKB_SOURCE_INPUT,
+                source,
                 input_index,
                 size_offset,
                 buffer_offset,
@@ -2404,6 +2464,10 @@ impl CodeGenerator {
             .collect::<Vec<_>>();
         dep_bindings.sort_by_key(|(dep_index, _, _)| *dep_index);
         for (dep_index, binding, var_id) in dep_bindings {
+            if self.resolved_cell_location_for_local(var_id) != Some((CKB_SOURCE_CELL_DEP, dep_index)) {
+                self.emit_fail(CellScriptRuntimeError::ConsumeInvalidOperand);
+                return;
+            }
             let Some(size_offset) = self.cell_buffer_size_offsets.get(&var_id).copied() else {
                 continue;
             };
@@ -2427,15 +2491,15 @@ impl CodeGenerator {
 
     fn generate_consume(&mut self, pattern: &CellPattern, index: usize) -> Result<()> {
         self.emit(format!("# {} input {}", pattern.operation, pattern.binding));
+        let (source, input_index) = self.require_cell_location(IrCellBindingRole::Input, &pattern.binding);
         if let Some(var_id) =
             self.consume_binding_ids.get(&pattern.binding).copied().or_else(|| self.consume_order.get(index).copied())
             && let (Some(size_offset), Some(buffer_offset)) =
                 (self.cell_buffer_size_offsets.get(&var_id).copied(), self.cell_buffer_offsets.get(&var_id).copied())
         {
-            let input_index = self.consume_indices.get(&var_id).copied().unwrap_or(index);
             self.emit_load_cell_data_syscall_to_offsets(
                 &pattern.operation,
-                CKB_SOURCE_INPUT,
+                source,
                 input_index,
                 size_offset,
                 buffer_offset,
@@ -2450,21 +2514,24 @@ impl CodeGenerator {
             return Ok(());
         }
 
-        self.emit_load_cell_data_syscall(&pattern.operation, CKB_SOURCE_INPUT, index);
+        self.emit_load_cell_data_syscall(&pattern.operation, source, input_index);
         self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
         if pattern.operation == "destroy" {
-            self.emit_destroy_group_output_absence_scan(pattern, index);
+            self.emit_destroy_group_output_absence_scan(pattern, input_index);
         }
         Ok(())
     }
 
-    fn generate_read_ref(&mut self, pattern: &CellPattern, index: usize) -> Result<()> {
-        self.emit(format!("# read_ref {}", pattern.binding));
-        if let Some(var_id) = self.read_ref_order.get(index).copied()
-            && let (Some(size_offset), Some(buffer_offset)) =
-                (self.cell_buffer_size_offsets.get(&var_id).copied(), self.cell_buffer_offsets.get(&var_id).copied())
+    fn generate_read_ref(&mut self, dest: &IrVar) -> Result<()> {
+        self.emit(format!("# read_ref {}", dest.name));
+        if let (Some(size_offset), Some(buffer_offset)) =
+            (self.cell_buffer_size_offsets.get(&dest.id).copied(), self.cell_buffer_offsets.get(&dest.id).copied())
         {
-            let dep_index = self.read_ref_indices.get(&var_id).copied().unwrap_or(index);
+            let Some((CKB_SOURCE_CELL_DEP, dep_index)) = self.resolved_cell_location_for_local(dest.id) else {
+                self.emit("# cellscript abi: fail closed because read_ref has no resolved CellDep binding");
+                self.emit_fail(CellScriptRuntimeError::ConsumeInvalidOperand);
+                return Ok(());
+            };
             self.emit_load_cell_data_syscall_to_offsets(
                 "read_ref",
                 CKB_SOURCE_CELL_DEP,
@@ -2475,12 +2542,12 @@ impl CodeGenerator {
             );
             self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
             self.emit_sp_addi("t0", buffer_offset);
-            self.emit_stack_store("t0", var_id * 8);
+            self.emit_stack_store("t0", dest.id * 8);
             return Ok(());
         }
 
-        self.emit_load_cell_data_syscall("read_ref", CKB_SOURCE_CELL_DEP, index);
-        self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
+        self.emit("# cellscript abi: fail closed because read_ref has no allocated destination");
+        self.emit_fail(CellScriptRuntimeError::ConsumeInvalidOperand);
         Ok(())
     }
 
@@ -2494,6 +2561,7 @@ impl CodeGenerator {
         // The verifier cannot create cells inside CKB-VM; it can only verify the
         // transaction output selected by the lowering metadata.
         self.emit(format!("# {} output {}", pattern.operation, pattern.ty));
+        let (source, index) = self.require_output_slot(&pattern.binding, index);
         if pattern.operation == "output" {
             if let Some(var_id) = self.output_param_ids.get(&pattern.binding).copied() {
                 let Some(size_offset) = self.cell_buffer_size_offsets.get(&var_id).copied() else {
@@ -2506,7 +2574,7 @@ impl CodeGenerator {
                 };
                 self.emit_load_cell_data_syscall_to_offsets(
                     "output_param",
-                    CKB_SOURCE_OUTPUT,
+                    source,
                     index,
                     size_offset,
                     buffer_offset,
@@ -2536,7 +2604,7 @@ impl CodeGenerator {
                         self.next_virtual_output = self.next_virtual_output.max(index + 1);
                         return Ok(());
                     }
-                    if !(self.can_verify_output_lock(pattern) && self.emit_output_lock_hash_check(index, lock)) {
+                    if !(self.can_verify_output_lock(pattern) && self.emit_output_lock_hash_check(source, index, lock)) {
                         self.emit("# cellscript abi: output lock verification incomplete for this named output");
                         self.emit("# cellscript abi: fail closed because the output lock is not fully verified");
                         self.emit_fail(CellScriptRuntimeError::EntryWitnessMagicMismatch);
@@ -2549,7 +2617,7 @@ impl CodeGenerator {
             self.emit_fail(CellScriptRuntimeError::AssertionFailed);
             return Ok(());
         }
-        self.emit_load_cell_data_syscall(&pattern.operation, CKB_SOURCE_OUTPUT, index);
+        self.emit_load_cell_data_syscall(&pattern.operation, source, index);
         self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
 
         if pattern.lock.is_some() {
@@ -2566,7 +2634,7 @@ impl CodeGenerator {
         }
 
         if let Some(lock) = &pattern.lock {
-            if self.can_verify_output_lock(pattern) && self.emit_output_lock_hash_check(index, lock) {
+            if self.can_verify_output_lock(pattern) && self.emit_output_lock_hash_check(source, index, lock) {
                 return Ok(());
             }
             self.emit("# cellscript abi: output lock verification incomplete for this create pattern");
@@ -2617,10 +2685,11 @@ impl CodeGenerator {
             return;
         };
         self.emit(format!("# cellscript abi: bind mutable param {} to Input#{} cell data", pattern.binding, pattern.input_index));
+        let (source, index) = self.require_cell_location(IrCellBindingRole::Input, &pattern.binding);
         self.emit_load_cell_data_syscall_to_offsets(
             "mutate_param_input",
-            CKB_SOURCE_INPUT,
-            pattern.input_index,
+            source,
+            index,
             size_offset,
             buffer_offset,
             RUNTIME_CELL_BUFFER_SIZE,
@@ -2637,7 +2706,11 @@ impl CodeGenerator {
             self.generate_instruction(instruction)?;
         }
 
-        self.generate_terminator(&block.terminator, fallthrough)?;
+        if let Some(error) = block.runtime_error {
+            self.emit_process_failure(error);
+        } else {
+            self.generate_terminator(&block.terminator, fallthrough)?;
+        }
 
         Ok(())
     }
@@ -2831,9 +2904,7 @@ impl CodeGenerator {
                 if self.current_lock_entry {
                     let ok_label = self.fresh_label("lock_predicate_true");
                     self.emit(format!("bnez a0, {}", ok_label));
-                    self.emit_runtime_error_comment(CellScriptRuntimeError::AssertionFailed);
-                    self.emit(format!("li a0, {}", CellScriptRuntimeError::AssertionFailed.code()));
-                    self.emit_epilogue();
+                    self.emit_process_failure(CellScriptRuntimeError::AssertionFailed);
                     self.emit_label(&ok_label);
                     self.emit("li a0, 0");
                     self.emit_epilogue();
@@ -3258,7 +3329,11 @@ impl CodeGenerator {
 
     /// create
     fn emit_create(&mut self, dest: &IrVar, pattern: &CreatePattern) -> Result<()> {
-        let output_index = self.operation_output_indices.get(&dest.id).copied().unwrap_or(self.next_virtual_output);
+        let Some((source, output_index)) = self.resolved_cell_location_for_local(dest.id) else {
+            self.emit_fail(CellScriptRuntimeError::CellLoadFailed);
+            return Ok(());
+        };
+        self.cell_locations_by_local.insert(dest.id, (source, output_index));
         if pattern.operation == "output" {
             self.emit(format!("# constrain named output {}", pattern.ty));
             for (field, value) in &pattern.fields {
@@ -3292,7 +3367,7 @@ impl CodeGenerator {
                     return Ok(());
                 }
                 if let Some(lock) = &pattern.lock
-                    && !(self.can_verify_output_lock(pattern) && self.emit_output_lock_hash_check(output_index, lock))
+                    && !(self.can_verify_output_lock(pattern) && self.emit_output_lock_hash_check(source, output_index, lock))
                 {
                     self.emit("# cellscript abi: output lock verification incomplete for this named output");
                     self.emit("# cellscript abi: fail closed because the output lock is not fully verified");
@@ -3329,6 +3404,7 @@ impl CodeGenerator {
     }
 
     fn emit_create_unique_identity_check(&mut self, output_index: usize, pattern: &CreatePattern, identity: &IrIdentityPolicy) {
+        let (output_source, output_index) = self.require_output_slot(&pattern.binding, output_index);
         self.emit(format!(
             "# cellscript abi: create_unique identity policy {} for Output#{}",
             identity_policy_label(identity),
@@ -3337,7 +3413,7 @@ impl CodeGenerator {
         match identity {
             IrIdentityPolicy::None => {}
             IrIdentityPolicy::CkbTypeId => {
-                self.emit_output_type_hash_present_check(output_index, "create_unique_ckb_type_id_output_type_hash");
+                self.emit_output_type_hash_present_check(output_source, output_index, "create_unique_ckb_type_id_output_type_hash");
             }
             IrIdentityPolicy::Field(field) => {
                 self.emit_create_unique_field_identity_anchor(output_index, pattern, field);
@@ -3351,7 +3427,7 @@ impl CodeGenerator {
                     },
                     right: CellFieldHashLocation {
                         reason: "create_unique_output_lock_hash",
-                        source: CKB_SOURCE_OUTPUT,
+                        source: output_source,
                         index: output_index,
                     },
                     cell_field: CKB_CELL_FIELD_LOCK_HASH,
@@ -3369,7 +3445,7 @@ impl CodeGenerator {
                     },
                     right: CellFieldHashLocation {
                         reason: "create_unique_output_type_hash",
-                        source: CKB_SOURCE_OUTPUT,
+                        source: output_source,
                         index: output_index,
                     },
                     cell_field: CKB_CELL_FIELD_TYPE_HASH,
@@ -3382,6 +3458,7 @@ impl CodeGenerator {
     }
 
     fn emit_create_unique_field_identity_anchor(&mut self, output_index: usize, pattern: &CreatePattern, field: &str) {
+        let (output_source, output_index) = self.require_output_slot(&pattern.binding, output_index);
         let Some(layout) = self.type_layouts.get(&pattern.ty).and_then(|fields| fields.get(field)).cloned() else {
             self.emit(format!(
                 "# cellscript abi: fail closed because create_unique identity field {}.{} has no layout",
@@ -3400,7 +3477,7 @@ impl CodeGenerator {
         };
         let output_size_offset = self.runtime_scratch_size_offset();
         let output_buffer_offset = self.runtime_scratch_buffer_offset();
-        self.emit_load_cell_data_syscall("create_unique_identity_field", CKB_SOURCE_OUTPUT, output_index);
+        self.emit_load_cell_data_syscall("create_unique_identity_field", output_source, output_index);
         self.emit_return_on_syscall_error(CellScriptRuntimeError::CellLoadFailed);
         let output_pointer_offset = self.runtime_expr_temp_offset(0);
         let output_len_offset = self.runtime_expr_temp_offset(1);
@@ -3442,27 +3519,24 @@ impl CodeGenerator {
         pattern: &CreatePattern,
         identity: &IrIdentityPolicy,
     ) {
+        let (output_source, output_index) = self.require_output_slot(&pattern.binding, output_index);
         self.emit(format!(
             "# cellscript abi: replace_unique identity policy {} for Output#{}",
             identity_policy_label(identity),
             output_index
         ));
-        let input_index = match operand {
-            IrOperand::Var(var) => self.consume_indices.get(&var.id).copied().unwrap_or(0),
-            _ => 0,
+        let Some((input_source, input_index)) = self.operand_cell_location(operand) else {
+            self.emit_fail(CellScriptRuntimeError::CellLoadFailed);
+            return;
         };
         match identity {
             IrIdentityPolicy::None => {}
             IrIdentityPolicy::CkbTypeId | IrIdentityPolicy::SingletonType => {
                 self.emit_cell_field_hash_equality(CellFieldHashCheck {
-                    left: CellFieldHashLocation {
-                        reason: "replace_unique_input_type_hash",
-                        source: CKB_SOURCE_INPUT,
-                        index: input_index,
-                    },
+                    left: CellFieldHashLocation { reason: "replace_unique_input_type_hash", source: input_source, index: input_index },
                     right: CellFieldHashLocation {
                         reason: "replace_unique_output_type_hash",
-                        source: CKB_SOURCE_OUTPUT,
+                        source: output_source,
                         index: output_index,
                     },
                     cell_field: CKB_CELL_FIELD_TYPE_HASH,
@@ -3473,14 +3547,10 @@ impl CodeGenerator {
             }
             IrIdentityPolicy::ScriptArgs => {
                 self.emit_cell_field_hash_equality(CellFieldHashCheck {
-                    left: CellFieldHashLocation {
-                        reason: "replace_unique_input_lock_hash",
-                        source: CKB_SOURCE_INPUT,
-                        index: input_index,
-                    },
+                    left: CellFieldHashLocation { reason: "replace_unique_input_lock_hash", source: input_source, index: input_index },
                     right: CellFieldHashLocation {
                         reason: "replace_unique_output_lock_hash",
-                        source: CKB_SOURCE_OUTPUT,
+                        source: output_source,
                         index: output_index,
                     },
                     cell_field: CKB_CELL_FIELD_LOCK_HASH,
@@ -3502,6 +3572,7 @@ impl CodeGenerator {
         pattern: &CreatePattern,
         field: &str,
     ) {
+        let (output_source, output_index) = self.require_output_slot(&pattern.binding, output_index);
         let input_var = match operand {
             IrOperand::Var(var) => var,
             _ => {
@@ -3536,7 +3607,7 @@ impl CodeGenerator {
 
         let output_size_offset = self.runtime_scratch_size_offset();
         let output_buffer_offset = self.runtime_scratch_buffer_offset();
-        self.emit_load_cell_data_syscall("replace_unique_identity_field_output", CKB_SOURCE_OUTPUT, output_index);
+        self.emit_load_cell_data_syscall("replace_unique_identity_field_output", output_source, output_index);
         self.emit_return_on_syscall_error(CellScriptRuntimeError::CellLoadFailed);
         let input_pointer_offset = self.runtime_expr_temp_offset(0);
         let input_len_offset = self.runtime_expr_temp_offset(1);
@@ -3597,7 +3668,11 @@ impl CodeGenerator {
 
     /// create_unique
     fn emit_create_unique(&mut self, dest: &IrVar, pattern: &CreatePattern, identity: &IrIdentityPolicy) -> Result<()> {
-        let output_index = self.operation_output_indices.get(&dest.id).copied().unwrap_or(self.next_virtual_output);
+        let Some((source, output_index)) = self.resolved_cell_location_for_local(dest.id) else {
+            self.emit_fail(CellScriptRuntimeError::CellLoadFailed);
+            return Ok(());
+        };
+        self.cell_locations_by_local.insert(dest.id, (source, output_index));
         self.generate_create(pattern, output_index, false, false)?;
         self.emit_create_unique_identity_check(output_index, pattern, identity);
         self.emit(format!("# create_unique {} identity={}", pattern.ty, identity_policy_label(identity)));
@@ -3626,7 +3701,11 @@ impl CodeGenerator {
         pattern: &CreatePattern,
         identity: &IrIdentityPolicy,
     ) -> Result<()> {
-        let output_index = self.operation_output_indices.get(&dest.id).copied().unwrap_or(self.next_virtual_output);
+        let Some((source, output_index)) = self.resolved_cell_location_for_local(dest.id) else {
+            self.emit_fail(CellScriptRuntimeError::CellLoadFailed);
+            return Ok(());
+        };
+        self.cell_locations_by_local.insert(dest.id, (source, output_index));
         self.emit(format!("# replace_unique {} identity={}", pattern.ty, identity_policy_label(identity)));
         self.emit_operand_comment("input", operand);
         for (field, value) in &pattern.fields {
@@ -3779,34 +3858,6 @@ pub fn analyze_backend_shape(assembly: &str) -> Result<BackendShapeMetrics> {
     MachineLayoutPlan::build(&lines).map(|plan| plan.metrics.into())
 }
 
-fn first_entrypoint(ir: &IrModule) -> Option<(&str, &[IrParam])> {
-    for item in &ir.items {
-        if let IrItem::Action(action) = item
-            && action.name == "main"
-        {
-            return Some((&action.name, &action.params));
-        }
-    }
-    for item in &ir.items {
-        if let IrItem::Action(action) = item
-            && action.params.is_empty()
-        {
-            return Some((&action.name, &action.params));
-        }
-    }
-    for item in &ir.items {
-        if let IrItem::Action(action) = item {
-            return Some((&action.name, &action.params));
-        }
-    }
-    for item in &ir.items {
-        if let IrItem::Lock(lock) = item {
-            return Some((&lock.name, &lock.params));
-        }
-    }
-    None
-}
-
 fn entry_witness_payload_layout(
     params: &[IrParam],
     runtime_bound_param_indices: &BTreeSet<usize>,
@@ -3865,6 +3916,9 @@ fn entry_witness_dynamic_schema_param(ty: &IrType) -> bool {
 
 fn entry_witness_register_param_width(ty: &IrType) -> Option<usize> {
     fixed_register_width(ty, type_static_length(ty)).or_else(|| match ty {
+        // The source spelling `()` is lowered as an empty tuple. It has the
+        // same zero-byte entry encoding as the internal Unit type.
+        IrType::Tuple(items) if items.is_empty() => Some(0),
         IrType::Array(_, _) | IrType::Tuple(_) => type_static_length(ty).filter(|width| (1..=8).contains(width)),
         IrType::Unit => Some(0),
         _ => None,

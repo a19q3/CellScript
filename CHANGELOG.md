@@ -2,7 +2,57 @@
 
 ## 0.26b - Experimental semantic-foundation branch
 
-- Add the parser-independent `cellscript-semantic-foundation-v1` record with a
+- Fail closed when a runtime `source::*` view index reaches the 32-bit index
+  space. The generated SourceView helper previously added an unchecked index
+  to the tagged view word, so an index at or above 2^32 carried into the view
+  tag and silently re-routed an `Input` request to an `Output` view. The
+  helper now rejects such indexes with `ckb-source-view-invalid` (44) through
+  the existing fail-closed scalar status channel, and real-VM policy tests
+  cover the forged issuer-authority transaction built from that carry.
+
+- Add explicit bounded persistent Type policies through package artifact
+  declarations and in-memory/virtual-source APIs. One ELF dispatches declared
+  numeric tags from canonical, full Script-hash keyed policy witness records;
+  common Unit checks precede the selected action. Fixed group roles and exact
+  counts are checked at runtime. Add independent host/adapter codecs,
+  pre-signing placement and typed policy/builder projection validation.
+  Focused VM tests cover four action cardinalities and malformed requests.
+  Complete authenticated lifecycle, independent machine dispatch proof,
+  branch-local relations, schema acknowledgements and full product support
+  remain implementation work.
+
+- Correct the unsupported `env::sighash_all` boundary. Classify canonical
+  digest construction as `ckb-sighash-all-deferred`, reject it under
+  `DenyFailClosed`, and terminate audit execution with runtime error 66 rather
+  than return a synthetic digest pointer. Preserve this effect through unused
+  results and helper calls. Explicit BIP340 message verification and standard
+  CKB Lock signing remain separate supported routes.
+
+- Add the separately routed `cellscript-source-semantics-2027-authoring1`
+  authoring policy over the complete shared Edition 2026 grammar. Ordinary
+  action/lock bodies may omit `verification`, multiple entries may coexist in
+  source, and existing default/read provenance and lifecycle meanings remain
+  available. Keep the bounded native preview4 grammar as a reference surface
+  and advance source/cache identities without changing the existing witness
+  ABI. Full shared-policy support, concise successor relations and schema
+  acknowledgement remain tracked implementation work, not claims supplied by
+  this authoring baseline.
+
+- Resolve fixed Cell locations once in IR and emit them in typed semantics v5.
+  Native Type ports now load the actual current Script group; `protected`
+  parameters use the documented Lock group in both editions. Check membership
+  and native fixed-group coverage, unify mixed CellDep read ordinals, and retain
+  distinct anonymous output identities. Record ordinary absolute positions and
+  unauthenticated positional dependencies truthfully. Group-role guards reject
+  ambiguous same-hash Lock/Type use; this is an intentional tightening.
+- Share exact artifact entry selection across codegen, metadata and CLI,
+  including explicitly selected actions whose dependencies retain `main`.
+  Permit witness fallback to outputs only when the input group is empty;
+  a missing input witness must not authorize reading an unrelated output-side
+  witness. Generated builders no longer require witness payloads for entries
+  whose parameters consume no witness bytes.
+
+- Add the parser-independent `cellscript-semantic-foundation-v3` record with a
   hash-consed value-provenance DAG, explicit artifact entry contract, typed
   transaction roles, exhaustive Cell dispositions, enforcement-classified
   claims, legacy migration nodes, and layered `CoreSemanticId`,
@@ -17,20 +67,31 @@
   checker. Map each executable claim node to its originating condition or
   generated-sugar range in source-map v2 without including that moving span in
   the semantic hash.
-- Advance compile metadata to schema 63, typed semantics to v4, verified
-  lowering records to v5, source maps to v2, and the verified-artifact metadata
+- Advance compile metadata to schema 65, typed semantics to v7, verified
+  lowering records to v6, source maps to v2, and the verified-artifact metadata
   carrier to v2. Extend the independent
   artifact checker and mutation corpus across the new schemas and bind
   deployable-artifact and verified-bundle identities separately.
+- Give generated fatal verification failures a separate current-VM-process
+  EXIT contract while preserving normal callable return values and deliberate
+  raw status APIs. Record explicit typed failures as terminal operations and
+  bind static error constants to a checked non-returning machine exit. The
+  shared exit does not require restoring caller frames or consuming a return
+  register reserved for status. Full helper/optimizer regression closure remains
+  part of the authoring production gate.
 - Add `cellc expand`, an experimental Edition 2027 frontend selected through
   `Cell.toml`, formatter/LSP coverage, and cross-edition identity tests. The
-  preview requires explicit transaction parameter sources, rejects ambiguous
-  `consume`/`consume_each`, and initially emits only `SingleEntry`; the shared
-  schema and checker also represent `ExplicitVersionedDispatch`. This does not
+  original native preview requires explicit transaction parameter sources and
+  rejects ambiguous `consume`/`consume_each`; ordinary authoring retains these
+  inherited forms. Ordinary artifact compilation retains `SingleEntry`; explicit
+  policy compilation emits `PolicyWitnessV1`. The shared schema also represents
+  `ExplicitVersionedDispatch`. This does not
   freeze the proposed 1.0 surface grammar or change the stable Edition 2026
   meaning.
-- Add review-only `cellc migrate --to 2027` for the exact legacy Type Script
-  and Lock Script subset already covered by the native preview. It preserves
+- Add review-only `cellc migrate --to 2027` for the bounded legacy Type Script
+  and Lock Script subset. Type Script candidates retain ordinary `action`
+  authoring and transaction-absolute bindings; they are not silently converted
+  into native group-relative ports. The tool preserves
   every source byte outside the final entry, writes nothing unless `--output`
   is explicit, and emits a candidate only after `CoreSemanticId` equality and
   byte-identical RISC-V ELF lowering succeed. Imports, multiple entries,

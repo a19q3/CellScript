@@ -8321,7 +8321,7 @@ action main(witness value: u64) -> u64 {
     let output = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).args(["--json", "expand"]).output().unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
     let foundation: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(foundation["schema"], "cellscript-semantic-foundation-v1");
+    assert_eq!(foundation["schema"], "cellscript-semantic-foundation-v3");
     assert_eq!(foundation["entry_contract"]["dispatch"]["kind"], "single-entry");
     assert!(foundation["identities"]["core_semantic_id"].as_str().is_some_and(|id| !id.is_empty()));
 
@@ -8331,15 +8331,16 @@ action main(witness value: u64) -> u64 {
 module semantic_preview
 
 action main(value: u64) -> u64 {
-    verification
-        return value
+    return value
 }
 "#,
     )
     .unwrap();
-    let rejected = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).arg("expand").output().unwrap();
-    assert!(!rejected.status.success());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("has no explicit source"));
+    let authoring = Command::new(env!("CARGO_BIN_EXE_cellc")).current_dir(root).args(["--json", "expand"]).output().unwrap();
+    assert!(authoring.status.success(), "stderr: {}", String::from_utf8_lossy(&authoring.stderr));
+    let authoring_foundation: serde_json::Value = serde_json::from_slice(&authoring.stdout).unwrap();
+    assert_eq!(authoring_foundation["entry_contract"]["dispatch"]["kind"], "single-entry");
+    assert_eq!(authoring_foundation["identities"]["core_semantic_id"], foundation["identities"]["core_semantic_id"]);
 }
 
 #[test]
@@ -8582,7 +8583,8 @@ action transfer(input token: Token, witness recipient: Address) -> next: Token {
     assert_eq!(report["artifact_byte_identical"], true);
     assert_eq!(report["source_edition"], "2026");
     assert_eq!(report["target_edition"], "2027");
-    assert!(report["source"].as_str().unwrap().contains("type_script TransferScript on type_group<Token>"));
+    assert!(report["source"].as_str().unwrap().contains("action transfer("));
+    assert!(!report["source"].as_str().unwrap().contains("type_script"));
     assert_eq!(std::fs::read_to_string(&source_path).unwrap(), source);
 
     let candidate_path = root.join("candidate.cell");
@@ -8592,7 +8594,7 @@ action transfer(input token: Token, witness recipient: Address) -> next: Token {
         .output()
         .unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-    assert!(std::fs::read_to_string(&candidate_path).unwrap().contains("enforce token.amount > 0"));
+    assert!(std::fs::read_to_string(&candidate_path).unwrap().contains("require token.amount > 0"));
 
     std::fs::write(&source_path, source.replace("require token.amount > 0", "require token.amount > 0, \"positive\"")).unwrap();
     let rejected_path = root.join("rejected.cell");

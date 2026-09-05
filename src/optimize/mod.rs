@@ -25,7 +25,10 @@ pub fn optimize_module(module: &mut Module, level: u8) -> Result<()> {
 /// Syntax-local optimizer.
 pub struct Optimizer {
     level: u8,
-    scopes: Vec<HashMap<String, ConstValue>>,
+    // A None entry is a lexical binding, not a missing constant. It prevents
+    // a parameter or a nonconstant local from exposing an outer constant.
+    scopes: Vec<HashMap<String, Option<ConstValue>>>,
+    pure_functions: HashSet<String>,
     inline_functions: HashMap<String, InlineFunction>,
 }
 
@@ -33,11 +36,12 @@ pub struct Optimizer {
 struct InlineFunction {
     params: Vec<String>,
     body: Expr,
+    constant_only: bool,
 }
 
 impl Optimizer {
     pub fn new(level: u8) -> Self {
-        Self { level, scopes: vec![HashMap::new()], inline_functions: HashMap::new() }
+        Self { level, scopes: vec![HashMap::new()], pure_functions: HashSet::new(), inline_functions: HashMap::new() }
     }
 
     pub fn optimize_module(&mut self, module: &mut Module) -> Result<()> {
@@ -46,6 +50,7 @@ impl Optimizer {
         }
 
         self.seed_top_level_constants(module);
+        self.seed_pure_functions(module);
         if self.level >= 1 {
             self.seed_inline_functions(module);
         }
@@ -54,18 +59,18 @@ impl Optimizer {
             match item {
                 Item::Const(def) => {
                     def.value = self.optimize_expr(&def.value)?;
-                    if let Some(value) = self.try_eval_const(&def.value) {
+                    if let Some(value) = self.propagatable_const(&def.value, Some(&def.ty)) {
                         self.insert_const(&def.name, value);
                     }
                 }
                 Item::Action(action) => {
-                    action.body = self.with_child_scope(|this| this.optimize_stmts(&action.body))?;
+                    action.body = self.optimize_callable_body(&action.params, &action.body)?;
                 }
                 Item::Function(function) => {
-                    function.body = self.with_child_scope(|this| this.optimize_stmts(&function.body))?;
+                    function.body = self.optimize_callable_body(&function.params, &function.body)?;
                 }
                 Item::Lock(lock) => {
-                    lock.body = self.with_child_scope(|this| this.optimize_stmts(&lock.body))?;
+                    lock.body = self.optimize_callable_body(&lock.params, &lock.body)?;
                 }
                 Item::Resource(_)
                 | Item::Shared(_)
@@ -85,13 +90,22 @@ impl Optimizer {
         Ok(())
     }
 
+    fn optimize_callable_body(&mut self, params: &[Param], body: &[Stmt]) -> Result<Vec<Stmt>> {
+        self.with_child_scope(|this| {
+            for param in params {
+                this.shadow_const(&param.name);
+            }
+            this.optimize_stmts(body)
+        })
+    }
+
     fn optimize_stmts(&mut self, stmts: &[Stmt]) -> Result<Vec<Stmt>> {
         let mut optimized = Vec::new();
         for stmt in stmts {
             optimized.extend(self.optimize_stmt(stmt)?);
         }
         if self.level >= 2 {
-            Ok(eliminate_unused_lets(optimized))
+            Ok(eliminate_unused_lets(optimized, &self.pure_functions))
         } else {
             Ok(optimized)
         }
@@ -104,9 +118,10 @@ impl Optimizer {
                 ty: let_stmt.ty.clone(),
                 value: {
                     let value = self.optimize_expr(&let_stmt.value)?;
+                    self.shadow_binding_pattern(&let_stmt.pattern);
                     if !let_stmt.is_mut
                         && let BindingPattern::Name(name) = &let_stmt.pattern
-                        && let Some(constant) = self.try_eval_const(&value)
+                        && let Some(constant) = self.propagatable_const(&value, let_stmt.ty.as_ref())
                     {
                         self.insert_const(name, constant);
                     }
@@ -142,7 +157,10 @@ impl Optimizer {
                 label: for_stmt.label.clone(),
                 pattern: for_stmt.pattern.clone(),
                 iterable: self.optimize_expr(&for_stmt.iterable)?,
-                body: self.with_child_scope(|this| this.optimize_stmts(&for_stmt.body))?,
+                body: self.with_child_scope(|this| {
+                    this.shadow_binding_pattern(&for_stmt.pattern);
+                    this.optimize_stmts(&for_stmt.body)
+                })?,
                 span: for_stmt.span,
             })]),
             Stmt::While(while_stmt) => {
@@ -161,7 +179,10 @@ impl Optimizer {
                 root: borrow_stmt.root.clone(),
                 path: borrow_stmt.path.clone(),
                 binding: borrow_stmt.binding.clone(),
-                body: self.with_child_scope(|this| this.optimize_stmts(&borrow_stmt.body))?,
+                body: self.with_child_scope(|this| {
+                    this.shadow_const(&borrow_stmt.binding);
+                    this.optimize_stmts(&borrow_stmt.body)
+                })?,
                 span: borrow_stmt.span,
             })]),
             Stmt::Break(_) | Stmt::Continue(_) => Ok(vec![stmt.clone()]),
@@ -317,7 +338,11 @@ impl Optimizer {
                 let expr = self.optimize_expr(&match_expr.expr)?;
                 let mut arms = Vec::with_capacity(match_expr.arms.len());
                 for arm in &match_expr.arms {
-                    arms.push(MatchArm { pattern: arm.pattern.clone(), value: self.optimize_expr(&arm.value)?, span: arm.span });
+                    let value = self.with_child_scope(|this| {
+                        this.shadow_match_pattern(&arm.pattern);
+                        this.optimize_expr(&arm.value)
+                    })?;
+                    arms.push(MatchArm { pattern: arm.pattern.clone(), value, span: arm.span });
                 }
                 Ok(Expr::Match(MatchExpr { expr: Box::new(expr), arms, span: match_expr.span }))
             }
@@ -359,7 +384,7 @@ impl Optimizer {
     fn seed_top_level_constants(&mut self, module: &Module) {
         for item in &module.items {
             if let Item::Const(def) = item
-                && let Some(value) = self.try_eval_const(&def.value)
+                && let Some(value) = self.propagatable_const(&def.value, Some(&def.ty))
             {
                 self.insert_const(&def.name, value);
             }
@@ -367,23 +392,49 @@ impl Optimizer {
     }
 
     fn seed_inline_functions(&mut self, module: &Module) {
-        for item in &module.items {
-            let Item::Function(function) = item else {
-                continue;
-            };
-            if function.params.iter().any(|param| param.is_mut || param.is_ref || param.is_read_ref) {
-                continue;
+        self.inline_functions.clear();
+        // Candidates form an acyclic, module-local closure. A partial helper
+        // may be specialized only for literal u64 arguments and only when the
+        // entire result becomes a literal. Its checked operations never move
+        // into a caller's possibly narrower/wider contextual numeric type.
+        loop {
+            let mut changed = false;
+            for item in &module.items {
+                let Item::Function(function) = item else { continue };
+                if self.inline_functions.contains_key(&function.name)
+                    || !function.type_params.is_empty()
+                    || function
+                        .params
+                        .iter()
+                        .any(|param| param.is_mut || param.is_ref || param.is_read_ref || !matches!(param.ty, Type::U64 | Type::Bool))
+                    || !matches!(function.return_type, Some(Type::U64 | Type::Bool))
+                {
+                    continue;
+                }
+                let Some(body) = inlineable_function_body(&function.body) else { continue };
+                let params = function.params.iter().map(|param| param.name.clone()).collect::<Vec<_>>();
+                let captures = self.scopes[0]
+                    .iter()
+                    .filter(|(name, _)| !params.contains(name))
+                    .filter_map(|(name, value)| value.clone().map(|value| (name.clone(), const_to_expr(value))))
+                    .collect::<HashMap<_, _>>();
+                let body = substitute_expr(body, &captures);
+                if !expr_is_closed_inline_candidate(&body, &params, &self.inline_functions) {
+                    continue;
+                }
+                let constant_only =
+                    !self.pure_functions.contains(&function.name) || !expr_is_pure_inlineable(&body, &self.pure_functions);
+                if constant_only
+                    && (function.return_type != Some(Type::U64) || function.params.iter().any(|param| param.ty != Type::U64))
+                {
+                    continue;
+                }
+                self.inline_functions.insert(function.name.clone(), InlineFunction { params, body, constant_only });
+                changed = true;
             }
-            let Some(body) = inlineable_function_body(&function.body) else {
-                continue;
-            };
-            if !expr_is_pure_inlineable(body) {
-                continue;
+            if !changed {
+                break;
             }
-            self.inline_functions.insert(
-                function.name.clone(),
-                InlineFunction { params: function.params.iter().map(|param| param.name.clone()).collect(), body: body.clone() },
-            );
         }
     }
 
@@ -391,22 +442,90 @@ impl Optimizer {
         let Some(function) = self.inline_functions.get(name).cloned() else {
             return Ok(None);
         };
-        if function.params.len() != args.len() {
+        // Substitution can discard an unused parameter or duplicate one. Both
+        // would change evaluation of a deferred failure or an unresolved call.
+        if function.params.len() != args.len() || args.iter().any(|arg| !expr_is_pure_inlineable(arg, &self.pure_functions)) {
+            return Ok(None);
+        }
+        if function.constant_only && args.iter().any(|arg| !matches!(self.try_eval_const(arg), Some(ConstValue::U64(_)))) {
             return Ok(None);
         }
         let substitutions = function.params.into_iter().zip(args.iter().cloned()).collect::<HashMap<_, _>>();
         let substituted = substitute_expr(&function.body, &substitutions);
-        Ok(Some(self.optimize_expr(&substituted)?))
+        let optimized = self.optimize_expr(&substituted)?;
+        if function.constant_only && !matches!(self.try_eval_const(&optimized), Some(ConstValue::U64(_))) {
+            return Ok(None);
+        }
+        Ok(Some(optimized))
+    }
+
+    fn seed_pure_functions(&mut self, module: &Module) {
+        self.pure_functions.clear();
+        // The module-local optimizer has no imported callable body/effect
+        // proof. Admit only the local call-graph closure of total bodies;
+        // unknown, imported, recursive, and deferred calls retain evaluation.
+        loop {
+            let mut changed = false;
+            for item in &module.items {
+                let Item::Function(function) = item else { continue };
+                if !self.pure_functions.contains(&function.name)
+                    && function.params.iter().all(|param| !param.is_mut && !param.is_ref && !param.is_read_ref)
+                    && function.body.iter().all(|stmt| stmt_is_pure_inlineable(stmt, &self.pure_functions))
+                {
+                    self.pure_functions.insert(function.name.clone());
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
     }
 
     fn insert_const(&mut self, name: &str, value: ConstValue) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), value);
+            scope.insert(name.to_string(), Some(value));
         }
     }
 
     fn lookup_const(&self, name: &str) -> Option<ConstValue> {
-        self.scopes.iter().rev().find_map(|scope| scope.get(name).cloned())
+        self.scopes.iter().rev().find_map(|scope| scope.get(name)).cloned().flatten()
+    }
+
+    fn propagatable_const(&self, expr: &Expr, ty: Option<&Type>) -> Option<ConstValue> {
+        let value = self.try_eval_const(expr)?;
+        // Replacing a typed local by an untyped literal must not erase its
+        // width (notably a narrow shift's bound or signed interpretation).
+        match (ty, &value) {
+            (None, _)
+            | (Some(Type::U64), ConstValue::U64(_))
+            | (Some(Type::Bool), ConstValue::Bool(_))
+            | (Some(Type::U128), ConstValue::U128(_)) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn shadow_const(&mut self, name: &str) {
+        self.scopes.last_mut().expect("optimizer scope").insert(name.to_string(), None);
+    }
+
+    fn shadow_binding_pattern(&mut self, pattern: &BindingPattern) {
+        match pattern {
+            BindingPattern::Name(name) => self.shadow_const(name),
+            BindingPattern::Tuple(items) => items.iter().for_each(|item| self.shadow_binding_pattern(item)),
+            BindingPattern::Wildcard => {}
+        }
+    }
+
+    fn shadow_match_pattern(&mut self, pattern: &MatchPattern) {
+        match pattern {
+            MatchPattern::Binding(name) => self.shadow_const(name),
+            MatchPattern::Tuple(items) | MatchPattern::Variant { fields: items, .. } | MatchPattern::Or(items) => {
+                items.iter().for_each(|item| self.shadow_match_pattern(item));
+            }
+            MatchPattern::Struct { fields, .. } => fields.iter().for_each(|(_, item)| self.shadow_match_pattern(item)),
+            MatchPattern::Wildcard => {}
+        }
     }
 
     fn with_child_scope<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
@@ -421,6 +540,25 @@ fn inlineable_function_body(body: &[Stmt]) -> Option<&Expr> {
     match body {
         [Stmt::Return(ReturnStmt { value: Some(expr), .. })] | [Stmt::Expr(expr)] => Some(expr),
         _ => None,
+    }
+}
+
+fn expr_is_closed_inline_candidate(expr: &Expr, params: &[String], functions: &HashMap<String, InlineFunction>) -> bool {
+    let closed = |expr: &Expr| expr_is_closed_inline_candidate(expr, params, functions);
+    match expr {
+        Expr::Integer(_) | Expr::Bool(_) => true,
+        Expr::Identifier(name) => params.contains(name),
+        Expr::Binary(binary) => closed(&binary.left) && closed(&binary.right),
+        Expr::Unary(unary) => unary.op == UnaryOp::Not && closed(&unary.expr),
+        Expr::If(branch) => closed(&branch.condition) && closed(&branch.then_branch) && closed(&branch.else_branch),
+        Expr::Call(call) => {
+            call.type_args.is_empty()
+                && matches!(call.func.as_ref(), Expr::Identifier(name) if functions.contains_key(name))
+                && call.args.iter().all(closed)
+        }
+        // Substitution does not implement alpha-renaming or local type
+        // inference. Binding scopes, schema operations and casts stay calls.
+        _ => false,
     }
 }
 
@@ -447,7 +585,9 @@ fn fold_binary(op: BinaryOp, left: &ConstValue, right: &ConstValue) -> Option<Co
         (BinaryOp::BitAnd, U64(left), U64(right)) => Some(U64(left & right)),
         (BinaryOp::BitOr, U64(left), U64(right)) => Some(U64(left | right)),
         (BinaryOp::BitXor, U64(left), U64(right)) => Some(U64(left ^ right)),
-        (BinaryOp::Shl, U64(left), U64(right)) if *right < 64 => Some(U64(left << right)),
+        // A u64-sized literal may acquire a u128 context later. Truncating it
+        // here can turn a subsequent checked u128 overflow into success.
+        (BinaryOp::Shl, U64(left), U64(right)) if *right < 64 && *left <= (u64::MAX >> right) => Some(U64(left << right)),
         (BinaryOp::Shr, U64(left), U64(right)) if *right < 64 => Some(U64(left >> right)),
         // Runtime u128 arithmetic traps on overflow.  Folding must preserve
         // that behavior instead of replacing the expression with a wrapped
@@ -552,7 +692,7 @@ fn collect_call_names_from_validity(validity: Option<&ValidityBlock>, names: &mu
     }
 }
 
-fn eliminate_unused_lets(stmts: Vec<Stmt>) -> Vec<Stmt> {
+fn eliminate_unused_lets(stmts: Vec<Stmt>, pure_functions: &HashSet<String>) -> Vec<Stmt> {
     let mut used = HashSet::new();
     for stmt in &stmts {
         collect_used_names_from_stmt(stmt, &mut used);
@@ -561,11 +701,13 @@ fn eliminate_unused_lets(stmts: Vec<Stmt>) -> Vec<Stmt> {
     stmts
         .into_iter()
         .filter(|stmt| match stmt {
-            Stmt::Let(let_stmt) if !let_stmt.is_mut && expr_is_pure_inlineable(&let_stmt.value) => match &let_stmt.pattern {
-                BindingPattern::Name(name) => used.contains(name),
-                BindingPattern::Wildcard => false,
-                BindingPattern::Tuple(_) => true,
-            },
+            Stmt::Let(let_stmt) if !let_stmt.is_mut && expr_is_pure_inlineable(&let_stmt.value, pure_functions) => {
+                match &let_stmt.pattern {
+                    BindingPattern::Name(name) => used.contains(name),
+                    BindingPattern::Wildcard => false,
+                    BindingPattern::Tuple(_) => true,
+                }
+            }
             _ => true,
         })
         .collect()
@@ -836,28 +978,44 @@ fn collect_names_by_walking_expr(expr: &Expr, names: &mut HashSet<String>) {
     }
 }
 
-fn expr_is_pure_inlineable(expr: &Expr) -> bool {
+fn expr_is_pure_inlineable(expr: &Expr, pure_functions: &HashSet<String>) -> bool {
+    // This is stronger than "no mutation": every admitted evaluation must be
+    // safe to discard or duplicate. Checked arithmetic, schema decoding and
+    // bounds/conversion checks remain observable even when their value is not.
+    let pure = |expr: &Expr| expr_is_pure_inlineable(expr, pure_functions);
     match expr {
-        Expr::Integer(_) | Expr::Bool(_) | Expr::String(_) | Expr::ByteString(_) | Expr::Identifier(_) | Expr::StdlibCall(_) => true,
-        Expr::Binary(binary) => expr_is_pure_inlineable(&binary.left) && expr_is_pure_inlineable(&binary.right),
-        Expr::Unary(unary) => expr_is_pure_inlineable(&unary.expr),
-        Expr::Call(call) => expr_is_pure_inlineable(&call.func) && call.args.iter().all(expr_is_pure_inlineable),
-        Expr::FieldAccess(field) => expr_is_pure_inlineable(&field.expr),
-        Expr::Index(index) => expr_is_pure_inlineable(&index.expr) && expr_is_pure_inlineable(&index.index),
-        Expr::Tuple(items) | Expr::Array(items) => items.iter().all(expr_is_pure_inlineable),
-        Expr::If(if_expr) => {
-            expr_is_pure_inlineable(&if_expr.condition)
-                && expr_is_pure_inlineable(&if_expr.then_branch)
-                && expr_is_pure_inlineable(&if_expr.else_branch)
+        Expr::Integer(_) | Expr::Bool(_) | Expr::String(_) | Expr::ByteString(_) | Expr::Identifier(_) => true,
+        Expr::Binary(binary) => {
+            matches!(
+                binary.op,
+                BinaryOp::Lt
+                    | BinaryOp::Le
+                    | BinaryOp::Gt
+                    | BinaryOp::Ge
+                    | BinaryOp::And
+                    | BinaryOp::Or
+                    | BinaryOp::BitAnd
+                    | BinaryOp::BitOr
+                    | BinaryOp::BitXor
+            ) && pure(&binary.left)
+                && pure(&binary.right)
         }
-        Expr::Cast(cast) => expr_is_pure_inlineable(&cast.expr),
-        Expr::Range(range) => expr_is_pure_inlineable(&range.start) && expr_is_pure_inlineable(&range.end),
-        Expr::StructInit(init) => init.fields.iter().all(|(_, value)| expr_is_pure_inlineable(value)),
-        Expr::Block(stmts) => stmts.iter().all(stmt_is_pure_inlineable),
-        Expr::Match(match_expr) => {
-            expr_is_pure_inlineable(&match_expr.expr) && match_expr.arms.iter().all(|arm| expr_is_pure_inlineable(&arm.value))
+        Expr::Unary(unary) => unary.op == UnaryOp::Not && pure(&unary.expr),
+        Expr::Call(call) => {
+            matches!(call.func.as_ref(), Expr::Identifier(name)
+                if crate::ir::IrDeferredRuntimeFeature::from_source_name(name).is_none() && pure_functions.contains(name))
+                && call.args.iter().all(pure)
         }
-        Expr::Assign(_)
+        Expr::Tuple(items) | Expr::Array(items) => items.iter().all(pure),
+        Expr::If(if_expr) => pure(&if_expr.condition) && pure(&if_expr.then_branch) && pure(&if_expr.else_branch),
+        Expr::FieldAccess(_)
+        | Expr::Index(_)
+        | Expr::Cast(_)
+        | Expr::Range(_)
+        | Expr::StructInit(_)
+        | Expr::Block(_)
+        | Expr::Match(_)
+        | Expr::Assign(_)
         | Expr::Create(_)
         | Expr::Consume(_)
         | Expr::Destroy(_)
@@ -869,19 +1027,24 @@ fn expr_is_pure_inlineable(expr: &Expr) -> bool {
         | Expr::Assert(_)
         | Expr::Require(_)
         | Expr::RequireBlock(_)
-        | Expr::Preserve(_) => false,
+        | Expr::Preserve(_)
+        | Expr::StdlibCall(_) => false,
     }
 }
 
-fn stmt_is_pure_inlineable(stmt: &Stmt) -> bool {
+fn stmt_is_pure_inlineable(stmt: &Stmt, pure_functions: &HashSet<String>) -> bool {
+    let pure = |expr: &Expr| expr_is_pure_inlineable(expr, pure_functions);
     match stmt {
-        Stmt::Let(let_stmt) => !let_stmt.is_mut && expr_is_pure_inlineable(&let_stmt.value),
-        Stmt::Expr(expr) | Stmt::Return(ReturnStmt { value: Some(expr), .. }) => expr_is_pure_inlineable(expr),
+        Stmt::Let(let_stmt) => !let_stmt.is_mut && pure(&let_stmt.value),
+        Stmt::Expr(expr) | Stmt::Return(ReturnStmt { value: Some(expr), .. }) => pure(expr),
         Stmt::Return(ReturnStmt { value: None, .. }) => true,
         Stmt::If(if_stmt) => {
-            expr_is_pure_inlineable(&if_stmt.condition)
-                && if_stmt.then_branch.iter().all(stmt_is_pure_inlineable)
-                && if_stmt.else_branch.as_ref().is_none_or(|branch| branch.iter().all(stmt_is_pure_inlineable))
+            pure(&if_stmt.condition)
+                && if_stmt.then_branch.iter().all(|stmt| stmt_is_pure_inlineable(stmt, pure_functions))
+                && if_stmt
+                    .else_branch
+                    .as_ref()
+                    .is_none_or(|branch| branch.iter().all(|stmt| stmt_is_pure_inlineable(stmt, pure_functions)))
         }
         Stmt::For(_) | Stmt::While(_) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Borrow(_) => false,
     }
@@ -987,6 +1150,9 @@ fn substitute_expr(expr: &Expr, substitutions: &HashMap<String, Expr>) -> Expr {
         | Expr::StdlibCall(_) => expr.clone(),
     }
 }
+
+#[cfg(test)]
+mod evaluation_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1186,5 +1352,135 @@ mod tests {
             .unwrap();
         assert_eq!(action.body.len(), 1, "unused local binding should be removed");
         assert!(matches!(action.body[0], Stmt::Return(ReturnStmt { value: Some(Expr::Integer(42)), .. })));
+    }
+
+    #[test]
+    fn preserves_discarded_deferred_calls_and_transitive_helpers() {
+        let source = r#"
+module deferred_optimizer
+fn wrapper() -> Hash { return digest() }
+fn digest() -> Hash { return env::sighash_all(source::group_input(0)) }
+action check() {
+    verification
+    let _ = env::sighash_all(source::group_input(0))
+    let unused_digest = env::sighash_all(source::group_input(0))
+    let _ = wrapper()
+    let unused_wrapper = wrapper()
+}
+"#;
+        for level in [2, 3, 0, 1] {
+            let mut module = crate::frontend::parse(source, crate::CellScriptEdition::Edition2026).unwrap();
+            optimize_module(&mut module, level).unwrap();
+            let action = module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Action(action) => Some(action),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(action.body.len(), 4, "deferred calls disappeared at optimization level {level}");
+            let mut calls = Vec::new();
+            collect_call_names_from_stmts(&action.body, &mut calls);
+            assert_eq!(calls.iter().filter(|name| *name == "env::sighash_all").count(), 2);
+            assert_eq!(calls.iter().filter(|name| *name == "wrapper").count(), 2);
+            assert!(module.items.iter().any(|item| matches!(item, Item::Function(function) if function.name == "digest")));
+            assert!(module.items.iter().any(|item| matches!(item, Item::Function(function) if function.name == "wrapper")));
+        }
+    }
+
+    #[test]
+    fn inline_substitution_cannot_erase_deferred_argument_evaluation() {
+        let source = r#"
+module deferred_arguments
+fn ignore(value: Hash) -> u64 { return 7 }
+fn wrapper() -> Hash { return env::sighash_all(source::group_input(0)) }
+action check() -> u64 {
+    verification
+    let _ = ignore(env::sighash_all(source::group_input(0)))
+    return ignore(wrapper())
+}
+"#;
+        for level in 0..=3 {
+            let mut module = crate::frontend::parse(source, crate::CellScriptEdition::Edition2026).unwrap();
+            optimize_module(&mut module, level).unwrap();
+            let action = module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Action(action) => Some(action),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(action.body.len(), 2, "deferred argument disappeared at optimization level {level}");
+            let mut calls = Vec::new();
+            collect_call_names_from_stmts(&action.body, &mut calls);
+            assert!(calls.iter().any(|name| name == "env::sighash_all"));
+            assert!(calls.iter().any(|name| name == "wrapper"));
+            assert_eq!(calls.iter().filter(|name| *name == "ignore").count(), 2);
+        }
+    }
+
+    #[test]
+    fn imported_callable_effects_are_not_inferred_from_call_syntax() {
+        let source = r#"
+module imported_effects
+use dependency::digest as imported_digest
+fn wrapper() -> Hash { return imported_digest() }
+fn ignore(value: Hash) -> u64 { return 7 }
+action check() {
+    verification
+    let _ = imported_digest()
+    let unused = wrapper()
+    let _ = ignore(imported_digest())
+}
+"#;
+        for level in 0..=3 {
+            let mut module = crate::frontend::parse(source, crate::CellScriptEdition::Edition2026).unwrap();
+            optimize_module(&mut module, level).unwrap();
+            let action = module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Action(action) => Some(action),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(action.body.len(), 3, "imported calls disappeared at optimization level {level}");
+            let mut calls = Vec::new();
+            collect_call_names_from_stmts(&action.body, &mut calls);
+            assert_eq!(calls.iter().filter(|name| *name == "imported_digest").count(), 2);
+            assert!(calls.iter().any(|name| name == "wrapper"));
+            assert!(calls.iter().any(|name| name == "ignore"));
+        }
+    }
+
+    #[test]
+    fn local_pure_call_closure_preserves_transitive_constant_optimizations() {
+        let source = r#"
+module pure_closure
+fn wrapper(value: u64) -> u64 { return add_two(value) }
+fn add_two(value: u64) -> u64 { return value + 2 }
+action check() -> u64 {
+    verification
+    let _ = wrapper(40)
+    return wrapper(40)
+}
+"#;
+        for level in [2, 3] {
+            let mut module = crate::frontend::parse(source, crate::CellScriptEdition::Edition2026).unwrap();
+            optimize_module(&mut module, level).unwrap();
+            assert!(module.items.iter().all(|item| !matches!(item, Item::Function(_))));
+            let action = module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Action(action) => Some(action),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(action.body.len(), 1);
+            assert!(matches!(action.body[0], Stmt::Return(ReturnStmt { value: Some(Expr::Integer(42)), .. })));
+        }
     }
 }

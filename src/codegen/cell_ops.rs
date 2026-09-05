@@ -16,6 +16,70 @@ pub(super) struct CellFieldHashCheck<'a> {
 }
 
 impl CodeGenerator {
+    pub(super) fn emit_resolved_cell_membership_checks(&mut self) {
+        let bindings =
+            self.cell_bindings.iter().filter(|binding| binding.membership != IrCellMembership::Unproven).cloned().collect::<Vec<_>>();
+        if bindings.is_empty() {
+            return;
+        }
+        let field_size = self.runtime_scratch_size_offset();
+        let field_buffer = self.runtime_scratch_buffer_offset();
+        self.emit("# cellscript binding plan: verify current Script group membership");
+        for binding in &bindings {
+            let field = match binding.membership {
+                IrCellMembership::CurrentTypeGroup => CKB_CELL_FIELD_TYPE_HASH,
+                IrCellMembership::CurrentLockGroup => CKB_CELL_FIELD_LOCK_HASH,
+                IrCellMembership::Unproven => unreachable!(),
+            };
+            self.emit(format!("li a0, {}", cell_source_value(binding.source)));
+            self.emit(format!("li a1, {}", binding.ordinal));
+            self.emit(format!("li a2, {}", field));
+            self.emit("call __cellscript_require_cell_membership");
+            let valid = self.fresh_label("binding_membership_valid");
+            self.emit(format!("beqz a0, {}", valid));
+            // Preserve the helper's exact error: malformed width is different
+            // from a missing, mismatched, or ambiguous Script role.
+            self.emit_process_failure_status();
+            self.emit_label(&valid);
+        }
+        // Fixed native Type roles cover the complete executing group. Legacy
+        // absolute bindings and selected protected Lock inputs do not claim this.
+        if bindings.iter().any(|binding| binding.membership == IrCellMembership::CurrentTypeGroup) {
+            for source in [IrCellSource::GroupInput, IrCellSource::GroupOutput] {
+                let count =
+                    bindings.iter().filter(|binding| binding.source == source).map(|binding| binding.ordinal + 1).max().unwrap_or(0);
+                self.emit_load_cell_by_field_syscall_to_offsets(
+                    "resolved_binding_group_end",
+                    cell_source_value(source),
+                    count,
+                    CKB_CELL_FIELD_CAPACITY,
+                    field_size,
+                    field_buffer,
+                    8,
+                );
+                let exact = self.fresh_label("binding_group_count_exact");
+                self.emit(format!("li t0, {}", CKB_INDEX_OUT_OF_BOUND));
+                self.emit(format!("beq a0, t0, {}", exact));
+                self.emit_fail(CellScriptRuntimeError::CollectionBoundsInvalid);
+                self.emit_label(&exact);
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_bound_cell_data_to_offsets(
+        &mut self,
+        reason: &str,
+        role: IrCellBindingRole,
+        binding: &str,
+        size_offset: usize,
+        buffer_offset: usize,
+        max_bytes: usize,
+    ) {
+        let (source, index) = self.require_cell_location(role, binding);
+        self.emit_load_cell_data_syscall_to_offsets(reason, source, index, size_offset, buffer_offset, max_bytes);
+    }
+
     pub(super) fn emit_bounded_cell_load(
         &mut self,
         dest: &IrVar,
@@ -371,6 +435,8 @@ impl CodeGenerator {
         field_name: &str,
         error: CellScriptRuntimeError,
     ) {
+        let (input_source, input_index) = self.require_cell_location(IrCellBindingRole::Input, &pattern.binding);
+        let (output_source, output_index) = self.require_cell_location(IrCellBindingRole::Output, &pattern.binding);
         let input_size_offset = self.runtime_scratch_size_offset();
         let input_buffer_offset = self.runtime_scratch_buffer_offset();
         let output_size_offset = self.runtime_scratch2_size_offset();
@@ -378,8 +444,8 @@ impl CodeGenerator {
 
         self.emit_load_cell_by_field_syscall_to_offsets(
             &format!("mutate_input_{}", field_name),
-            CKB_SOURCE_INPUT,
-            pattern.input_index,
+            input_source,
+            input_index,
             cell_field,
             input_size_offset,
             input_buffer_offset,
@@ -388,8 +454,8 @@ impl CodeGenerator {
         self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
         self.emit_load_cell_by_field_syscall_to_offsets(
             &format!("mutate_output_{}", field_name),
-            CKB_SOURCE_OUTPUT,
-            pattern.output_index,
+            output_source,
+            output_index,
             cell_field,
             output_size_offset,
             output_buffer_offset,
@@ -410,9 +476,7 @@ impl CodeGenerator {
             self.emit("sub t2, t0, t1");
             let ok_label = self.fresh_label("mutate_identity_byte_ok");
             self.emit(format!("beqz t2, {}", ok_label));
-            self.emit_runtime_error_comment(error);
-            self.emit(format!("li a0, {}", error.code()));
-            self.emit_epilogue();
+            self.emit_process_failure(error);
             self.emit_label(&ok_label);
         }
     }
@@ -481,9 +545,7 @@ impl CodeGenerator {
             self.emit("sub t2, t0, t1");
             let ok_label = self.fresh_label("cell_metadata_byte_ok");
             self.emit(format!("beqz t2, {}", ok_label));
-            self.emit_runtime_error_comment(mismatch_error);
-            self.emit(format!("li a0, {}", mismatch_error.code()));
-            self.emit_epilogue();
+            self.emit_process_failure(mismatch_error);
             self.emit_label(&ok_label);
         }
         Ok(())
@@ -533,18 +595,16 @@ impl CodeGenerator {
         self.emit("call __cellscript_memcmp_fixed");
         let ok_label = self.fresh_label("identity_hash_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_runtime_error_comment(error);
-        self.emit(format!("li a0, {}", error.code()));
-        self.emit_epilogue();
+        self.emit_process_failure(error);
         self.emit_label(&ok_label);
     }
 
-    pub(super) fn emit_output_type_hash_present_check(&mut self, output_index: usize, context: &str) {
+    pub(super) fn emit_output_type_hash_present_check(&mut self, source: u64, output_index: usize, context: &str) {
         let size_offset = self.runtime_scratch2_size_offset();
         let buffer_offset = self.runtime_scratch2_buffer_offset();
         self.emit_load_cell_by_field_syscall_to_offsets(
             context,
-            CKB_SOURCE_OUTPUT,
+            source,
             output_index,
             CKB_CELL_FIELD_TYPE_HASH,
             size_offset,
@@ -595,9 +655,7 @@ impl CodeGenerator {
         self.emit("sub t2, t0, t1");
         let ok_label = self.fresh_label("identity_field_len_ok");
         self.emit(format!("beqz t2, {}", ok_label));
-        self.emit_runtime_error_comment(CellScriptRuntimeError::DynamicFieldValueMismatch);
-        self.emit(format!("li a0, {}", CellScriptRuntimeError::DynamicFieldValueMismatch.code()));
-        self.emit_epilogue();
+        self.emit_process_failure(CellScriptRuntimeError::DynamicFieldValueMismatch);
         self.emit_label(&ok_label);
     }
 
@@ -616,9 +674,7 @@ impl CodeGenerator {
         self.emit("call __cellscript_memcmp_fixed");
         let ok_label = self.fresh_label("identity_field_ok");
         self.emit(format!("beqz a0, {}", ok_label));
-        self.emit_runtime_error_comment(error);
-        self.emit(format!("li a0, {}", error.code()));
-        self.emit_epilogue();
+        self.emit_process_failure(error);
         self.emit_label(&ok_label);
     }
 
@@ -626,7 +682,9 @@ impl CodeGenerator {
         let IrOperand::Var(var) = operand else {
             return None;
         };
-        if let Some(input_index) = self.consume_indices.get(&var.id).copied() {
+        if let Some(location) = self.resolved_cell_location_for_local(var.id) {
+            Some(location)
+        } else if let Some(input_index) = self.consume_indices.get(&var.id).copied() {
             Some((CKB_SOURCE_INPUT, input_index))
         } else if let Some(output_index) = self.operation_output_indices.get(&var.id).copied() {
             Some((CKB_SOURCE_OUTPUT, output_index))
@@ -639,7 +697,9 @@ impl CodeGenerator {
         }
     }
 
-    pub(super) fn emit_destroy_group_output_absence_scan(&mut self, pattern: &CellPattern, input_index: usize) {
+    pub(super) fn emit_destroy_group_output_absence_scan(&mut self, pattern: &CellPattern, _input_index: usize) {
+        let (input_source, input_index) = self.require_cell_location(IrCellBindingRole::Input, &pattern.binding);
+        let output_source = if input_source == CKB_SOURCE_GROUP_INPUT { CKB_SOURCE_GROUP_OUTPUT } else { CKB_SOURCE_OUTPUT };
         let input_size_offset = self.runtime_scratch_size_offset();
         let input_buffer_offset = self.runtime_scratch_buffer_offset();
         let output_size_offset = self.runtime_scratch2_size_offset();
@@ -652,7 +712,7 @@ impl CodeGenerator {
         self.emit(format!("# cellscript abi: destroy output type-hash absence scan binding={} size=32", pattern.binding));
         self.emit_load_cell_by_field_syscall_to_offsets(
             "destroy_input_type_hash",
-            CKB_SOURCE_INPUT,
+            input_source,
             input_index,
             CKB_CELL_FIELD_TYPE_HASH,
             input_size_offset,
@@ -665,7 +725,7 @@ impl CodeGenerator {
         self.emit_label(&loop_label);
         self.emit_load_cell_by_field_syscall_to_offsets_dynamic_index(
             "destroy_output_type_hash",
-            CKB_SOURCE_OUTPUT,
+            output_source,
             "t6",
             CKB_CELL_FIELD_TYPE_HASH,
             output_size_offset,
@@ -773,19 +833,19 @@ impl CodeGenerator {
         let input_buffer_offset = self.runtime_scratch_buffer_offset();
         let output_size_offset = self.runtime_scratch2_size_offset();
         let output_buffer_offset = self.runtime_scratch2_buffer_offset();
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_input_data",
-            CKB_SOURCE_INPUT,
-            pattern.input_index,
+            IrCellBindingRole::Input,
+            &pattern.binding,
             input_size_offset,
             input_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
         );
         self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_output_data",
-            CKB_SOURCE_OUTPUT,
-            pattern.output_index,
+            IrCellBindingRole::Output,
+            &pattern.binding,
             output_size_offset,
             output_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
@@ -839,19 +899,19 @@ impl CodeGenerator {
         let input_buffer_offset = self.runtime_scratch_buffer_offset();
         let output_size_offset = self.runtime_scratch2_size_offset();
         let output_buffer_offset = self.runtime_scratch2_buffer_offset();
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_input_table_preserved",
-            CKB_SOURCE_INPUT,
-            pattern.input_index,
+            IrCellBindingRole::Input,
+            &pattern.binding,
             input_size_offset,
             input_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
         );
         self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_output_table_preserved",
-            CKB_SOURCE_OUTPUT,
-            pattern.output_index,
+            IrCellBindingRole::Output,
+            &pattern.binding,
             output_size_offset,
             output_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
@@ -1021,19 +1081,19 @@ impl CodeGenerator {
         let input_buffer_offset = self.runtime_scratch_buffer_offset();
         let output_size_offset = self.runtime_scratch2_size_offset();
         let output_buffer_offset = self.runtime_scratch2_buffer_offset();
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_input_table_append",
-            CKB_SOURCE_INPUT,
-            pattern.input_index,
+            IrCellBindingRole::Input,
+            &pattern.binding,
             input_size_offset,
             input_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
         );
         self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_output_table_append",
-            CKB_SOURCE_OUTPUT,
-            pattern.output_index,
+            IrCellBindingRole::Output,
+            &pattern.binding,
             output_size_offset,
             output_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
@@ -1280,19 +1340,19 @@ impl CodeGenerator {
         let input_buffer_offset = self.runtime_scratch_buffer_offset();
         let output_size_offset = self.runtime_scratch2_size_offset();
         let output_buffer_offset = self.runtime_scratch2_buffer_offset();
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_input_preserved_data",
-            CKB_SOURCE_INPUT,
-            pattern.input_index,
+            IrCellBindingRole::Input,
+            &pattern.binding,
             input_size_offset,
             input_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
         );
         self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_output_preserved_data",
-            CKB_SOURCE_OUTPUT,
-            pattern.output_index,
+            IrCellBindingRole::Output,
+            &pattern.binding,
             output_size_offset,
             output_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
@@ -1461,19 +1521,19 @@ impl CodeGenerator {
         let input_buffer_offset = self.runtime_scratch_buffer_offset();
         let output_size_offset = self.runtime_scratch2_size_offset();
         let output_buffer_offset = self.runtime_scratch2_buffer_offset();
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_input_transition",
-            CKB_SOURCE_INPUT,
-            pattern.input_index,
+            IrCellBindingRole::Input,
+            &pattern.binding,
             input_size_offset,
             input_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
         );
         self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_output_transition",
-            CKB_SOURCE_OUTPUT,
-            pattern.output_index,
+            IrCellBindingRole::Output,
+            &pattern.binding,
             output_size_offset,
             output_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
@@ -1570,19 +1630,19 @@ impl CodeGenerator {
         let input_buffer_offset = self.runtime_scratch_buffer_offset();
         let output_size_offset = self.runtime_scratch2_size_offset();
         let output_buffer_offset = self.runtime_scratch2_buffer_offset();
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_input_table_transition",
-            CKB_SOURCE_INPUT,
-            pattern.input_index,
+            IrCellBindingRole::Input,
+            &pattern.binding,
             input_size_offset,
             input_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
         );
         self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_output_table_transition",
-            CKB_SOURCE_OUTPUT,
-            pattern.output_index,
+            IrCellBindingRole::Output,
+            &pattern.binding,
             output_size_offset,
             output_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
@@ -1648,10 +1708,10 @@ impl CodeGenerator {
         }
         let output_size_offset = self.runtime_scratch2_size_offset();
         let output_buffer_offset = self.runtime_scratch2_buffer_offset();
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_output_set_transition",
-            CKB_SOURCE_OUTPUT,
-            pattern.output_index,
+            IrCellBindingRole::Output,
+            &pattern.binding,
             output_size_offset,
             output_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
@@ -1700,19 +1760,19 @@ impl CodeGenerator {
         // If the scratch buffers were already loaded by the preserved-field
         // path, the syscall results are cached in the buffer; we only need
         // to reload if this function is called independently.
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_input_u128_transition",
-            CKB_SOURCE_INPUT,
-            pattern.input_index,
+            IrCellBindingRole::Input,
+            &pattern.binding,
             input_size_offset,
             input_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
         );
         self.emit_return_on_syscall_error(CellScriptRuntimeError::SyscallFailed);
-        self.emit_load_cell_data_syscall_to_offsets(
+        self.emit_bound_cell_data_to_offsets(
             "mutate_output_u128_transition",
-            CKB_SOURCE_OUTPUT,
-            pattern.output_index,
+            IrCellBindingRole::Output,
+            &pattern.binding,
             output_size_offset,
             output_buffer_offset,
             RUNTIME_SCRATCH_BUFFER_SIZE,
@@ -2150,7 +2210,7 @@ impl CodeGenerator {
         }
     }
 
-    pub(super) fn emit_output_lock_hash_check(&mut self, output_index: usize, expected: &IrOperand) -> bool {
+    pub(super) fn emit_output_lock_hash_check(&mut self, source: u64, output_index: usize, expected: &IrOperand) -> bool {
         if self.expected_fixed_byte_source(expected, 32).is_none() {
             return false;
         }
@@ -2158,7 +2218,7 @@ impl CodeGenerator {
         let buffer_offset = self.runtime_scratch_buffer_offset();
         self.emit_load_cell_by_field_syscall_to_offsets(
             "output_lock_hash",
-            CKB_SOURCE_OUTPUT,
+            source,
             output_index,
             CKB_CELL_FIELD_LOCK_HASH,
             size_offset,

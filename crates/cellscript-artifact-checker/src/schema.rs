@@ -1,16 +1,16 @@
 use serde::{Deserialize, Serialize};
 
-pub const LOWERING_RECORD_SCHEMA: &str = "cellscript-verified-lowering-record-v5";
-pub const TYPED_SEMANTICS_SCHEMA: &str = "cellscript-typed-semantics-v4";
-pub const SEMANTIC_FOUNDATION_SCHEMA: &str = "cellscript-semantic-foundation-v1";
+pub const LOWERING_RECORD_SCHEMA: &str = "cellscript-verified-lowering-record-v6";
+pub const TYPED_SEMANTICS_SCHEMA: &str = "cellscript-typed-semantics-v7";
+pub const SEMANTIC_FOUNDATION_SCHEMA: &str = "cellscript-semantic-foundation-v3";
 pub const PROVENANCE_GRAPH_SCHEMA: &str = "cellscript-value-provenance-dag-v1";
 pub const SOURCE_MAP_SCHEMA: &str = "cellscript-source-artifact-map-v2";
 pub const VERIFIED_ARTIFACT_BOUNDARY_SCHEMA: &str = "cellscript-verified-artifact-boundary-v2";
 pub const CHECKER_POLICY_SCHEMA: &str = "cellscript-artifact-checker-policy-v1";
 pub const CHECKER_REPORT_SCHEMA: &str = "cellscript-artifact-checker-report-v1";
-pub const LOWERING_RECORD_VERSION: u32 = 5;
-pub const TYPED_SEMANTICS_VERSION: u32 = 4;
-pub const SEMANTIC_FOUNDATION_VERSION: u32 = 1;
+pub const LOWERING_RECORD_VERSION: u32 = 6;
+pub const TYPED_SEMANTICS_VERSION: u32 = 7;
+pub const SEMANTIC_FOUNDATION_VERSION: u32 = 3;
 pub const PROVENANCE_GRAPH_VERSION: u32 = 1;
 pub const SOURCE_MAP_VERSION: u32 = 2;
 pub const CHECKER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -60,6 +60,7 @@ pub struct VerifiedLoweringRecord {
     pub proof_records: Vec<ProofRecord>,
     pub syscall_sites: Vec<SyscallSite>,
     pub runtime_error_exits: Vec<RuntimeErrorExit>,
+    pub verifier_failure_exits: Vec<RuntimeErrorExit>,
     pub limits: DeclaredLimits,
     pub claim: VerificationClaim,
 }
@@ -95,6 +96,7 @@ impl VerifiedLoweringRecord {
         self.proof_records.sort_by(|a, b| a.id.cmp(&b.id));
         self.syscall_sites.sort_by(|a, b| (a.address, &a.block_id).cmp(&(b.address, &b.block_id)));
         self.runtime_error_exits.sort_by(|a, b| (&a.block_id, a.code, a.address).cmp(&(&b.block_id, b.code, b.address)));
+        self.verifier_failure_exits.sort_by_key(|exit| exit.address);
     }
 }
 
@@ -105,10 +107,29 @@ pub struct TypedSemanticRecord {
     pub version: u32,
     pub module: String,
     pub interface_hash: String,
+    pub failure_semantics: VerifierFailureSemantics,
     pub types: Vec<TypedSemanticType>,
     pub entries: Vec<TypedSemanticEntry>,
     pub instantiations: Vec<TypedSemanticInstantiation>,
     pub foundation: SemanticFoundationRecord,
+}
+
+/// Fatal verification is distinct from a callable's ordinary return value and
+/// from deliberately exposed syscall statuses. It terminates only the current
+/// VM process; a spawning parent retains its explicit status-handling contract.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VerifierFailureSemantics {
+    #[default]
+    CurrentVmProcessExitV1,
+}
+
+impl VerifierFailureSemantics {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CurrentVmProcessExitV1 => "current-vm-process-exit-v1",
+        }
+    }
 }
 
 impl TypedSemanticRecord {
@@ -125,6 +146,14 @@ impl TypedSemanticRecord {
         }
         self.entries.sort_by(|left, right| left.id.cmp(&right.id));
         for entry in &mut self.entries {
+            entry.cell_bindings.sort_by(|left, right| {
+                (&left.binding, left.role, left.ordinal, left.local_id).cmp(&(
+                    &right.binding,
+                    right.role,
+                    right.ordinal,
+                    right.local_id,
+                ))
+            });
             entry.locals.sort_by_key(|local| local.id);
             entry.blocks.sort_by_key(|block| block.id);
             for block in &mut entry.blocks {
@@ -175,6 +204,9 @@ impl SemanticFoundationRecord {
         self.provenance.canonicalize();
         if let EntryDispatchContract::ExplicitVersionedDispatch { variants, .. } = &mut self.entry_contract.dispatch {
             variants.sort_by(|left, right| left.tag.cmp(&right.tag).then(left.entry_id.cmp(&right.entry_id)));
+        }
+        if let EntryDispatchContract::PolicyWitnessV1(policy) = &mut self.entry_contract.dispatch {
+            policy.variants.sort_by_key(|variant| variant.tag);
         }
         self.roles.sort_by(|left, right| left.role_id.cmp(&right.role_id));
         self.dispositions.sort_by(|left, right| left.id.cmp(&right.id));
@@ -256,6 +288,7 @@ pub struct ArtifactEntryContract {
 pub enum EntryDispatchContract {
     #[default]
     SingleEntry,
+    PolicyWitnessV1(crate::PolicyWitnessContract),
     ExplicitVersionedDispatch {
         selector_node_id: String,
         selector_type: String,
@@ -438,6 +471,9 @@ pub struct TypedSemanticEntry {
     pub kind: String,
     pub name: String,
     pub params: Vec<TypedSemanticParam>,
+    /// Resolved fixed Cell locations. Bounded group collections retain their
+    /// separate bounded-operation contract; they are not fixed ordinal Cells.
+    pub cell_bindings: Vec<TypedSemanticCellBinding>,
     pub return_type: String,
     pub effect: String,
     pub entry_block: u32,
@@ -446,6 +482,110 @@ pub struct TypedSemanticEntry {
     pub borrows: Vec<TypedSemanticBorrow>,
     pub ownership: Vec<TypedSemanticOwnership>,
     pub obligations: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TypedSemanticCellBinding {
+    pub binding: String,
+    pub role: CellBindingRole,
+    pub local_id: Option<u32>,
+    pub ty: String,
+    pub source: CellBindingSource,
+    pub ordinal: u32,
+    pub membership: CellBindingMembership,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CellBindingRole {
+    Input,
+    Output,
+    ReadOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CellBindingSource {
+    Input,
+    Output,
+    GroupInput,
+    GroupOutput,
+    CellDep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CellBindingMembership {
+    Unproven,
+    CurrentTypeGroup,
+    CurrentLockGroup,
+}
+
+impl TypedSemanticCellBinding {
+    pub fn role_id(&self, entry_id: &str) -> String {
+        let mut id = format!("role:{entry_id}:{}:{}", self.direction(), self.binding);
+        if self.role == CellBindingRole::Output {
+            id.push_str(&format!(":output[{}]", self.ordinal));
+        }
+        if self.source == CellBindingSource::CellDep
+            && let Some(local) = self.local_id
+        {
+            id.push_str(&format!(":local[{local}]"));
+        }
+        id
+    }
+
+    pub fn direction(&self) -> &'static str {
+        match self.source {
+            CellBindingSource::CellDep => "read-only-dependency",
+            CellBindingSource::Output | CellBindingSource::GroupOutput => "output",
+            CellBindingSource::Input | CellBindingSource::GroupInput => "input",
+        }
+    }
+
+    pub fn source_scope(&self) -> &'static str {
+        match self.source {
+            CellBindingSource::Input | CellBindingSource::Output => "transaction-absolute",
+            CellBindingSource::GroupInput | CellBindingSource::GroupOutput => "group-relative",
+            CellBindingSource::CellDep => "cell-dep",
+        }
+    }
+
+    pub fn selector(&self) -> String {
+        let source = match self.source {
+            CellBindingSource::Input => "input",
+            CellBindingSource::Output => "output",
+            CellBindingSource::GroupInput => "group-input",
+            CellBindingSource::GroupOutput => "group-output",
+            CellBindingSource::CellDep => "cell-dep",
+        };
+        format!("{source}[{}]", self.ordinal)
+    }
+
+    pub fn membership_policy(&self) -> &'static str {
+        match self.membership {
+            CellBindingMembership::Unproven => "unproven",
+            CellBindingMembership::CurrentTypeGroup => "current-type-group",
+            CellBindingMembership::CurrentLockGroup => "current-lock-group",
+        }
+    }
+
+    pub fn provenance(&self, entry_id: &str) -> ValueProvenance {
+        let field_path = "data".to_string();
+        let role = format!("{entry_id}:{}", self.binding);
+        match self.source {
+            CellBindingSource::Input => ValueProvenance::TransactionInput { selector: self.selector(), field_path },
+            CellBindingSource::Output => ValueProvenance::TransactionOutput { selector: self.selector(), field_path },
+            CellBindingSource::GroupInput => ValueProvenance::GroupInput { role, ordinal: self.selector(), field_path },
+            CellBindingSource::GroupOutput => ValueProvenance::GroupOutput { role, ordinal: self.selector(), field_path },
+            CellBindingSource::CellDep => ValueProvenance::CellDep {
+                identity_policy: self.membership_policy().to_string(),
+                selector: self.selector(),
+                field_path,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

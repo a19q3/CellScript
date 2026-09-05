@@ -2445,6 +2445,7 @@ mod tests {
             binding: binding.clone(),
         }];
         let body = IrBody {
+            cell_bindings: Vec::new(),
             consume_set: vec![CellPattern {
                 operation: "input".to_string(),
                 type_hash: None,
@@ -2813,6 +2814,7 @@ mod tests {
     fn generated_functions_use_shared_epilogue_tail() {
         let ir = IrModule {
             name: "shape_test".to_string(),
+            entry_selection: crate::ir::IrEntrySelection::Legacy,
             items: vec![IrItem::Action(IrAction {
                 name: "shape".to_string(),
                 entry_trigger: None,
@@ -2825,6 +2827,7 @@ mod tests {
                 effect_class: EffectClass::Pure,
                 scheduler_hints: SchedulerHints::default(),
                 body: IrBody {
+                    cell_bindings: Vec::new(),
                     consume_set: vec![],
                     read_refs: vec![],
                     create_set: vec![],

@@ -163,12 +163,14 @@ index silently changes and the script reads the wrong cell.
 
 ### Gap 2 — Two same-type CellDeps are indistinguishable to the type system
 
-`read_ref<OracleConfig>()` binds to "the first CellDep with type_hash
-matching `OracleConfig`'s type script". If the same transaction references
-two CellDeps with identical type scripts but different deployment
-identities (different `data_hash`, different `args`), the type-based
-binding cannot tell them apart. CellScript type equality collapses
-distinctions that matter on chain.
+The current `read_ref<OracleConfig>()` lowering reads a positional CellDep;
+it does not scan for or authenticate the deployed Type Script identity of
+`OracleConfig`. A compatible data layout is not proof of that identity. Two
+same-layout dependencies, including ones with different Script or data hashes,
+therefore require an explicit identity check. The earlier description of a
+"first matching type hash" lookup overstated the implemented binding. The
+[authoring implementation](CELLSCRIPT_AUTHORING_IMPLEMENTATION.md) tracks the
+resolved-binding and evidence correction alongside this proposed named policy.
 
 ### Gap 3 — Intent and fact share one struct
 

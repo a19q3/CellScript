@@ -1,8 +1,5 @@
 use super::parse;
-use crate::ast::{
-    ActionDef, Expr, Item, LockDef, Module, NextDisposition, NextEntrySurface, NextLockSurface, NextReplacement, ParamSource, Stmt,
-    Type, Visibility,
-};
+use crate::ast::{ActionDef, Expr, Item, LockDef, Module, NextLockSurface, ParamSource, Stmt, Type, Visibility};
 use crate::edition::CellScriptEdition;
 use crate::error::{CompileError, Result, Span};
 use crate::lexer;
@@ -36,9 +33,10 @@ pub struct MigrationCandidate {
 }
 
 /// Produce a review-only Edition 2027 candidate for the exact bounded subset
-/// whose legacy and native lowerings are already covered by differential
-/// evidence. The function never edits the input and fails before returning a
-/// partial candidate.
+/// whose source/target lowerings are covered by differential evidence. Action
+/// candidates retain ordinary transaction-absolute authoring: converting them
+/// to native group ports would change their accepted transaction set. The
+/// function never edits the input and fails before returning a partial candidate.
 pub fn migrate_source_to_2027(source: &str) -> Result<MigrationCandidate> {
     let module = parse(source, CellScriptEdition::Edition2026)?;
     if module.items.iter().any(|item| matches!(item, Item::Use(_))) {
@@ -129,17 +127,15 @@ fn migrate_action(module: &Module, action: &ActionDef) -> Result<ActionDef> {
     }
     let declared_fields = cell_fields(module, &trigger_type, action.span)?;
 
-    let mut verify = Vec::new();
     let mut cursor = 0usize;
     while let Some(Stmt::Expr(Expr::Require(require))) = action.body.get(cursor) {
         if require.message.is_some() {
             return migration_error(require.span, "Edition 2027 enforce has no accepted custom-message mapping in this preview");
         }
-        verify.push(require.condition.as_ref().clone());
         cursor += 1;
     }
 
-    let mut dispositions = Vec::new();
+    let mut replacements = 0usize;
     while cursor < action.body.len() {
         let Some(Stmt::Expr(Expr::StdlibCall(transfer))) = action.body.get(cursor) else {
             return migration_error(action.body[cursor].span(), "type-script migration expected an exact lifecycle transfer");
@@ -164,28 +160,17 @@ fn migrate_action(module: &Module, action: &ActionDef) -> Result<ActionDef> {
         {
             return migration_error(capacity.span, "each migrated transfer requires std::cell::preserve_capacity(output, input)");
         }
-        dispositions.push(NextDisposition::Replace(NextReplacement {
-            input,
-            output,
-            data_fields: transfer.preserve_fields.clone(),
-            lock_script: transfer.args[2].clone(),
-            span: transfer.span,
-        }));
+        replacements += 1;
         cursor += 2;
     }
-    if dispositions.is_empty() {
+    if replacements == 0 {
         return migration_error(action.span, "type-script migration requires at least one exhaustive one-to-one transfer");
     }
 
-    let mut migrated = action.clone();
-    migrated.next_surface = Some(NextEntrySurface {
-        container_name: format!("{}Script", pascal_case(&action.name)),
-        trigger_type,
-        verify,
-        audits: Vec::new(),
-        dispositions,
-    });
-    Ok(migrated)
+    // The authoring frontend accepts this structured action directly. Retain
+    // its absolute binding contract instead of silently selecting GroupInput
+    // and GroupOutput. Native migration requires a separate reviewed change.
+    Ok(action.clone())
 }
 
 fn migrate_lock(module: &Module, lock: &LockDef) -> Result<LockDef> {
@@ -395,9 +380,10 @@ lock unlock(protected vault: Vault, lock_args owner: Address, witness claimed_ow
         let candidate = migrate_source_to_2027(LEGACY_TYPE).unwrap();
         assert_eq!(candidate.kind, MigrationKind::TypeScript);
         assert!(candidate.source.starts_with(&LEGACY_TYPE[..LEGACY_TYPE.find("action transfer").unwrap()]));
-        assert!(candidate.source.contains("type_script TransferScript on type_group<Token>"));
-        assert!(candidate.source.contains("enforce token.amount > 0"));
-        assert!(candidate.source.contains("replace token -> next"));
+        assert!(candidate.source.contains("action transfer("));
+        assert!(candidate.source.contains("require token.amount > 0"));
+        assert!(candidate.source.contains("std::lifecycle::transfer(token, next, recipient)"));
+        assert!(!candidate.source.contains("type_script"));
         let legacy = compile(
             LEGACY_TYPE,
             CompileOptions {

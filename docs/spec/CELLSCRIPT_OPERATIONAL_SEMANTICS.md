@@ -42,7 +42,11 @@ E |- f(args) => v
 
 Runtime CKB calls such as `source::group_input`, `witness::lock`,
 `env::sighash_all`, and `read_ref<T>()` are not pure expression rules. They emit
-runtime access metadata and ProofPlan reads.
+runtime access metadata and explicit obligations. Canonical
+`env::sighash_all` construction is deferred: production artifact generation
+rejects `ckb-sighash-all-deferred`; audit execution terminates the process
+with runtime error 66 and does not return a `Hash`. This effect must survive
+unused-result elimination and helper inlining.
 
 ## Linear Resource State
 

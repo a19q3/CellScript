@@ -1949,6 +1949,7 @@ left = "a"
     }
 
     #[test]
+    #[cfg(feature = "cli")]
     fn public_registry_states_override_publisher_claim() {
         let payload: PublicRegistryPackage = serde_json::from_value(serde_json::json!({
             "schema": "cellscript-registry-artifact",

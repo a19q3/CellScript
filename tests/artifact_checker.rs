@@ -95,6 +95,275 @@ impl Fixture {
         self.metadata["verified_artifact"]["deployable_artifact_id"] = Value::String(self.record.artifact_hash.clone());
         self.rebind_sidecars();
     }
+
+    fn replace_machine_word(&mut self, address: u64, word: u32) {
+        let elf = parse_elf(&self.artifact, CheckerBudgets::default().instructions).unwrap();
+        let offset = (elf.text.offset + address - elf.text.address) as usize;
+        self.artifact[offset..offset + 4].copy_from_slice(&word.to_le_bytes());
+        for block in &mut self.record.blocks {
+            let start = (elf.text.offset + block.range.start - elf.text.address) as usize;
+            let end = (elf.text.offset + block.range.end - elf.text.address) as usize;
+            block.byte_digest =
+                cellscript_artifact_checker::domain_hash_bytes("cellscript-machine-block-v1", &self.artifact[start..end]);
+        }
+        self.bind_artifact_identity();
+    }
+}
+
+#[test]
+fn terminal_verifier_failures_reject_hash_rebound_machine_and_record_mutations() {
+    let source = "module fatal_checker\naction main(value: u64) { verification require value > 0 }";
+    for edition in [cellscript::CellScriptEdition::Edition2026, NEXT_EDITION] {
+        let valid = Fixture::from_result(
+            compile(source, CompileOptions { edition, target: Some("riscv64-elf".into()), opt_level: 0, ..Default::default() })
+                .unwrap(),
+        );
+        let failure = valid.record.verifier_failure_exits.iter().find(|exit| exit.code == 5).unwrap().clone();
+        let elf = parse_elf(&valid.artifact, CheckerBudgets::default().instructions).unwrap();
+        let constant_last = elf.instructions.iter().find(|instruction| instruction.address == failure.address + 4).unwrap();
+        assert_eq!(constant_last.word >> 20, 5, "fixture uses the assembler's LUI+ADDI materialization");
+        let sink = valid.record.entries.iter().find(|entry| entry.name == "__cellscript_abort").unwrap();
+        let sink_block = valid.record.blocks.iter().find(|block| block.id == sink.entry_block).unwrap();
+        let sink_start = sink_block.range.start;
+
+        let mut changed = valid.clone();
+        changed.replace_machine_word(failure.address + 4, constant_last.word & 0x000f_ffff);
+        assert_code(&changed, CheckerRejectionCode::V2414ControlFlowInvalid);
+
+        let mut changed = valid.clone();
+        let syscall_word = elf.instructions.iter().find(|instruction| instruction.address == sink_start + 4).unwrap().word;
+        changed.replace_machine_word(sink_start + 4, syscall_word ^ (1 << 20));
+        assert_code(&changed, CheckerRejectionCode::V2414ControlFlowInvalid);
+
+        let mut changed = valid.clone();
+        changed.replace_machine_word(sink_start + 8, 0x0000_8067); // ret instead of EXIT
+        assert_code(&changed, CheckerRejectionCode::V2414ControlFlowInvalid);
+
+        let mut changed = valid.clone();
+        changed.record.verifier_failure_exits.retain(|exit| exit.address != failure.address);
+        changed.rebind_sidecars();
+        assert_code(&changed, CheckerRejectionCode::V2414ControlFlowInvalid);
+
+        let mut changed = valid.clone();
+        changed.record.verifier_failure_exits.iter_mut().find(|exit| exit.address == failure.address).unwrap().address += 4;
+        changed.rebind_sidecars();
+        assert_code(&changed, CheckerRejectionCode::V2414ControlFlowInvalid);
+
+        let mut changed = valid.clone();
+        let success = changed
+            .record
+            .blocks
+            .iter()
+            .find(|block| {
+                block.owner_entry == "action:main" && block.terminator == cellscript_artifact_checker::MachineTerminator::Return
+            })
+            .unwrap();
+        let success_id = success.id.clone();
+        let target = success.range.start;
+        let jump_address = failure.address + 8;
+        for edge in &mut changed.record.edges {
+            if edge.from == failure.block_id && edge.kind == EdgeKind::Jump {
+                edge.to = success_id.clone();
+            }
+        }
+        changed.record.canonicalize();
+        changed.replace_machine_word(jump_address, encode_jal((target as i64 - jump_address as i64) as i32));
+        assert_code(&changed, CheckerRejectionCode::V2414ControlFlowInvalid);
+
+        // Keep the claimed CFG edge intact: its target block still contains the
+        // forged address. The checker must reject entering after the error load.
+        let incoming = elf.control_flow.iter().find(|edge| edge.target == failure.address).unwrap();
+        let word = elf.instructions.iter().find(|instruction| instruction.address == incoming.address).unwrap().word;
+        assert_eq!(word & 0x7f, 0x63, "require fixture branches to failure");
+        let offset = (failure.address + 8) as i64 - incoming.address as i64;
+        assert!((-4096..4096).contains(&offset));
+        let immediate = offset as u32;
+        let branch = (word & 0x01ff_f07f)
+            | (((immediate >> 12) & 1) << 31)
+            | (((immediate >> 5) & 0x3f) << 25)
+            | (((immediate >> 1) & 0xf) << 8)
+            | (((immediate >> 11) & 1) << 7);
+        let mut changed = valid.clone();
+        changed.replace_machine_word(incoming.address, branch);
+        assert_code(&changed, CheckerRejectionCode::V2414ControlFlowInvalid);
+
+        let mut changed = valid.clone();
+        let block = changed
+            .record
+            .typed_semantics
+            .entries
+            .iter_mut()
+            .flat_map(|entry| &mut entry.blocks)
+            .find(|block| block.runtime_error.is_some())
+            .unwrap();
+        block.runtime_error = None;
+        changed.rebind_typed_semantics();
+        assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+        assert_eq!(valid.metadata["typed_semantics"]["failure_semantics"], "current-vm-process-exit-v1");
+        let mut malformed = valid.metadata["typed_semantics"].clone();
+        malformed.as_object_mut().unwrap().remove("failure_semantics");
+        assert!(serde_json::from_value::<cellscript_artifact_checker::TypedSemanticRecord>(malformed).is_err());
+    }
+}
+
+#[test]
+fn terminal_verifier_operations_cannot_be_inserted_before_continuation_after_rebinding() {
+    let source = "module fatal_operation_checker\naction main(value: u64) { verification require value > 0 }";
+    for edition in [cellscript::CellScriptEdition::Edition2026, NEXT_EDITION] {
+        let valid = Fixture::from_result(
+            compile(source, CompileOptions { edition, target: Some("riscv64-elf".into()), opt_level: 0, ..Default::default() })
+                .unwrap(),
+        );
+        let failure = valid
+            .record
+            .typed_semantics
+            .entries
+            .iter()
+            .flat_map(|entry| &entry.blocks)
+            .find(|block| block.runtime_error.is_some())
+            .unwrap()
+            .operations
+            .last()
+            .unwrap()
+            .clone();
+        for (terminator, code) in [("return", 0), ("return", 20), ("verifier-failure", 5)] {
+            let mut changed = valid.clone();
+            let entry = changed.record.typed_semantics.entries.iter_mut().find(|entry| entry.name == "main").unwrap();
+            let entry_id = entry.id.clone();
+            let block = entry.blocks.iter_mut().find(|block| block.terminator == terminator).unwrap();
+            let mut inserted = failure.clone();
+            inserted.operands[0].constant = Some(TypedSemanticConstant::U64(code.to_string()));
+            block.operations.insert(block.operations.len() - 1, inserted);
+            for (index, operation) in block.operations.iter_mut().enumerate() {
+                operation.index = u32::try_from(index).unwrap();
+            }
+            let block_id = block.id;
+            let block_hash = canonical_hash("cellscript-typed-block-v1", block).unwrap();
+            // Rebind even the per-block typed/machine hashes: rejection must
+            // come from terminal semantics, not a stale sidecar digest.
+            changed
+                .record
+                .entries
+                .iter_mut()
+                .find(|entry| entry.id == entry_id)
+                .unwrap()
+                .typed_blocks
+                .iter_mut()
+                .find(|binding| binding.id == block_id)
+                .unwrap()
+                .hash
+                .clone_from(&block_hash);
+            for machine_block in &mut changed.record.blocks {
+                if machine_block.owner_entry == entry_id && machine_block.lowering_block_id == Some(block_id) {
+                    machine_block.typed_block_hash = Some(block_hash.clone());
+                }
+            }
+            changed.rebind_typed_semantics();
+            assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+        }
+    }
+}
+
+#[test]
+fn implicit_verifier_exit_inventory_cannot_be_hidden_by_renaming_the_sink() {
+    let valid = Fixture::from_source("module implicit_failure\nfn divide(value: u64) -> u64 { return 7 / value }\naction main(value: u64) -> u64 { verification return divide(value) }");
+    assert!(valid.record.typed_semantics.entries.iter().flat_map(|entry| &entry.blocks).all(|block| block.runtime_error.is_none()));
+    let mut changed = valid.clone();
+    changed.record.entries.iter_mut().find(|entry| entry.name == "__cellscript_abort").unwrap().name = "renamed_abort".into();
+    changed.record.verifier_failure_exits.clear();
+    changed.rebind_sidecars();
+    assert_code(&changed, CheckerRejectionCode::V2414ControlFlowInvalid);
+}
+
+#[test]
+fn common_policy_calls_keep_a_bounded_retained_body_contract_after_rebinding() {
+    use cellscript::artifact::{compile_artifact, ArtifactAction, ArtifactContext, ArtifactDeclaration, ArtifactDispatch};
+    let source = r#"
+module common_calls
+resource Token has consume { amount: u64 }
+fn checked(value: u64) -> u64 { return 7 / value }
+action common() { verification require checked(7) == 1 }
+action burn(input token: Token) { verification consume token }
+"#;
+    for edition in [cellscript::CURRENT_EDITION, NEXT_EDITION] {
+        let valid = Fixture::from_result(
+            compile_artifact(
+                source,
+                CompileOptions { edition, target: Some("riscv64-elf".into()), opt_level: 0, ..Default::default() },
+                ArtifactDeclaration {
+                    name: "TokenPolicy".into(),
+                    context: ArtifactContext::TypeGroup { resource: "Token".into() },
+                    dispatch: ArtifactDispatch::PolicyWitnessV1,
+                    actions: vec![ArtifactAction { tag: 7, action: "burn".into() }],
+                    common_checks: vec!["common".into()],
+                },
+                cellscript::ExecutableSurfacePolicy::DenyFailClosed,
+            )
+            .unwrap(),
+        );
+        for mutation in
+            ["unknown", "foreign-contract", "field", "wide", "reference-return", "physical-cell", "loop", "unsupported-error"]
+        {
+            let mut changed = valid.clone();
+            let typed = &mut changed.record.typed_semantics;
+            let binding = typed.entries.iter().find(|entry| entry.name == "burn").unwrap().cell_bindings[0].clone();
+            if matches!(mutation, "unknown" | "foreign-contract") {
+                let call = typed
+                    .entries
+                    .iter_mut()
+                    .find(|entry| entry.name == "common")
+                    .unwrap()
+                    .blocks
+                    .iter_mut()
+                    .flat_map(|block| &mut block.operations)
+                    .find_map(|operation| operation.call.as_mut())
+                    .unwrap();
+                if mutation == "unknown" {
+                    call.target = "absent".into();
+                } else {
+                    call.contract = "raw-status".into();
+                }
+            } else {
+                let callee = typed.entries.iter_mut().find(|entry| entry.name == "checked").unwrap();
+                match mutation {
+                    "field" => callee.blocks[0].operations[0].opcode = "field-access".into(),
+                    "wide" => callee.params[0].ty = "u128".into(),
+                    "reference-return" => callee.return_type = "&Token".into(),
+                    "physical-cell" => callee.cell_bindings.push(binding),
+                    "loop" => {
+                        let id = callee.blocks[0].id;
+                        callee.blocks[0].successors = vec![id];
+                        callee.blocks[0].terminator = "jump".into();
+                    }
+                    "unsupported-error" => {
+                        callee.blocks[0].runtime_error =
+                            Some(cellscript_artifact_checker::TypedSemanticRuntimeError { code: 1, name: "syscall-failed".into() });
+                        callee.blocks[0].terminator = "verifier-failure".into();
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            if mutation == "reference-return" {
+                let call = typed
+                    .entries
+                    .iter_mut()
+                    .find(|entry| entry.name == "common")
+                    .unwrap()
+                    .blocks
+                    .iter_mut()
+                    .flat_map(|block| &mut block.operations)
+                    .find_map(|operation| operation.call.as_mut())
+                    .unwrap();
+                call.return_type = "&Token".into();
+            }
+            changed.rebind_typed_semantics();
+            let error =
+                cellscript_artifact_checker::validate_policy_metadata(&changed.metadata, &changed.record.typed_semantics).unwrap_err();
+            assert_eq!(error.code, CheckerRejectionCode::V2419TypedSemanticsInvalid, "{edition:?}: {mutation}: {error}");
+            assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+        }
+    }
 }
 
 const REFERENCE_ENTRY_SOURCE: &str = r#"
@@ -303,7 +572,7 @@ fn checker_accepts_native_edition_2027_type_script_trigger_and_disposition() {
         matches!(
             &disposition.input,
             Some(cellscript_artifact_checker::InputDisposition::Successor { output_role })
-                if output_role.ends_with(":next")
+                if output_role.ends_with(":next:output[0]")
         ) && disposition.envelope.completeness == "exhaustive"
     }));
     let enforced = foundation.claims.iter().find(|claim| claim.execution.is_some()).expect("native enforce claim");
@@ -559,6 +828,117 @@ fn semantic_foundation_and_source_mapping_mutations_are_rejected() {
     changed.source_map.canonicalize();
     changed.rebind_sidecars();
     assert_code(&changed, CheckerRejectionCode::V2416SourceMapInvalid);
+}
+
+#[test]
+fn fixed_cell_binding_mutations_are_rejected_after_outer_hash_rebinding() {
+    use cellscript_artifact_checker::{CellBindingMembership, CellBindingSource};
+    let valid = Fixture::from_source(
+        r#"
+module fixed_binding_mutations
+resource Token has consume { amount: u64 }
+shared Config { value: u64 }
+action inspect(input token: Token, read config: Config, witness expected: u64) -> u64 {
+    verification
+        require token.amount == expected
+        require config.value == expected
+        consume token
+        return 0
+}
+"#,
+    );
+    assert_eq!(valid.record.typed_semantics.entries[0].cell_bindings.len(), 2);
+
+    let mut changed = valid.clone();
+    changed.record.typed_semantics.entries[0].cell_bindings[0].ordinal += 1;
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid.clone();
+    let binding = changed.record.typed_semantics.entries[0]
+        .cell_bindings
+        .iter_mut()
+        .find(|binding| binding.source == CellBindingSource::Input)
+        .unwrap();
+    binding.source = CellBindingSource::GroupInput;
+    binding.membership = CellBindingMembership::CurrentTypeGroup;
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid.clone();
+    let binding = changed.record.typed_semantics.entries[0]
+        .cell_bindings
+        .iter_mut()
+        .find(|binding| binding.source == CellBindingSource::CellDep)
+        .unwrap();
+    binding.membership = CellBindingMembership::CurrentTypeGroup;
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid.clone();
+    changed.record.typed_semantics.entries[0].cell_bindings.remove(0);
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+
+    let mut changed = valid.clone();
+    let entry = &mut changed.record.typed_semantics.entries[0];
+    let removed = entry
+        .cell_bindings
+        .remove(entry.cell_bindings.iter().position(|binding| binding.source == CellBindingSource::CellDep).unwrap());
+    let removed_role = removed.role_id(&entry.id);
+    changed.record.typed_semantics.foundation.roles.retain(|role| role.role_id != removed_role);
+    changed.rebind_typed_semantics();
+    let error =
+        check_bundle_values(&changed.artifact, &changed.metadata, &changed.record, &changed.source_map, &CheckerBudgets::default())
+            .unwrap_err();
+    assert_eq!(error.code, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+    assert!(error.message.contains("fixed Cell parameter 'config' has no resolved binding"), "{error:?}");
+
+    let mut changed = valid;
+    let duplicate = changed.record.typed_semantics.entries[0].cell_bindings[0].clone();
+    changed.record.typed_semantics.entries[0].cell_bindings.insert(0, duplicate);
+    changed.rebind_typed_semantics();
+    assert_code(&changed, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+}
+
+#[test]
+fn deferred_sighash_effect_cannot_be_reclassified_after_hash_rebinding() {
+    let source = r#"
+module deferred_sighash_checker
+action main() -> u64 {
+    verification
+    let digest = env::sighash_all(source::group_input(0))
+    return 0
+}
+"#;
+    let fixture = Fixture::from_result(
+        compile(source, CompileOptions { opt_level: 0, target: Some("riscv64-elf".to_string()), ..Default::default() }).unwrap(),
+    );
+    for effect in ["runtime-contract", "deferred-runtime-fail-closed:0:ckb-sighash-all-deferred", "Pure"] {
+        let mut changed = fixture.clone();
+        let call = changed
+            .record
+            .typed_semantics
+            .entries
+            .iter_mut()
+            .flat_map(|entry| &mut entry.blocks)
+            .flat_map(|block| &mut block.operations)
+            .filter_map(|operation| operation.call.as_mut())
+            .find(|call| call.target == "__ckb_sighash_all")
+            .expect("deferred call is present");
+        call.effect = effect.to_string();
+        changed.rebind_typed_semantics();
+        let error = check_bundle_values(
+            &changed.artifact,
+            &changed.metadata,
+            &changed.record,
+            &changed.source_map,
+            &CheckerBudgets::default(),
+        )
+        .expect_err("deferred failure classification cannot be stripped");
+        assert_eq!(error.code, CheckerRejectionCode::V2419TypedSemanticsInvalid);
+        assert!(error.message.contains("deferred sighash call"), "{error}");
+    }
 }
 
 #[test]

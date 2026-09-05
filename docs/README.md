@@ -3,7 +3,7 @@
 This directory is organized by document role. Keep new docs in the smallest
 stable category that matches how readers should use them.
 
-The experimental `0.26b` implementation uses metadata schema 63. The finalized
+The experimental `0.26b` implementation uses metadata schema 65. The finalized
 0.26 release record below remains the historical schema 62 contract.
 
 ## Stable Tutorials
@@ -51,6 +51,9 @@ drafts. Released versions should use non-draft filenames.
   typed-semantics verification,
   executable-surface closure, bounded-collection fail-closed hardening, local
   evidence retention, and the upgraded Playground inspector.
+- `docs/releases/CELLSCRIPT_0_25_RELEASE_POST.md` is the publication-gated
+  community announcement draft for the same 0.25 boundary, with a shorter
+  social version for release-day use.
 - `docs/releases/CELLSCRIPT_0_26_RELEASE_NOTES.md` is the active implementation
   record for metadata schema 62, typed-semantics v3, exact Type Script group
   input scans, versioned bounded output plans, and the four checked dynamic
@@ -68,12 +71,21 @@ matrices.
 
 High-value active references include:
 
+- [CELLSCRIPT_AUTHORING_TARGET.md](CELLSCRIPT_AUTHORING_TARGET.md) for the
+  adopted 2026-style authoring direction, shared-policy multi-action contracts,
+  schema review, authorization boundaries, and required acceptance examples
+- [CELLSCRIPT_AUTHORING_IMPLEMENTATION.md](CELLSCRIPT_AUTHORING_IMPLEMENTATION.md)
+  for the complete implementation goal, 2026 parity requirements, current
+  evidence, and remaining production acceptance work
+- [CELLSCRIPT_POLICY_WITNESS_ABI.md](CELLSCRIPT_POLICY_WITNESS_ABI.md) for
+  explicit policy selection, tagged multi-record witnesses, builder contracts,
+  and signature-field ownership
 - `CELLSCRIPT_1_0_SEMANTIC_FOUNDATION_RFC.md` for the post-0.26 design agenda,
   issue/conflict reconciliation, staged acceptance gates, and the experimental
   `0.26b` implementation boundary
 - `CELLSCRIPT_2027_PREVIEW_GRAMMAR.md` for the exact bounded native grammar,
   lowering, diagnostics, issue constraints, and deferred surface implemented
-  by `cellscript-source-semantics-2027-preview4`
+  by the retained preview4 native grammar within `cellscript-source-semantics-2027-authoring1`
 - `releases/CELLSCRIPT_0_13_2_RELEASE_NOTES.md` for the final 0.13 syntax
   governance summary
 - `CELLSCRIPT_GATE_POLICY.md`

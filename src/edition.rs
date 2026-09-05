@@ -45,7 +45,7 @@ impl CellScriptEdition {
     pub const fn source_semantics(self) -> &'static str {
         match self {
             Self::Edition2026 => "cellscript-source-semantics-2026",
-            Self::Edition2027 => "cellscript-source-semantics-2027-preview4",
+            Self::Edition2027 => "cellscript-source-semantics-2027-authoring1",
         }
     }
 }
@@ -64,21 +64,9 @@ pub fn resolve_compatibility_profile(
 ) -> ResolvedCompatibilityProfile {
     let primitive_assurance = primitive_assurance.unwrap_or("default").to_string();
     let source_semantics = edition.source_semantics().to_string();
-    ResolvedCompatibilityProfile {
+    let mut profile = ResolvedCompatibilityProfile {
         schema: COMPATIBILITY_PROFILE_SCHEMA.to_string(),
-        id: format!(
-            "{}-{}-target-{}-primitive-{}-entry-{}-placement-{}-metadata-{}-{}-{}-{}",
-            COMPATIBILITY_PROFILE_SCHEMA,
-            source_semantics,
-            target_profile,
-            primitive_assurance,
-            crate::ENTRY_WITNESS_ABI,
-            crate::ENTRY_WITNESS_PLACEMENT_ABI,
-            crate::METADATA_SCHEMA_VERSION,
-            crate::SOURCE_METADATA_SCHEMA_VERSION,
-            crate::ARTIFACT_METADATA_SCHEMA_VERSION,
-            crate::CONSTRAINTS_METADATA_SCHEMA_VERSION,
-        ),
+        id: String::new(),
         edition,
         source_semantics,
         target_profile: target_profile.to_string(),
@@ -92,7 +80,42 @@ pub fn resolve_compatibility_profile(
         entry_witness_placement_field: crate::ENTRY_WITNESS_PLACEMENT_FIELD.to_string(),
         entry_witness_placement_source: crate::ENTRY_WITNESS_PLACEMENT_SOURCE.to_string(),
         raw_entry_witness_payload_compatible: false,
-    }
+    };
+    profile.id = compatibility_profile_id(&profile);
+    profile
+}
+
+fn compatibility_profile_id(profile: &ResolvedCompatibilityProfile) -> String {
+    format!(
+        "{}-{}-target-{}-primitive-{}-entry-{}-placement-{}-metadata-{}-{}-{}-{}",
+        profile.schema,
+        profile.source_semantics,
+        profile.target_profile,
+        profile.primitive_assurance,
+        profile.entry_witness_payload_abi,
+        profile.entry_witness_placement_abi,
+        profile.metadata_schema_version,
+        profile.source_metadata_schema_version,
+        profile.artifact_metadata_schema_version,
+        profile.constraints_metadata_schema_version,
+    )
+}
+
+/// A selected artifact may declare an outer witness ABI without changing the
+/// source edition or the legacy per-action parameter codec.
+pub(crate) fn set_entry_compatibility_profile(
+    profile: &mut ResolvedCompatibilityProfile,
+    payload: &str,
+    placement: &str,
+    field: &str,
+    source: &str,
+) {
+    profile.entry_witness_payload_abi = payload.to_string();
+    profile.entry_witness_placement_abi = placement.to_string();
+    profile.entry_witness_placement_field = field.to_string();
+    profile.entry_witness_placement_source = source.to_string();
+    profile.raw_entry_witness_payload_compatible = false;
+    profile.id = compatibility_profile_id(profile);
 }
 
 impl fmt::Display for CellScriptEdition {
@@ -163,7 +186,7 @@ mod tests {
     #[test]
     fn edition_owns_source_semantics_only() {
         assert_eq!(CURRENT_EDITION.source_semantics(), "cellscript-source-semantics-2026");
-        assert_eq!(NEXT_EDITION.source_semantics(), "cellscript-source-semantics-2027-preview4");
+        assert_eq!(NEXT_EDITION.source_semantics(), "cellscript-source-semantics-2027-authoring1");
     }
 
     #[test]

@@ -100,6 +100,18 @@ source changes require complete frontend closure. Independently versioned ABI
 changes require the `backend` gate in addition to ordinary `dev` and `ci`
 coverage.
 
+The bounded persistent-Type-policy path uses explicit `[[artifacts]]`
+declarations and `cellc build/check --artifact NAME`. Its outer witness ABI is
+independent of the unchanged single-entry `CSARGv1` encoding. Changes to policy
+selection, dispatch, placement, or record validation require the `backend`
+gate; CLI and manifest integration also require the ordinary `dev`/`ci`
+coverage. Focused codec and CLI tests do not replace those gates. See
+[`CELLSCRIPT_POLICY_WITNESS_ABI.md`](CELLSCRIPT_POLICY_WITNESS_ABI.md) for bounds,
+selection rules, and the remaining Lock-dispatch boundary.
+`metadata --artifact` and `expand --artifact` use the metadata-only selected
+policy path; their CLI regression checks pin the same contract and ensure no
+machine artifact or sidecar is created during inspection.
+
 The `ci` gate also typechecks/tests `services/registry-api`, builds both Node
 entrypoints, performs its Wrangler dry-run build, and runs tests and clippy for
 the independent real-compiler Registry verifier crate. `dev` at least checks
@@ -247,13 +259,18 @@ CKB-VM execution, deployment, and chain evidence.
 
 ### 0.26b semantic-foundation evidence
 
-The `0.26b` experimental branch advances compile metadata to schema 63,
-verified lowering records to v5, typed semantics to v4, and source maps to v2.
-Typed semantics embeds `cellscript-semantic-foundation-v1`, whose canonical
+The `0.26b` experimental branch advances compile metadata to schema 65,
+verified lowering records to v6, typed semantics to v7, and source maps to v2.
+Typed semantics embeds `cellscript-semantic-foundation-v3`, whose canonical
 records cover a bounded provenance DAG, entry selection, role binding, Cell
 disposition, enforcement-classified claims, legacy migration nodes, and
 layered semantic IDs. The standalone checker independently recomputes these
 records and their metadata/bundle bindings without loading the frontend.
+Fixed-Cell tables cross-check source, ordinal, local identity, schema and
+Script-group membership against roles and provenance. Real VM regressions
+exercise nonzero Type/Lock groups, extra group Cells, mixed CellDep forms and
+the input-witness/output-only placement boundary. These records do not claim
+complete syscall dataflow equivalence.
 Executable `require`/`enforce` claims additionally bind canonical condition
 text to one condition-provenance node, the ordered typed success/failure
 branch, and the exact fail-closed runtime error. Mutation tests reject broken
@@ -265,10 +282,13 @@ canonical foundation object. The human rendering is deterministic but is not
 a hash boundary. Source paths and spans live only in source-map v2, while
 source bytes have a separate `SourceDigest`.
 
-The gate treats Edition 2027 as a preview, not a release claim. It must remain
-separately routed from Edition 2026, reject implicit transaction sources and
-ambiguous dispositions, and emit only `SingleEntry` until a versioned dispatch
-ABI is accepted. The implemented `preview4` slice additionally checks the
+The gate treats Edition 2027 as experimental, not a release claim. The
+`authoring1` frontend shares the 2026 value/declaration/statement kernel while
+retaining an independently selected entry-body grammar. Ordinary modules retain
+legacy default provenance and lifecycle meanings and may contain multiple
+actions/locks; those source declarations do not create runtime dispatch.
+Artifacts remain `SingleEntry` until a versioned dispatch ABI is implemented
+and verified. The retained `preview4` native slice separately checks the
 native `type_script` or `lock_script` container. It checks exact Type or Lock
 group triggers, explicit provenance, exhaustive successor/pool/retirement/fresh
 Type Script dispositions, metadata-only audit classification, and
@@ -283,7 +303,9 @@ The bounded `cellc migrate --to 2027` path is also fail-closed. CLI tests requir
 it to preserve source outside the selected final entry, avoid implicit writes,
 reject every unsupported or lossy form before creating an output, and prove
 both `CoreSemanticId` equality and byte-identical RISC-V ELF lowering for each
-emitted candidate. This is local differential evidence, not graph-wide impact,
+emitted candidate. Ordinary Type Script candidates retain `action` authoring
+and transaction-absolute locations; migration never silently substitutes native
+group ports. This is local differential evidence, not graph-wide impact,
 builder, CKB-VM, deployment, or chain evidence.
 
 ### 0.25/0.26 predecessor language and typed-semantics evidence

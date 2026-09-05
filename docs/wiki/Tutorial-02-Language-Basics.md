@@ -747,9 +747,12 @@ lock owner_boundary(
 ```
 
 `lock_args Address` tells the reader where the owner value comes from. It still
-does not prove a signature. `env::sighash_all(input)` makes the digest surface
-visible, and `witness::lock(input)` makes the witness field visible, but the
-example above is still a boundary-classification example. Treat `Address`,
+does not prove a signature. The example above is an inspectable deferred
+boundary, not an executable ownership Lock: canonical `env::sighash_all`
+construction is unimplemented. `DenyFailClosed` rejects it; audit artifacts
+terminate with `66 sighash-all-unsupported` when it executes, even if its result
+is discarded. `witness::lock(input)` is an executable witness-field read.
+Treat `Address`,
 `lock_args Address`, and `witness Address` as data unless an explicit verifier
 result and key-to-authority binding prove otherwise.
 

@@ -29,6 +29,13 @@ has no input, it loads `GroupOutput#0`. It never substitutes transaction-global
 input index. The selected witness must be a canonical three-field Molecule
 `WitnessArgs`; its `input_type` `BytesOpt` must contain the entry payload.
 
+A failed input-witness load does not establish that the group is empty. Before
+using output fallback, the wrapper probes the mandatory capacity field of
+`GroupInput#0` and requires `INDEX_OUT_OF_BOUND`. If that Cell exists, a missing
+witness rejects with runtime error 25 even when `GroupOutput#0` resolves a valid
+payload elsewhere. Other probe errors reject as well. This enforces the existing
+placement contract without changing the payload encoding or placement identity.
+
 This split lets canonical lock scripts, including multisig-v2, retain exclusive
 ownership of `WitnessArgs.lock`. Builders must preserve an existing lock field
 and fail rather than overwrite an existing `input_type` field.
@@ -67,8 +74,17 @@ CellScript positional arguments.
 Wrong magic, missing bytes, malformed Molecule, or unsupported parameter
 placement fails closed with runtime error `25 entry-witness-abi-invalid`.
 
-Entries whose parameters are entirely runtime-bound or `lock_args`-backed do not
-require a witness envelope.
+Entries whose parameters are entirely runtime-bound, `lock_args`-backed, or
+zero-width unit values do not require a witness envelope. A unit `()` consumes
+no payload bytes; the host encoder accepts either an explicit `Unit` placeholder
+or its omission, producing the same bytes. It does not shift the decoded
+nonempty payload value ordinal in provenance records.
+
+The wrapper and provenance emitter share IR-based layout rules. Fixed
+`Script.args` ranges are byte ranges, including nested arrays and tuples, not
+signature parameter indexes. Generated read-expression names cannot suppress a
+same-named scalar witness parameter: physical Cell binding identity is separate
+from an author's identifier spelling.
 
 ## Compiler Buffer And Frame Bounds
 

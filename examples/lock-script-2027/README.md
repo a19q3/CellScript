@@ -9,11 +9,17 @@ cellc expand examples/lock-script-2027 --json
 (cd examples/lock-script-2027 && cellc check --target-profile ckb)
 ```
 
-The generated disposition is `AuthorizationOnly`: the Lock Script proves that
-the protected Cell may be spent, while its Type Script or an explicit
-transaction policy remains responsible for successor, retirement, data,
-identity, Type Script, and capacity constraints. The package deliberately does
-not claim that a Lock Script governs those business-level relations.
+This is a provenance and equality fixture, not an ownership-authentication
+example. `claimed_owner == owner` compares public values; anyone can copy the
+owner into the witness. The fixture contains no signature verification and
+does not prove control of the owner's credentials. A real ownership Lock must
+enforce authorization bound to the transaction.
+
+The generated `AuthorizationOnly` disposition records the Lock's scope. The
+classification does not strengthen these predicates or prove that another
+particular policy enforces successor, retirement, data, identity, Type Script,
+or capacity constraints. Reference-policy requirements are recorded in the
+[authoring target](../../docs/CELLSCRIPT_AUTHORING_TARGET.md).
 
 The grammar is a bounded preview rather than the frozen CellScript 1.0 source
 contract. The complete implemented boundary, rejected forms, issue conflicts,

@@ -204,6 +204,7 @@ pub(crate) fn build_verified_artifact_boundary(
         })
         .collect::<Result<Vec<_>>>()?;
     let runtime_error_exits = runtime_error_exits(&draft.machine_layout, &blocks);
+    let verifier_failure_exits = verifier_failure_exits(&draft.machine_layout, &blocks)?;
 
     let mut record = VerifiedLoweringRecord {
         schema: LOWERING_RECORD_SCHEMA.to_string(),
@@ -228,6 +229,7 @@ pub(crate) fn build_verified_artifact_boundary(
         proof_records: entry_proofs,
         syscall_sites,
         runtime_error_exits,
+        verifier_failure_exits,
         limits: budgets.as_declared_limits(),
         claim: VerificationClaim {
             lowering_record: "binding-verified".to_string(),
@@ -567,6 +569,32 @@ fn runtime_error_exits(layout: &MachineLayoutEvidence, blocks: &[LoweringBlock])
     exits.sort_by(|a, b| (&a.block_id, a.code, a.address).cmp(&(&b.block_id, b.code, b.address)));
     exits.dedup_by(|a, b| a.block_id == b.block_id && a.code == b.code && a.address == b.address);
     exits
+}
+
+fn verifier_failure_exits(layout: &MachineLayoutEvidence, blocks: &[LoweringBlock]) -> Result<Vec<RuntimeErrorExit>> {
+    let mut exits = Vec::new();
+    for (label, address) in &layout.symbols {
+        let Some(suffix) = label.strip_prefix(".Lverifier_failure_") else { continue };
+        let code = suffix
+            .split('_')
+            .next()
+            .and_then(|code| code.parse::<u64>().ok())
+            .ok_or_else(|| boundary_error("invalid terminal verifier failure label"))?;
+        let error = crate::runtime_errors::CellScriptRuntimeError::from_code(code)
+            .ok_or_else(|| boundary_error("unknown terminal verifier failure code"))?;
+        let block = blocks
+            .iter()
+            .find(|block| block.range.contains(*address))
+            .ok_or_else(|| boundary_error("terminal verifier failure lies outside machine coverage"))?;
+        exits.push(RuntimeErrorExit {
+            block_id: block.id.clone(),
+            address: *address,
+            code: code as i32,
+            name: error.name().to_string(),
+        });
+    }
+    exits.sort_by_key(|exit| exit.address);
+    Ok(exits)
 }
 
 fn compatibility_profile_identity(metadata: &CompileMetadata) -> CompatibilityProfileIdentity {

@@ -66,7 +66,7 @@ pub struct CheckerError {
 }
 
 impl CheckerError {
-    fn new(code: CheckerRejectionCode, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: CheckerRejectionCode, message: impl Into<String>) -> Self {
         Self { code, message: message.into() }
     }
 
@@ -197,7 +197,8 @@ pub fn check_bundle_values(
     validate_block_digests(artifact, record, &elf)?;
     validate_control_flow(record, &elf)?;
     validate_machine_terminators(record, &elf)?;
-    validate_stack_discipline(record, &elf)?;
+    let terminal_sink = crate::failure::validate_verifier_failures(record, &elf)?;
+    validate_stack_discipline(record, &elf, terminal_sink)?;
     validate_syscalls(record, &elf)?;
     validate_source_map(source_map, record, artifact, &elf)?;
 
@@ -303,6 +304,7 @@ fn validate_counts(
     ensure_count("blocks", record.blocks.len(), budgets.blocks)?;
     ensure_count("edges", record.edges.len(), budgets.edges)?;
     ensure_count("proof records", record.proof_records.len(), budgets.proof_records)?;
+    ensure_count("verifier failure exits", record.verifier_failure_exits.len(), budgets.blocks)?;
     ensure_count("source-map intervals", source_map.intervals.len(), budgets.source_map_intervals)?;
     if artifact_declared_too_large(record.artifact_size_bytes, budgets.artifact_bytes) {
         return Err(CheckerError::new(
@@ -319,6 +321,7 @@ fn validate_metadata_binding(
     record: &VerifiedLoweringRecord,
     source_map: &SourceArtifactMap,
 ) -> Result<(), CheckerError> {
+    crate::policy::validate_policy_metadata(metadata, &record.typed_semantics)?;
     let artifact_hash = hex_encode(&ckb_blake2b256(artifact));
     if artifact_hash != record.artifact_hash || artifact.len() as u64 != record.artifact_size_bytes {
         return Err(CheckerError::new(
@@ -738,6 +741,7 @@ fn validate_typed_semantics(record: &VerifiedLoweringRecord) -> Result<(), Check
 }
 
 fn validate_semantic_foundation(typed: &TypedSemanticRecord, record: &VerifiedLoweringRecord) -> Result<(), CheckerError> {
+    crate::bindings::validate(typed)?;
     let foundation = &typed.foundation;
     if foundation.schema != SEMANTIC_FOUNDATION_SCHEMA
         || foundation.version != SEMANTIC_FOUNDATION_VERSION
@@ -813,6 +817,21 @@ fn validate_semantic_foundation(typed: &TypedSemanticRecord, record: &VerifiedLo
     let contract = &foundation.entry_contract;
     let dispatch_label = match &contract.dispatch {
         EntryDispatchContract::SingleEntry => "single-entry",
+        EntryDispatchContract::PolicyWitnessV1(policy) => {
+            crate::policy::validate_policy_contract(policy, typed)?;
+            if contract.script_role != "type"
+                || contract.trigger != format!("type-group<{}>", policy.resource)
+                || contract.exact_entry != "wrapper:_cellscript_entry"
+                || contract.entry_payload_abi != crate::POLICY_PAYLOAD_ABI
+                || contract.witness_placement_abi != crate::POLICY_PLACEMENT_ABI
+                || contract.witness_placement_field != "input_type"
+                || contract.witness_placement_source != crate::POLICY_WITNESS_SOURCE
+                || !record.entries.iter().any(|entry| entry.id == contract.exact_entry && entry.kind == EntryKind::Wrapper)
+            {
+                return typed_error("policy dispatch entry does not bind its Type wrapper and witness ABI".to_string());
+            }
+            "policy-witness-v1"
+        }
         EntryDispatchContract::ExplicitVersionedDispatch { selector_node_id, selector_type, variants, unknown_selector } => {
             if !root_node_ids.contains(selector_node_id.as_str())
                 || selector_type.is_empty()
@@ -828,19 +847,35 @@ fn validate_semantic_foundation(typed: &TypedSemanticRecord, record: &VerifiedLo
             "explicit-versioned-dispatch"
         }
     };
-    let expected_contract_node = canonical_hash(
-        "cellscript-semantic-node-entry-contract-v1",
-        &(
-            contract.script_role.as_str(),
-            contract.trigger.as_str(),
-            contract.exact_entry.as_str(),
-            dispatch_label,
-            contract.entry_payload_abi.as_str(),
-            contract.witness_placement_abi.as_str(),
-            contract.witness_placement_field.as_str(),
-            contract.witness_placement_source.as_str(),
-        ),
-    )?;
+    let expected_contract_node = if matches!(contract.dispatch, EntryDispatchContract::PolicyWitnessV1(_)) {
+        canonical_hash(
+            "cellscript-semantic-node-entry-contract-v2",
+            &(
+                contract.script_role.as_str(),
+                contract.trigger.as_str(),
+                contract.exact_entry.as_str(),
+                &contract.dispatch,
+                contract.entry_payload_abi.as_str(),
+                contract.witness_placement_abi.as_str(),
+                contract.witness_placement_field.as_str(),
+                contract.witness_placement_source.as_str(),
+            ),
+        )?
+    } else {
+        canonical_hash(
+            "cellscript-semantic-node-entry-contract-v1",
+            &(
+                contract.script_role.as_str(),
+                contract.trigger.as_str(),
+                contract.exact_entry.as_str(),
+                dispatch_label,
+                contract.entry_payload_abi.as_str(),
+                contract.witness_placement_abi.as_str(),
+                contract.witness_placement_field.as_str(),
+                contract.witness_placement_source.as_str(),
+            ),
+        )?
+    };
     let trigger_valid = match contract.script_role.as_str() {
         "type" => {
             contract.trigger == "type-group"
@@ -856,7 +891,9 @@ fn validate_semantic_foundation(typed: &TypedSemanticRecord, record: &VerifiedLo
     };
     if contract.semantic_node_id != expected_contract_node
         || !trigger_valid
-        || (contract.exact_entry != "none" && !typed.entries.iter().any(|entry| entry.id == contract.exact_entry))
+        || (contract.exact_entry != "none"
+            && !matches!(contract.dispatch, EntryDispatchContract::PolicyWitnessV1(_))
+            && !typed.entries.iter().any(|entry| entry.id == contract.exact_entry))
         || contract.entry_payload_abi.is_empty()
         || contract.witness_placement_abi.is_empty()
         || contract.witness_placement_field.is_empty()
@@ -1094,8 +1131,15 @@ fn validate_semantic_foundation(typed: &TypedSemanticRecord, record: &VerifiedLo
     }
 
     let core_semantic_id = canonical_hash(
-        "cellscript-core-semantic-id-v1",
-        &(&typed.types, &foundation.roles, &foundation.dispositions, &foundation.claims, &foundation.legacy_nodes),
+        "cellscript-core-semantic-id-v2",
+        &(
+            typed.failure_semantics,
+            &typed.types,
+            &foundation.roles,
+            &foundation.dispositions,
+            &foundation.claims,
+            &foundation.legacy_nodes,
+        ),
     )?;
     let provenance_roots = foundation
         .provenance
@@ -1167,7 +1211,7 @@ fn validate_claim_execution(
     if condition_block.terminator != "branch"
         || condition_block.successors != [execution.success_block, execution.failure_block]
         || success_block.id == failure_block.id
-        || failure_block.terminator != "return"
+        || failure_block.terminator != "verifier-failure"
         || failure_block
             .runtime_error
             .as_ref()
@@ -1653,6 +1697,15 @@ fn validate_typed_operation(
                 return fail();
             }
             let Some(call) = &operation.call else { return fail() };
+            // This known helper has no executable digest contract in this
+            // schema. It must not be relabelled as an ordinary value-producing
+            // helper after rebinding the enclosing artifact hashes.
+            if call.target == "__ckb_sighash_all"
+                && (call.contract != "versioned-runtime-helper"
+                    || call.effect != "deferred-runtime-fail-closed:66:ckb-sighash-all-deferred")
+            {
+                return typed_error("deferred sighash call does not declare its canonical failure contract".to_string());
+            }
             if call.contract == "typed-local" {
                 let Some(callee) = entries.get(call.target.as_str()) else { return fail() };
                 if call.params != callee.params.iter().map(|param| param.ty.clone()).collect::<Vec<_>>()
@@ -1779,6 +1832,26 @@ fn validate_typed_operation(
                 || !matches!(field.as_str(), "lock-hash" | "capacity")
                 || operand_type(0) != operand_type(1)
                 || operation.call.is_some()
+            {
+                return fail();
+            }
+        }
+        "verifier-failure" => {
+            let code = operation.operands.first().and_then(|operand| match &operand.constant {
+                Some(TypedSemanticConstant::U64(value)) => value.parse::<u64>().ok(),
+                _ => None,
+            });
+            if !shape(0, 1)
+                || !none_detail
+                || operation.call.is_some()
+                || operand_type(0) != Some("u64")
+                || block.terminator != "verifier-failure"
+                || !block.successors.is_empty()
+                || usize::try_from(operation.index).ok() != block.operations.len().checked_sub(1)
+                || block
+                    .runtime_error
+                    .as_ref()
+                    .is_none_or(|error| !(1..=255).contains(&error.code) || error.name.is_empty() || code != Some(error.code))
             {
                 return fail();
             }
@@ -2100,7 +2173,12 @@ fn validate_typed_cfg_and_dataflow(
         let terminal_opcode = block.operations.last().map(|operation| operation.opcode.as_str());
         let valid_terminator = match block.terminator.as_str() {
             "return" => block.successors.is_empty() && terminal_opcode == Some("return"),
-            "jump" => block.successors.len() == 1 && terminal_opcode != Some("return") && terminal_opcode != Some("branch-condition"),
+            "verifier-failure" => {
+                block.successors.is_empty() && terminal_opcode == Some("verifier-failure") && block.runtime_error.is_some()
+            }
+            "jump" => {
+                block.successors.len() == 1 && !matches!(terminal_opcode, Some("return" | "branch-condition" | "verifier-failure"))
+            }
             "branch" => block.successors.len() == 2 && terminal_opcode == Some("branch-condition"),
             _ => false,
         };
@@ -2113,14 +2191,13 @@ fn validate_typed_cfg_and_dataflow(
                 Some(TypedSemanticConstant::U64(value)) => value.parse::<u64>().ok(),
                 _ => None,
             });
-            let predicate_failure = canonical_abi_type(&entry.return_type) == "bool"
-                && error_return.is_some_and(|operand| matches!(&operand.constant, Some(TypedSemanticConstant::Bool(false))));
-            if block.terminator != "return"
+            if block.terminator != "verifier-failure"
                 || runtime_error.code == 0
+                || runtime_error.code > 255
                 || runtime_error.name.is_empty()
-                || (encoded_code != Some(runtime_error.code) && !predicate_failure)
+                || encoded_code != Some(runtime_error.code)
             {
-                return typed_error(format!("typed entry '{}' block {} has an invalid runtime-error return", entry.id, block.id));
+                return typed_error(format!("typed entry '{}' block {} has an invalid terminal verifier failure", entry.id, block.id));
             }
         } else if block.terminator == "return" {
             let return_type =
@@ -2396,7 +2473,7 @@ fn normalize_effect(effect: &str) -> String {
     effect.chars().filter(|character| character.is_ascii_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
-fn canonical_abi_type(ty: &str) -> String {
+pub(crate) fn canonical_abi_type(ty: &str) -> String {
     if ty.trim() == "()" {
         return "unit".to_string();
     }
@@ -2837,7 +2914,11 @@ fn validate_machine_terminators(record: &VerifiedLoweringRecord, elf: &ParsedElf
     Ok(())
 }
 
-fn validate_stack_discipline(record: &VerifiedLoweringRecord, elf: &ParsedElf) -> Result<(), CheckerError> {
+fn validate_stack_discipline(
+    record: &VerifiedLoweringRecord,
+    elf: &ParsedElf,
+    terminal_sink: Option<&str>,
+) -> Result<(), CheckerError> {
     let blocks = record.blocks.iter().map(|block| (block.id.as_str(), block)).collect::<BTreeMap<_, _>>();
     let mut outgoing = BTreeMap::<&str, Vec<&LoweringEdge>>::new();
     for edge in &record.edges {
@@ -2846,6 +2927,11 @@ fn validate_stack_discipline(record: &VerifiedLoweringRecord, elf: &ParsedElf) -
     let mut entry_delta = BTreeMap::<&str, i64>::new();
     let mut pending = record.entries.iter().map(|entry| (entry.entry_block.as_str(), 0_i64)).collect::<Vec<_>>();
     while let Some((block_id, incoming_delta)) = pending.pop() {
+        // This exception is granted only after decoding the complete, memory-free,
+        // non-returning EXIT sink. Arbitrary named runtime helpers get no exemption.
+        if terminal_sink == Some(block_id) {
+            continue;
+        }
         if let Some(previous) = entry_delta.insert(block_id, incoming_delta) {
             if previous != incoming_delta {
                 return Err(CheckerError::new(

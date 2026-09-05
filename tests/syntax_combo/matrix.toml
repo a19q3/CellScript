@@ -2,6 +2,13 @@
 # The first runner version keeps generation deterministic and small, while this
 # file records the axes that must stay covered as the generator grows.
 
+[cross_edition]
+# Run every selected Edition 2026 source, including negative oracles and
+# regression seeds, unchanged in both editions. Native 2027-only seeds retain
+# their declared edition. Mode budgets count source cases before expansion;
+# quick remains a bounded smoke test, not a claim of complete edition parity.
+editions = ["2026", "2027"]
+
 [mode.quick]
 budget = 64
 min_cases = 23
@@ -9,6 +16,8 @@ min_accept = 13
 min_reject = 10
 required_origins = [
     "generated",
+    "tests/syntax_combo/seeds/authoring-action.cell",
+    "tests/syntax_combo/seeds/authoring-lock.cell",
     "tests/syntax_combo/seeds/bitwise-shift.cell",
     "tests/syntax_combo/seeds/bitwise-shift-range-reject.cell",
     "tests/syntax_combo/seeds/bounded-quantifier.cell",
@@ -48,7 +57,7 @@ required_origins = [
     "tests/syntax_combo/seeds/protocolgraph-role-weak.cell",
     "tests/syntax_combo/seeds/protocolgraph-role-conflict.cell",
 ]
-description = "Local smoke: deterministic generated cases plus regression seeds."
+description = "Local smoke: deterministic generated cases and regression seeds in both authoring editions."
 
 [mode.ci]
 budget = 1000
@@ -57,6 +66,8 @@ min_accept = 27
 min_reject = 18
 required_origins = [
     "generated",
+    "tests/syntax_combo/seeds/authoring-action.cell",
+    "tests/syntax_combo/seeds/authoring-lock.cell",
     "tests/syntax_combo/seeds/bitwise-shift.cell",
     "tests/syntax_combo/seeds/bitwise-shift-range-reject.cell",
     "tests/syntax_combo/seeds/bounded-quantifier.cell",
@@ -106,7 +117,7 @@ required_origins = [
     "tests/syntax_combo/seeds/protocolgraph-role-weak.cell",
     "tests/syntax_combo/seeds/protocolgraph-role-conflict.cell",
 ]
-description = "PR gate: pairwise generated cases plus regression seeds."
+description = "PR gate: pairwise generated cases and regression seeds in both authoring editions."
 
 [mode.deep]
 budget = 5000
@@ -115,6 +126,8 @@ min_accept = 27
 min_reject = 21
 required_origins = [
     "generated",
+    "tests/syntax_combo/seeds/authoring-action.cell",
+    "tests/syntax_combo/seeds/authoring-lock.cell",
     "tests/syntax_combo/seeds/bitwise-shift.cell",
     "tests/syntax_combo/seeds/bitwise-shift-range-reject.cell",
     "tests/syntax_combo/seeds/bounded-quantifier.cell",
@@ -167,7 +180,7 @@ required_origins = [
     "tests/syntax_combo/seeds/protocolgraph-role-weak.cell",
     "tests/syntax_combo/seeds/protocolgraph-role-conflict.cell",
 ]
-description = "Release audit: triplewise sample, mutations, and selected CKB acceptance."
+description = "Release audit: triplewise sample and mutations in both authoring editions, plus selected CKB acceptance."
 
 [axes]
 entry_kind = ["fn", "action", "lock"]

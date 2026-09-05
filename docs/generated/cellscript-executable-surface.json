@@ -489,6 +489,16 @@
       "status": "bounded"
     },
     {
+      "conditions": "Canonical transaction sighash construction is deferred. Audit artifacts unconditionally exit with runtime error 66 when called, including discarded results and helper calls.",
+      "fail_closed_features": [
+        "ckb-sighash-all-deferred"
+      ],
+      "id": "artifact:ckb-sighash-all",
+      "layer": "artifact-policy",
+      "production_policy": "rejected by production policy",
+      "status": "reserved"
+    },
+    {
       "conditions": "Explicit Input or CellDep read-only Cell view.",
       "fail_closed_features": [],
       "id": "ir:read-ref",

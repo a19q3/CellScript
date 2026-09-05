@@ -36,6 +36,12 @@ Important boundary: `lock_args Address`, `witness Address`, and
 verification remains explicit future work; there is no hidden signer derivation
 from an `Address` value or parameter name.
 
+Current implementation correction: the `env::sighash_all` spelling introduced
+here did not implement canonical digest construction. On the 0.26b branch it
+is explicitly deferred: production compilation rejects
+`ckb-sighash-all-deferred`, and audit execution terminates with runtime
+error 66. The source and witness readers remain executable.
+
 ### Spawn/IPC Verifier Composition
 
 0.14 adds bounded verifier reuse through CKB VM v2-shaped Spawn/IPC helpers:

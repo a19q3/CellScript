@@ -297,6 +297,14 @@ pub static EXECUTABLE_SURFACE: &[ExecutableSurfaceEntry] = &[
         "Exact plan-count to current Type Script GroupOutput-count correspondence."
     ),
     entry!("ir:call", "instruction", "bounded", ACCEPT_WHEN_CLOSED, "Resolved typed callable with a closed ABI and effect summary."),
+    entry!(
+        "artifact:ckb-sighash-all",
+        "artifact-policy",
+        "reserved",
+        "rejected by production policy",
+        "Canonical transaction sighash construction is deferred. Audit artifacts unconditionally exit with runtime error 66 when called, including discarded results and helper calls.",
+        ["ckb-sighash-all-deferred"]
+    ),
     entry!("ir:read-ref", "instruction", "bounded", ACCEPT, "Explicit Input or CellDep read-only Cell view."),
     entry!("ir:move", "instruction", "complete", ACCEPT, "Typed local move; ownership validity is checked before lowering."),
     entry!("ir:tuple", "instruction", "bounded", ACCEPT_WHEN_CLOSED, "Deterministic fixed aggregate construction."),
@@ -402,6 +410,7 @@ pub static EXECUTABLE_SURFACE: &[ExecutableSurfaceEntry] = &[
 ];
 
 pub fn validate_ir_module(module: &IrModule) -> Result<()> {
+    module.validate_entry_selection()?;
     for external in &module.external_type_defs {
         require_registered("ir-item:type-def")?;
         for field in &external.fields {

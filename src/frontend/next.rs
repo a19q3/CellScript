@@ -11,18 +11,20 @@ use std::collections::BTreeSet;
 
 pub(super) fn parse(source: &str) -> Result<ast::Module> {
     let tokens = lexer::lex(source)?;
-    let module = if has_native_surface(&tokens) { parse_native_surface(&tokens)? } else { parser::parse(&tokens)? };
+    if !has_native_surface(&tokens) {
+        return super::authoring::parse(&tokens);
+    }
+    let module = parse_native_surface(&tokens)?;
     let diagnostics = constitution_diagnostics(&module, &tokens);
     diagnostics.into_iter().next().map_or(Ok(module), Err)
 }
 
 pub(super) fn parse_diagnostics(source: &str) -> std::result::Result<ast::Module, Vec<CompileError>> {
     let tokens = lexer::lex(source).map_err(|error| vec![error])?;
-    let module = if has_native_surface(&tokens) {
-        parse_native_surface(&tokens).map_err(|error| vec![error])?
-    } else {
-        parser::parse_diagnostics(&tokens)?
-    };
+    if !has_native_surface(&tokens) {
+        return super::authoring::parse_diagnostics(&tokens);
+    }
+    let module = parse_native_surface(&tokens).map_err(|error| vec![error])?;
     let diagnostics = constitution_diagnostics(&module, &tokens);
     if diagnostics.is_empty() {
         Ok(module)
@@ -31,17 +33,8 @@ pub(super) fn parse_diagnostics(source: &str) -> std::result::Result<ast::Module
     }
 }
 
-fn has_native_surface(tokens: &[Token]) -> bool {
-    let mut depth = 0usize;
-    for token in tokens {
-        match token.kind {
-            TokenKind::LBrace => depth = depth.saturating_add(1),
-            TokenKind::RBrace => depth = depth.saturating_sub(1),
-            _ if depth == 0 && (token_is_word(token, "type_script") || token_is_word(token, "lock_script")) => return true,
-            _ => {}
-        }
-    }
-    false
+pub(super) fn has_native_surface(tokens: &[Token]) -> bool {
+    !top_level_word_positions(tokens, "type_script").is_empty() || !top_level_word_positions(tokens, "lock_script").is_empty()
 }
 
 fn parse_native_surface(tokens: &[Token]) -> Result<ast::Module> {
@@ -144,7 +137,17 @@ fn top_level_word_positions(tokens: &[Token], word: &str) -> Vec<usize> {
         match token.kind {
             TokenKind::LBrace => depth = depth.saturating_add(1),
             TokenKind::RBrace => depth = depth.saturating_sub(1),
-            _ if depth == 0 && token_is_word(token, word) => positions.push(index),
+            _ if depth == 0 && token_is_word(token, word) => {
+                // These are contextual declaration words, not reserved names.
+                // A helper/constant/module called `type_script` remains legal
+                // authoring source and must not select the preview parser.
+                let mut following = tokens[index + 1..].iter().filter(|token| !matches!(token.kind, TokenKind::Newline));
+                if following.next().is_some_and(|token| matches!(token.kind, TokenKind::Identifier(_)))
+                    && following.next().is_some_and(|token| token_is_word(token, "on"))
+                {
+                    positions.push(index);
+                }
+            }
             _ => {}
         }
     }

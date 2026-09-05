@@ -4,6 +4,15 @@ use crate::lexer::token::{Token, TokenKind};
 
 const MAX_PARSE_RECURSION_DEPTH: usize = 32;
 
+/// Entry-body grammar is selected by a frontend, not inferred from source
+/// keywords or mixed into the shared expression/type grammar.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) enum EntryBodyGrammar {
+    #[default]
+    VerificationSection,
+    ConstraintBlock,
+}
+
 pub struct Parser<'a> {
     tokens: &'a [Token],
     position: usize,
@@ -14,6 +23,7 @@ pub struct Parser<'a> {
     unary_depth: usize,
     statement_depth: usize,
     if_depth: usize,
+    entry_body_grammar: EntryBodyGrammar,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -43,6 +53,7 @@ impl<'a> Parser<'a> {
             unary_depth: 0,
             statement_depth: 0,
             if_depth: 0,
+            entry_body_grammar: EntryBodyGrammar::VerificationSection,
         }
     }
 
@@ -57,11 +68,20 @@ impl<'a> Parser<'a> {
             unary_depth: 0,
             statement_depth: 0,
             if_depth: 0,
+            entry_body_grammar: EntryBodyGrammar::VerificationSection,
         }
     }
 
     fn current(&self) -> &Token {
         &self.tokens[self.position.min(self.tokens.len() - 1)]
+    }
+
+    fn parse_verification_marker(&mut self) -> Result<()> {
+        if self.check(&TokenKind::Verification) || matches!(self.entry_body_grammar, EntryBodyGrammar::VerificationSection) {
+            self.expect(TokenKind::Verification)?;
+        }
+        self.skip_newlines();
+        Ok(())
     }
 
     fn current_identifier(&self) -> Option<String> {
@@ -1942,8 +1962,7 @@ impl<'a> Parser<'a> {
         if matches!(&self.current().kind, TokenKind::Identifier(name) if name == "where") {
             return Err(CompileError::new("`where` action proof blocks are not supported; use `verification`", self.current().span));
         }
-        self.expect(TokenKind::Verification)?;
-        self.skip_newlines();
+        self.parse_verification_marker()?;
 
         let mut stmts = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
@@ -2097,8 +2116,7 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
         self.expect(TokenKind::LBrace)?;
         self.skip_newlines();
-        self.expect(TokenKind::Verification)?;
-        self.skip_newlines();
+        self.parse_verification_marker()?;
         let mut body = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
             if let Some(stmt) = self.parse_stmt_recovering()? {
@@ -3825,13 +3843,26 @@ impl<'a> Parser<'a> {
 }
 
 pub fn parse(tokens: &[Token]) -> Result<Module> {
+    parse_with_entry_grammar(tokens, EntryBodyGrammar::VerificationSection)
+}
+
+pub(crate) fn parse_with_entry_grammar(tokens: &[Token], grammar: EntryBodyGrammar) -> Result<Module> {
     let mut parser = Parser::new(tokens);
+    parser.entry_body_grammar = grammar;
     parser.skip_newlines();
     parser.parse_module()
 }
 
 pub fn parse_diagnostics(tokens: &[Token]) -> std::result::Result<Module, Vec<CompileError>> {
+    parse_diagnostics_with_entry_grammar(tokens, EntryBodyGrammar::VerificationSection)
+}
+
+pub(crate) fn parse_diagnostics_with_entry_grammar(
+    tokens: &[Token],
+    grammar: EntryBodyGrammar,
+) -> std::result::Result<Module, Vec<CompileError>> {
     let mut parser = Parser::new_recovering(tokens);
+    parser.entry_body_grammar = grammar;
     parser.skip_newlines();
     let parsed = parser.parse_module();
     match (parsed, parser.diagnostics.is_empty()) {

@@ -2,15 +2,15 @@
 
 **Status**: semantic-foundation preview implemented on the `0.26b` branch
 
-**Schemas**: `cellscript-verified-lowering-record-v5`,
-`cellscript-typed-semantics-v4`,
-`cellscript-semantic-foundation-v1`,
+**Schemas**: `cellscript-verified-lowering-record-v6`,
+`cellscript-typed-semantics-v7`,
+`cellscript-semantic-foundation-v3`,
 `cellscript-value-provenance-dag-v1`,
 `cellscript-source-artifact-map-v2`, and
 `cellscript-verified-artifact-boundary-v2`, plus
 `cellscript-artifact-checker-policy-v1`
 
-**Metadata schema**: 63
+**Metadata schema**: 65
 
 ## Purpose
 
@@ -26,11 +26,11 @@ build/main.elf.sourcemap.json
 
 The typed semantic record retains checked types, locals, calls, effects,
 ownership, borrow regions, concrete generic instantiations, layouts, and CFG
-operations in a parser-free schema. Typed semantics v4 also embeds the
+operations in a parser-free schema. Typed semantics v7 also embeds the
 frontend-independent semantic foundation: value provenance, artifact entry
 selection, transaction roles, exhaustive Cell dispositions, enforcement
 classes, legacy migration nodes, and layered semantic identities. Lowering
-record v5 embeds that record and binds it to the final machine layout. Every
+record v6 embeds that record and binds it to the final machine layout. Every
 typed block is accounted for;
 optimized/elided typed blocks have an explicit empty machine-block list, while
 materialized blocks carry exact typed-block hashes. Source-map v2 binds source
@@ -42,6 +42,68 @@ containing entry as a fail-safe diagnostic fallback. Other records may use the
 containing entry range. All records are hash-bound into compile metadata and
 validated immediately after compilation.
 
+Typed semantics retains the mandatory fixed-Cell binding table introduced in v5:
+physical source and ordinal, distinct input/output/read roles, local identity,
+concrete schema, and current Type/Lock group membership or `unproven` identity.
+Roles and provenance are projected from the resolved IR table rather than
+reconstructed from signature indexes. The checker cross-checks those
+projections and rejects missing, duplicate, or contradictory records after
+outer hashes are rebound. Bounded collections retain their separate scan
+contract. This does not prove arbitrary syscall dataflow equivalence.
+
+Ordinary input/output bindings retain transaction-absolute locations. Native
+group ports and documented `protected` Lock parameters use current-group
+locations. Positional CellDep reads do not authenticate a deployed Type Script.
+These corrections intentionally change affected semantic identities; v4
+records are not silently reinterpreted as v5 records.
+
+The policy contract introduced in typed semantics v6 and semantic foundation v2
+retains the explicit
+`policy-witness-v1` Type-group dispatch contract. Its resource layout, tagged
+export set, ordered common checks, selector provenance, variant payload schemas,
+fixed group counts, and outer witness ABI are canonical and hash-bound. The
+checker cross-checks the policy metadata and builder parameter projection against
+those typed records. The current lowering record's
+nested typed and foundation versions must match exactly. Older records are not
+accepted under the new versions by relabelling them.
+
+### Fatal verifier failures
+
+Typed semantics v7 declares `failure_semantics = current-vm-process-exit-v1`.
+Explicit typed failure blocks end in `verifier-failure`, with a nonzero error
+constant, rather than an ordinary value return. This operation must be the
+final operation in a matching terminal block; it cannot appear as an ignored
+value before a return or another failure. Semantic foundation v3 includes
+this contract in the versioned core semantic identity. Scalar, predicate, wide
+integer and tuple return values keep their established ABI; deliberately
+exposed syscall statuses are not reclassified merely because they are nonzero.
+
+Lowering record v6 adds mandatory `verifier_failure_exits`, separately from the
+existing diagnostic `runtime_error_exits`. The checker decodes each static
+site's exact error constant and tail jump to a complete, memory-free EXIT sink.
+It checks the syscall number and non-returning fallback, rejects entry into the
+middle of a failure sequence, derives the static-site
+inventory from incoming machine jumps, and requires every explicit typed
+failure block to reach a recorded site. Only this verified sink is exempt from
+joining incoming stack depths: it never reads a caller frame or returns.
+An exact decoded EXIT sink also requires its declared contract; renaming the
+entry and dropping its static-site list cannot hide it.
+
+This bounded check does not establish completeness of every compiler-inserted
+guard, arbitrary callee behavior, or the provenance of every dynamic verifier
+status. Those require separate runtime and machine-dataflow evidence. EXIT
+terminates the current VM process; it does not bypass a spawning parent's
+explicit status-handling contract. No older ELF acquires this guarantee by
+updating metadata.
+
+The current policy checks do not independently prove the machine scanner's
+selector-to-adapter dataflow or common-check dominance. Direct CKB-VM tests
+exercise these runtime paths; that evidence is distinct from independent
+machine-level dispatch verification. See the
+[policy witness ABI](CELLSCRIPT_POLICY_WITNESS_ABI.md) for the bounded entry
+contract and the [implementation checklist](CELLSCRIPT_AUTHORING_IMPLEMENTATION.md)
+for outstanding completion work.
+
 The Edition 2027 `preview4` native Type Script surface may refine a legacy
 `type-group` trigger to an exact non-empty `type-group<T>` value. Its native
 Lock Script surface preserves the exact `lock-group` trigger while making role
@@ -49,9 +111,11 @@ provenance and authorization-only scope explicit. The independent checker
 validates both spellings, their recomputed entry-node hashes, complete role
 coverage, matched pooled input/output obligations, exact retirement/fresh
 records, and the non-executable classification of external-policy audits. This is an
-entry-contract distinction: equivalent native and legacy Type Script lowerings
-may share `CoreSemanticId` while intentionally having different
-`EntryContractId` values; the bounded Lock forms share both identities.
+entry-contract distinction. An ordinary absolute input/output and a native
+group-relative input/output are not equivalent bindings, even when a test
+transaction happens to place both at index zero. Equivalent ordinary authoring
+forms can share semantic identities across editions; differing physical
+bindings must not.
 
 The sidecars do not claim complete source-to-machine semantic equivalence.
 Their explicit claims are typed-record validation, `binding-verified` for the

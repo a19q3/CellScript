@@ -219,6 +219,12 @@ This makes the data source visible: `owner` comes from CKB `Script.args`, while
 turn either value into signer authority by name. Keep signature verification
 explicit; do not treat `Address` as a signature proof.
 
+This particular example is inspectable only: canonical `env::sighash_all`
+construction is deferred. Production compilation rejects
+`ckb-sighash-all-deferred`, and audit artifacts exit with runtime error 66
+instead of producing a digest. For executable authorization, use a standard
+authenticated Lock or define and verify a complete explicit message policy.
+
 ## Recipe: Pin And Spawn A BIP340 Verifier
 
 Use an explicit resolved CellDep index and bind its data hash before the VM2

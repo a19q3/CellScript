@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use blake2b_ref::Blake2bBuilder;
+use cellscript::edition::CellScriptEdition;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use time::format_description;
@@ -26,14 +27,14 @@ use crate::shared::{stable_json_compact, stable_json_pretty};
 
 const DEFAULT_SEED: u64 = 20_260_503;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 struct Expected {
     phase: String,
     #[serde(default)]
     contains: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 struct Oracle {
     action: Option<String>,
     #[serde(default)]
@@ -66,7 +67,7 @@ struct AuditCase {
     name: String,
     source: String,
     #[serde(default = "stable_edition")]
-    edition: String,
+    edition: CellScriptEdition,
     expected: Expected,
     #[serde(default)]
     oracle: Oracle,
@@ -78,8 +79,56 @@ fn generated_origin() -> String {
     "generated".to_owned()
 }
 
-fn stable_edition() -> String {
-    "2026".to_owned()
+fn stable_edition() -> CellScriptEdition {
+    CellScriptEdition::Edition2026
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CrossEditionConfig {
+    editions: Vec<CellScriptEdition>,
+}
+
+impl Default for CrossEditionConfig {
+    fn default() -> Self {
+        Self { editions: vec![stable_edition()] }
+    }
+}
+
+fn cross_edition_config(matrix: &toml::Value) -> Result<CrossEditionConfig> {
+    let config: CrossEditionConfig = matrix
+        .get("cross_edition")
+        .map(|value| value.clone().try_into())
+        .transpose()
+        .context("invalid syntax-combination cross_edition configuration")?
+        .unwrap_or_default();
+    if !config.editions.contains(&stable_edition()) {
+        bail!("cross_edition.editions must include the Edition 2026 baseline");
+    }
+    let unique = config.editions.iter().map(|edition| edition.as_str()).collect::<BTreeSet<_>>();
+    if unique.len() != config.editions.len() {
+        bail!("cross_edition.editions must not contain duplicate editions");
+    }
+    Ok(config)
+}
+
+fn expand_editions(cases: Vec<AuditCase>, config: &CrossEditionConfig) -> Result<Vec<AuditCase>> {
+    let mut expanded = Vec::new();
+    let mut identities = BTreeSet::new();
+    for case in cases {
+        // Budget counts source cases. Each selected baseline keeps the exact
+        // source and oracles in every configured edition, including rejections.
+        let editions = if case.edition == stable_edition() { config.editions.as_slice() } else { std::slice::from_ref(&case.edition) };
+        for edition in editions {
+            let mut variant = case.clone();
+            variant.edition = *edition;
+            if !identities.insert(variant.case_id()) {
+                bail!("duplicate syntax-combination case '{}' in edition {}", variant.name, variant.edition);
+            }
+            expanded.push(variant);
+        }
+    }
+    Ok(expanded)
 }
 
 impl AuditCase {
@@ -190,12 +239,10 @@ fn parse_seed(root: &Path, path: &Path) -> Result<AuditCase> {
         let value = value.trim().to_owned();
         match key.trim() {
             "edition" => {
-                if !matches!(value.as_str(), "2026" | "2027") {
-                    bail!("{} declares unsupported audit edition {value}", path.display());
-                }
-                edition = value;
+                edition = value.parse().with_context(|| format!("{} declares unsupported audit edition {value}", path.display()))?;
             }
             "phase" => expected.phase = value,
+            "action" => oracle.action = Some(value),
             "contains" => expected.contains.push(value),
             "validity_type" => oracle.validity_type = Some(value),
             "validity_tier" => oracle.validity_tiers.push(value),
@@ -443,7 +490,7 @@ fn load_cases(
             }
         }
     }
-    Ok(cases)
+    expand_editions(cases, &cross_edition_config(matrix)?)
 }
 
 fn output_matches(text: &str, needles: &[String]) -> bool {
@@ -469,6 +516,7 @@ fn failure(
     Ok(json!({
         "case": case.case_id(),
         "name": case.name,
+        "edition": case.edition,
         "origin": case.origin,
         "phase": phase,
         "code": code,
@@ -509,6 +557,16 @@ fn validate_metadata(root: &Path, case: &AuditCase, metadata_path: &Path, run_di
     }
     if metadata.pointer("/target_profile/name").and_then(Value::as_str) != Some("ckb") {
         push_failure(&mut failures, root, case, run_dir, "SCA-META-PROFILE", "metadata target_profile.name is not ckb")?;
+    }
+    if metadata.get("edition").and_then(Value::as_str) != Some(case.edition.as_str()) {
+        push_failure(
+            &mut failures,
+            root,
+            case,
+            run_dir,
+            "SCA-META-EDITION",
+            format!("metadata edition does not match the selected edition {}", case.edition),
+        )?;
     }
 
     let oracle = &case.oracle;
@@ -919,28 +977,20 @@ fn validate_metadata(root: &Path, case: &AuditCase, metadata_path: &Path, run_di
 
 fn audit_case(root: &Path, case: &AuditCase, run_dir: &Path, cellc: &Path) -> Result<(String, Vec<Value>)> {
     let case_id = case.case_id();
-    let edition_root = (case.edition == "2027").then(|| run_dir.join("edition-2027").join(&case_id));
-    let case_path = if let Some(edition_root) = &edition_root {
-        edition_root.join("case.cell")
-    } else if case.expected.phase == "reject_parse" {
-        run_dir.join("parse_reject").join(format!("{case_id}.cell"))
-    } else {
-        run_dir.join("cases").join(format!("{case_id}.cell"))
-    };
-    let fmt_path = edition_root
-        .as_ref()
-        .map_or_else(|| run_dir.join("fmt").join(format!("{case_id}.cell")), |edition_root| edition_root.join("formatted.cell"));
+    // Select both editions explicitly; neither may inherit a surrounding
+    // workspace manifest and accidentally exercise the other frontend.
+    let edition_root = run_dir.join(format!("edition-{}", case.edition)).join(&case_id);
+    let case_path = edition_root.join("case.cell");
+    let fmt_path = edition_root.join("formatted.cell");
     let asm_path = run_dir.join("asm").join(format!("{case_id}.s"));
     let meta_path = run_dir.join("meta").join(format!("{case_id}.json"));
     for parent in [case_path.parent(), fmt_path.parent(), asm_path.parent(), meta_path.parent()].into_iter().flatten() {
         fs::create_dir_all(parent)?;
     }
-    if let Some(edition_root) = &edition_root {
-        fs::write(
-            edition_root.join("Cell.toml"),
-            format!("[package]\nedition = \"{}\"\nname = \"syntax-combo-{}\"\nversion = \"0.0.0\"\n", case.edition, case_id),
-        )?;
-    }
+    fs::write(
+        edition_root.join("Cell.toml"),
+        format!("[package]\nedition = \"{}\"\nname = \"syntax-combo-{}\"\nversion = \"0.0.0\"\n", case.edition, case_id),
+    )?;
     fs::write(&case_path, &case.source)?;
     let cellc = cellc.display().to_string();
     let parse = run_cmd(root, &[cellc.clone(), "--parse".into(), case_path.display().to_string()], Duration::from_secs(20))?;
@@ -1303,9 +1353,25 @@ pub fn run(root: &Path, mode: &str, seed: u64, budget: Option<usize>, case_name:
     let mut rejected = 0_usize;
     let mut phases: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
     let mut origins: BTreeMap<String, usize> = BTreeMap::new();
+    let mut editions: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut case_results = Vec::new();
     for case in &cases {
         *origins.entry(case.origin.clone()).or_default() += 1;
-        let (status, case_failures) = audit_case(root, case, &run_dir, &cellc)?;
+        let (status, case_failures) = audit_case(root, case, &run_dir, &cellc)
+            .with_context(|| format!("syntax-combination case '{}' ({}) in edition {}", case.name, case.case_id(), case.edition))?;
+        let edition = editions.entry(case.edition.to_string()).or_insert_with(|| {
+            BTreeMap::from([("generated".into(), 0), ("accepted".into(), 0), ("rejected".into(), 0), ("failed".into(), 0)])
+        });
+        *edition.entry("generated".into()).or_default() += 1;
+        *edition.entry(status.clone()).or_default() += 1;
+        case_results.push(json!({
+            "case": case.case_id(),
+            "name": case.name,
+            "edition": case.edition,
+            "origin": case.origin,
+            "expected_phase": case.expected.phase,
+            "status": status,
+        }));
         let phase =
             phases.entry(case.expected.phase.clone()).or_insert_with(|| BTreeMap::from([("failed".into(), 0), ("passed".into(), 0)]));
         if case_failures.is_empty() {
@@ -1334,6 +1400,9 @@ pub fn run(root: &Path, mode: &str, seed: u64, budget: Option<usize>, case_name:
         "known_bug_classes": known_bug_classes,
         "phases": phases,
         "origins": origins,
+        "cross_edition": { "editions": cross_edition_config(&matrix)?.editions },
+        "editions": editions,
+        "case_results": case_results,
         "failures": failures.iter().take(10).cloned().collect::<Vec<_>>(),
     });
     let contract_failures = validate_mode_contract(mode, &matrix, &report);
@@ -1352,7 +1421,7 @@ pub fn run(root: &Path, mode: &str, seed: u64, budget: Option<usize>, case_name:
     });
     write_reports(&run_dir, &report, &failures)?;
     if !retain_intermediates {
-        for child in ["cases", "parse_reject", "fmt", "asm", "meta", "shrink"] {
+        for child in ["cases", "parse_reject", "fmt", "asm", "meta", "shrink", "edition-2026", "edition-2027"] {
             remove_directory_if_present(root, &run_dir.join(child))?;
         }
     }
@@ -1375,15 +1444,114 @@ pub fn run(root: &Path, mode: &str, seed: u64, budget: Option<usize>, case_name:
         println!("top:");
         for item in failures.iter().take(5) {
             println!(
-                "  {} {} case={} phase={}",
+                "  {} {} case={} edition={} phase={}",
                 item.get("code").and_then(Value::as_str).unwrap_or("-"),
                 item.get("summary").and_then(Value::as_str).unwrap_or("-"),
                 item.get("case").and_then(Value::as_str).unwrap_or("-"),
+                item.get("edition").and_then(Value::as_str).unwrap_or("-"),
                 item.get("phase").and_then(Value::as_str).unwrap_or("-")
             );
         }
         Ok(1)
     } else {
         Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    fn matrix() -> toml::Value {
+        fs::read_to_string(root().join("tests/syntax_combo/matrix.toml")).unwrap().parse().unwrap()
+    }
+
+    #[test]
+    fn cross_edition_config_defaults_to_baseline_and_rejects_invalid_contracts() {
+        let empty: toml::Value = "".parse().unwrap();
+        assert_eq!(cross_edition_config(&empty).unwrap().editions, [stable_edition()]);
+        for body in [
+            "editions = []",
+            "editions = [\"2027\"]",
+            "editions = [\"2026\", \"2026\"]",
+            "editions = [\"2026\", \"unknown\"]",
+            "editions = [2026]",
+            "editions = [\"2026\"]\nunknown = true",
+        ] {
+            let configured: toml::Value = format!("[cross_edition]\n{body}").parse().unwrap();
+            assert!(cross_edition_config(&configured).is_err(), "accepted invalid config: {body}");
+        }
+    }
+
+    #[test]
+    fn every_selected_baseline_case_and_seed_keeps_identical_cross_edition_oracles() {
+        let root = root();
+        let manifest = load_manifest(&root).unwrap();
+        let matrix = matrix();
+        assert_eq!(cross_edition_config(&matrix).unwrap().editions, [CellScriptEdition::Edition2026, CellScriptEdition::Edition2027]);
+        let mut baseline_matrix = matrix.clone();
+        baseline_matrix.as_table_mut().unwrap().remove("cross_edition");
+        for mode in ["quick", "ci", "deep", "repro"] {
+            // Exercise full mode selection and a budget that would split a
+            // pair if applied after cross-edition expansion.
+            for budget in [None, Some(1)] {
+                let baseline = load_cases(&root, &manifest, &baseline_matrix, mode, budget, DEFAULT_SEED).unwrap();
+                let expanded = load_cases(&root, &manifest, &matrix, mode, budget, DEFAULT_SEED).unwrap();
+                let expanded_again = load_cases(&root, &manifest, &matrix, mode, budget, DEFAULT_SEED).unwrap();
+                let baseline_count = baseline.iter().filter(|case| case.edition == stable_edition()).count();
+                assert_eq!(expanded.len(), baseline.len() + baseline_count, "mode={mode}, budget={budget:?}");
+                let ids = expanded.iter().map(AuditCase::case_id).collect::<Vec<_>>();
+                assert_eq!(ids, expanded_again.iter().map(AuditCase::case_id).collect::<Vec<_>>());
+                assert_eq!(ids.iter().collect::<BTreeSet<_>>().len(), ids.len());
+                for original in &baseline {
+                    let variants = expanded.iter().filter(|case| case.name == original.name).collect::<Vec<_>>();
+                    assert_eq!(variants.len(), if original.edition == stable_edition() { 2 } else { 1 });
+                    assert!(variants.iter().any(|case| case.case_id() == original.case_id()));
+                    for variant in variants {
+                        assert_eq!(variant.source, original.source);
+                        assert_eq!(variant.origin, original.origin);
+                        assert_eq!(variant.expected, original.expected);
+                        assert_eq!(variant.oracle, original.oracle);
+                    }
+                }
+                if budget.is_none() {
+                    for phase in ["accept", "reject_parse", "reject_compile"] {
+                        assert!(expanded
+                            .iter()
+                            .any(|case| case.edition == CellScriptEdition::Edition2027 && case.expected.phase == phase));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cross_edition_expansion_rejects_duplicate_case_identities() {
+        let manifest = load_manifest(&root()).unwrap();
+        let original = manifest.cases[0].clone();
+        let error = expand_editions(vec![original.clone(), original], &cross_edition_config(&matrix()).unwrap()).unwrap_err();
+        assert!(error.to_string().contains("duplicate syntax-combination case"));
+    }
+
+    #[test]
+    fn negative_diagnostics_still_require_every_expected_token() {
+        let needles = vec!["lifecycle".to_string(), "verification".to_string()];
+        assert!(output_matches("Lifecycle is invalid in VERIFICATION", &needles));
+        assert!(!output_matches("unsupported Edition 2027", &needles));
+        assert!(!output_matches("lifecycle rejected", &needles));
+    }
+
+    #[test]
+    fn authoring_constraint_seed_checks_the_declared_action() {
+        let root = root();
+        let case = parse_seed(&root, &root.join("tests/syntax_combo/seeds/authoring-action.cell")).unwrap();
+        assert_eq!(case.edition, CellScriptEdition::Edition2027);
+        assert_eq!(case.oracle.action.as_deref(), Some("verify"));
+        assert_eq!(case.expected.phase, "accept");
+        assert!(!case.source.contains("verification"));
     }
 }

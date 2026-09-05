@@ -1,3 +1,4 @@
+use crate::artifact::{validate_declarations, ArtifactDeclaration};
 use crate::edition::{CellScriptEdition, CURRENT_EDITION};
 use crate::error::{CompileError, Result};
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,8 @@ pub struct PackageManifest {
     pub package: PackageInfo,
     #[serde(default)]
     pub workspace: Option<WorkspaceConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ArtifactDeclaration>,
     #[serde(default)]
     pub dependencies: HashMap<String, Dependency>,
     #[serde(default)]
@@ -682,11 +685,12 @@ impl PackageManager {
 
         let content = std::fs::read_to_string(&manifest_path)?;
         let manifest: PackageManifest = toml::from_str(&content)?;
-
+        validate_declarations(&manifest.artifacts)?;
         Ok(manifest)
     }
 
     pub fn write_manifest(&self, manifest: &PackageManifest) -> Result<()> {
+        validate_declarations(&manifest.artifacts)?;
         let manifest_path = self.root.join("Cell.toml");
         let content = toml::to_string_pretty(manifest)?;
         std::fs::write(&manifest_path, content)?;
@@ -737,6 +741,7 @@ impl PackageManager {
                 exclude: vec![],
             },
             workspace: None,
+            artifacts: Vec::new(),
             dependencies: HashMap::new(),
             dev_dependencies: HashMap::new(),
             features: BTreeMap::new(),
@@ -926,6 +931,7 @@ dist/
         let manifest: PackageManifest = toml::from_str(manifest_source).map_err(|error| {
             CompileError::without_span(format!("failed to parse locked dependency manifest '{}': {}", manifest_path.display(), error))
         })?;
+        validate_declarations(&manifest.artifacts)?;
         if manifest.package.name != locked.name || manifest.package.version != locked.version {
             return Err(CompileError::without_span(format!(
                 "locked dependency '{}' manifest identity is '{}@{}', expected '{}@{}'",
@@ -1050,6 +1056,7 @@ dist/
     }
 
     fn validate_manifest_package_contract(&self, manifest: &PackageManifest) -> Result<()> {
+        validate_declarations(&manifest.artifacts)?;
         semver::Version::parse(&manifest.package.version).map_err(|error| {
             CompileError::without_span(format!(
                 "package '{}' has invalid semantic version '{}': {error}",
@@ -1680,6 +1687,7 @@ dist/
 
         let content = std::fs::read_to_string(&manifest_path)?;
         let manifest: PackageManifest = toml::from_str(&content)?;
+        validate_declarations(&manifest.artifacts)?;
         if manifest.package.name != name {
             return Err(CompileError::without_span(format!(
                 "registry package '{}/{}@{}' Cell.toml declares package name '{}'",
@@ -1743,6 +1751,7 @@ dist/
 
         let content = std::fs::read_to_string(&manifest_path)?;
         let manifest: PackageManifest = toml::from_str(&content)?;
+        validate_declarations(&manifest.artifacts)?;
         let source_hash = registry::compute_source_hash(&package_path)?;
 
         let canonical_root = canonical_path(&self.root)?;
@@ -1837,6 +1846,7 @@ dist/
 
         let content = std::fs::read_to_string(&manifest_path)?;
         let manifest: PackageManifest = toml::from_str(&content)?;
+        validate_declarations(&manifest.artifacts)?;
         let source_hash = registry::compute_source_hash(&immutable_dir)?;
 
         Ok((
@@ -3028,6 +3038,7 @@ mod tests {
                 exclude: vec![],
             },
             workspace: None,
+            artifacts: Vec::new(),
             dependencies: HashMap::new(),
             dev_dependencies: HashMap::new(),
             features: BTreeMap::new(),
@@ -3046,6 +3057,64 @@ mod tests {
         assert!(toml_str.contains("edition = \"2026\""));
         let parsed: PackageManifest = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.package.edition, CURRENT_EDITION);
+        assert!(parsed.artifacts.is_empty());
+        assert!(!toml_str.contains("artifacts"));
+    }
+
+    #[test]
+    fn policy_artifact_manifest_roundtrip_preserves_explicit_tags_and_common_order() {
+        let dir = tempdir().unwrap();
+        let manager = PackageManager::new(dir.path());
+        manager.init("policy_fixture").unwrap();
+        let mut manifest = manager.read_manifest().unwrap();
+        let declaration: ArtifactDeclaration = toml::from_str(
+            r#"
+name = "token-policy"
+context = { kind = "type-group", resource = "Token" }
+dispatch = "policy-witness-v1"
+actions = [{ tag = 40, action = "burn" }, { tag = 10, action = "mint" }]
+common_checks = ["authenticate", "audit"]
+"#,
+        )
+        .unwrap();
+        manifest.artifacts.push(declaration.clone());
+        manager.write_manifest(&manifest).unwrap();
+        let loaded = manager.read_manifest().unwrap();
+        assert_eq!(loaded.artifacts, vec![declaration]);
+        let encoded = std::fs::read_to_string(dir.path().join("Cell.toml")).unwrap();
+        assert!(encoded.contains("[[artifacts]]"));
+        assert_eq!(loaded.artifacts[0].actions[0].tag, 40);
+        assert_eq!(loaded.artifacts[0].common_checks, ["authenticate", "audit"]);
+    }
+
+    #[test]
+    fn policy_artifact_manifest_rejects_duplicate_names_tags_and_unknown_contract_fields() {
+        let dir = tempdir().unwrap();
+        let manager = PackageManager::new(dir.path());
+        manager.init("policy_fixture").unwrap();
+        let base = std::fs::read_to_string(dir.path().join("Cell.toml")).unwrap();
+        let valid = r#"
+[[artifacts]]
+name = "token-policy"
+context = { kind = "type-group", resource = "Token" }
+dispatch = "policy-witness-v1"
+actions = [{ tag = 10, action = "mint" }, { tag = 20, action = "burn" }]
+"#;
+        for (suffix, expected) in [
+            (format!("{valid}{valid}"), "declared more than once"),
+            (valid.replace("tag = 20", "tag = 10"), "repeats numeric tag"),
+            (format!("{valid}fallback = true\n"), "unknown field"),
+            (valid.replace("type-group", "lock-group"), "unknown variant"),
+            (valid.replace("policy-witness-v1", "policy-witness-v2"), "unknown variant"),
+        ] {
+            std::fs::write(dir.path().join("Cell.toml"), format!("{base}{suffix}")).unwrap();
+            let error = manager.read_manifest().unwrap_err();
+            assert!(error.message.contains(expected), "{expected}: {}", error.message);
+        }
+        let mut manifest: PackageManifest = toml::from_str(&format!("{base}{valid}")).unwrap();
+        manifest.artifacts.push(manifest.artifacts[0].clone());
+        assert!(manager.write_manifest(&manifest).unwrap_err().message.contains("declared more than once"));
+        assert!(manager.validate_manifest_package_contract(&manifest).unwrap_err().message.contains("declared more than once"));
     }
 
     #[test]

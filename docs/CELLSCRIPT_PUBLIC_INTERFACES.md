@@ -131,12 +131,18 @@ deployment evidence, and chain commitment remain separate states.
 ## Typed Semantics Relationship
 
 The public interface answers “what can a dependency rely on?” The
-`cellscript-typed-semantics-v4` record answers “what typed operations and
+`cellscript-typed-semantics-v7` record answers “what typed operations and
 control-flow facts were lowered?” Its embedded
-`cellscript-semantic-foundation-v1` additionally answers where values came
+`cellscript-semantic-foundation-v3` additionally answers where values came
 from, which transaction roles they bind, how Cells are disposed, where claims
 are enforced, and how entry/artifact contracts are identified. These remain
-distinct from the package interface hash. ELF
-builds additionally bind the typed record to the verified lowering and machine
+distinct from the package interface hash. Its fixed-Cell binding table records
+the resolved source, ordinal, local identity and Script-group membership;
+syntactic parameter sources are not physical selectors or authentication.
+An explicit policy's tagged export set and outer witness ABI are bound by its
+entry contract. The package interface hash does not by itself select or prove a
+particular deployed policy; deployment and builder consumers must retain the
+selected artifact contract as well.
+ELF builds additionally bind the typed record to the verified lowering and machine
 records described in
 [CellScript Verified Artifact Boundary](CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md).

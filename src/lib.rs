@@ -2,6 +2,7 @@
 //! Currently the backend can output RISC-V assembly or ELF artifacts.
 
 pub(crate) mod aggregate_lowering;
+pub mod artifact;
 pub mod assumptions;
 pub mod ast;
 pub mod ckb_abi;
@@ -32,6 +33,7 @@ pub mod lsp;
 pub mod optimize;
 pub mod package;
 pub mod parser;
+pub mod policy_witness;
 pub mod proof_plan;
 #[cfg(not(feature = "wasm"))]
 pub mod repl;
@@ -220,8 +222,8 @@ fn strict_capability_name(capability: ast::Capability) -> &'static str {
 
 const DEFAULT_TARGET: &str = "riscv64-asm";
 const DEFAULT_TARGET_PROFILE: &str = "ckb";
-const ARTIFACT_CACHE_VERSION: &str = "project-source-set-v20-edition-2027-preview4";
-pub const METADATA_SCHEMA_VERSION: u32 = 63;
+const ARTIFACT_CACHE_VERSION: &str = "project-source-set-v27-verifier-failure";
+pub const METADATA_SCHEMA_VERSION: u32 = 65;
 pub const SOURCE_METADATA_SCHEMA_VERSION: u32 = 2;
 pub const ARTIFACT_METADATA_SCHEMA_VERSION: u32 = 1;
 pub const CONSTRAINTS_METADATA_SCHEMA_VERSION: u32 = 3;
@@ -945,6 +947,8 @@ pub struct RuntimeMetadata {
     pub pool_primitives: Vec<PoolPrimitiveMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fungible_type_group_entry: Option<FungibleTypeGroupEntryMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_artifact: Option<artifact::PolicyArtifactMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1207,6 +1211,22 @@ pub fn validate_compile_metadata(metadata: &CompileMetadata, artifact_format: Ar
                 metadata.typed_semantics_hash, expected_typed_semantics_hash
             )));
         }
+        if metadata.runtime.policy_artifact.is_some()
+            || matches!(
+                metadata.typed_semantics.foundation.entry_contract.dispatch,
+                cellscript_artifact_checker::EntryDispatchContract::PolicyWitnessV1(_)
+            )
+        {
+            // Metadata-only consumers need the same declared-tag and builder
+            // parameter projection checks as ELF consumers. This bounded
+            // check returns no machine or deployment verification claim.
+            let projection = serde_json::json!({
+                "runtime": { "policy_artifact": &metadata.runtime.policy_artifact },
+                "actions": &metadata.actions,
+            });
+            cellscript_artifact_checker::validate_policy_metadata(&projection, &metadata.typed_semantics)
+                .map_err(|error| CompileError::without_span(format!("policy metadata projection failed: {error}")))?;
+        }
         let mut previous_generic_identity = None::<&str>;
         for instantiation in &metadata.generic_instantiations {
             if instantiation.schema != "cellscript-generic-instantiation-v1"
@@ -1249,8 +1269,18 @@ pub fn validate_compile_metadata(metadata: &CompileMetadata, artifact_format: Ar
     }
     let primitive_assurance = (metadata.compatibility_profile.primitive_assurance != "default")
         .then_some(metadata.compatibility_profile.primitive_assurance.as_str());
-    let expected_compatibility_profile =
+    let mut expected_compatibility_profile =
         resolve_compatibility_profile(metadata.edition, &metadata.target_profile.name, primitive_assurance);
+    if let Some(policy) = &metadata.runtime.policy_artifact {
+        policy.validate()?;
+        edition::set_entry_compatibility_profile(
+            &mut expected_compatibility_profile,
+            &policy.payload_abi,
+            &policy.placement_abi,
+            &policy.placement_field,
+            &policy.placement_source,
+        );
+    }
     if metadata.compatibility_profile != expected_compatibility_profile {
         return Err(CompileError::without_span(format!(
             "metadata compatibility_profile '{}' does not match the resolved compatibility axes for edition {} and target profile '{}'",
@@ -3585,6 +3615,7 @@ fn is_known_ckb_runtime_syscall(syscall: &str) -> bool {
             | "LOAD_WITNESS_ARGS_INPUT_TYPE"
             | "LOAD_WITNESS_ARGS_OUTPUT_TYPE"
             | "CKB_SIGHASH_ALL"
+            | "EXIT"
             | "CAPACITY_POLICY"
             | "CKB_BLAKE2B"
             | "SHA256"
@@ -3610,6 +3641,7 @@ fn ckb_runtime_syscall_allows_source(syscall: &str, source: &str) -> bool {
         "LOAD_INPUT_BY_FIELD" => matches!(source, "GroupInput" | "SourceView" | "Input/GroupInput"),
         "LOAD_SCRIPT" | "LOAD_SCRIPT_HASH" => source == "CurrentScript",
         "CKB_SIGHASH_ALL" => source == "GroupInput",
+        "EXIT" => source == "Process",
         "LOAD_SCRIPT_ARGS" => source == "ScriptArgs",
         "SOURCE_VIEW" => {
             matches!(source, "Input" | "Output" | "CellDep" | "HeaderDep" | "GroupInput" | "GroupOutput" | "SourceView" | "Expression")
@@ -4665,11 +4697,7 @@ impl ActionMetadata {
     /// are intentionally omitted from `args`; remaining scalar, fixed-byte, and
     /// dynamic schema parameters are encoded in source order after the `CSARGv1\0` header.
     pub fn entry_witness_args(&self, args: &[EntryWitnessArg]) -> Result<Vec<u8>> {
-        encode_entry_witness_args_for_params_with_runtime_bound(
-            &self.params,
-            args,
-            &runtime_bound_param_names(&self.consume_set, &self.read_refs, &self.mutate_set),
-        )
+        encode_entry_witness_args_for_params_with_runtime_bound(&self.params, args, &runtime_bound_param_names(&self.params))
     }
 }
 
@@ -4688,11 +4716,7 @@ impl LockMetadata {
 
     /// Encode positional entry witness bytes for the generated `_cellscript_entry` wrapper.
     pub fn entry_witness_args(&self, args: &[EntryWitnessArg]) -> Result<Vec<u8>> {
-        encode_entry_witness_args_for_params_with_runtime_bound(
-            &self.params,
-            args,
-            &runtime_bound_param_names(&self.consume_set, &self.read_refs, &self.mutate_set),
-        )
+        encode_entry_witness_args_for_params_with_runtime_bound(&self.params, args, &runtime_bound_param_names(&self.params))
     }
 }
 
@@ -4849,6 +4873,10 @@ pub fn encode_entry_witness_args_for_params(params: &[ParamMetadata], args: &[En
     encode_entry_witness_args_for_params_with_runtime_bound(params, args, &BTreeSet::new())
 }
 
+/// Encode using the authoritative ABI source fields in `params`.
+///
+/// `runtime_bound_param_names` is retained for API compatibility; a name alone
+/// cannot suppress an ordinary witness value or override its parameter ABI.
 pub fn encode_entry_witness_args_for_params_with_runtime_bound(
     params: &[ParamMetadata],
     args: &[EntryWitnessArg],
@@ -5012,29 +5040,22 @@ fn entry_witness_missing_arg_error(param: &ParamMetadata, index: usize) -> Compi
     ))
 }
 
-fn runtime_bound_param_names(
-    consume_set: &[CellPatternMetadata],
-    read_refs: &[CellPatternMetadata],
-    mutate_set: &[MutatePatternMetadata],
-) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    for pattern in consume_set {
-        names.insert(pattern.binding.clone());
-    }
-    for pattern in read_refs {
-        names.insert(pattern.binding.clone());
-    }
-    for pattern in mutate_set {
-        names.insert(pattern.binding.clone());
-    }
-    names
+fn runtime_bound_param_names(params: &[ParamMetadata]) -> BTreeSet<String> {
+    params
+        .iter()
+        .filter(|param| !param_consumes_entry_witness_payload(param, &BTreeSet::new()))
+        .map(|param| param.name.clone())
+        .collect()
 }
 
-fn param_consumes_entry_witness_payload(param: &ParamMetadata, runtime_bound_param_names: &BTreeSet<String>) -> bool {
+fn param_consumes_entry_witness_payload(param: &ParamMetadata, _runtime_bound_param_names: &BTreeSet<String>) -> bool {
+    // The legacy names argument cannot override the parameter's ABI source.
+    // Generated temporaries may share an ordinary witness parameter's name.
     !param.lock_args_data_source
         && !param.cell_bound_abi
+        && !param.is_ref
         && !param.ty.starts_with('&')
-        && !runtime_bound_param_names.contains(&param.name)
+        && param.bounded_runtime_contract.as_deref() != Some(ir::BOUNDED_TYPE_GROUP_INPUTS_V1)
 }
 
 fn entry_witness_scalar_param_width(ty: &str) -> Option<usize> {
@@ -6454,6 +6475,7 @@ action issue_two(amount: u64) -> Token {
 pub enum CompileEntryScope {
     Action(String),
     Lock(String),
+    Artifact(artifact::ArtifactDeclaration),
     FungibleTypeGroupV1,
     FungibleTypeGroupV1For(String),
 }
@@ -6577,19 +6599,12 @@ pub(crate) fn proof_plan_has_blocking_consensus_gap(plan: &ProofPlanMetadata) ->
     true
 }
 
-fn compile_ast_with_build(
+fn prepare_compile_ir(
     ast: &ast::Module,
     options: &CompileOptions,
     resolver: Option<(&ModuleResolver, &str)>,
-    build: Option<&BuildConfig>,
     entry_scope: Option<&CompileEntryScope>,
-    executable_surface_policy: ExecutableSurfacePolicy,
-) -> Result<CompileResult> {
-    validate_compile_options(options)?;
-    let target_profile = TargetProfile::from_options(options, build)?;
-    target_profile.ensure_compile_supported()?;
-    let artifact_format = ArtifactFormat::from_target(resolve_target(options, build))?;
-
+) -> Result<(Option<ast::Module>, ir::IrModule)> {
     // 2.5. Primitive compat/strict mode: reject v0.14 protocol verbs in strict mode
     if options.is_primitive_strict_015() {
         check_primitive_strict_015(ast)?;
@@ -6624,12 +6639,29 @@ fn compile_ast_with_build(
     } else {
         ir::generate(lowering_ast)?
     };
-    let scoped_ir = match entry_scope {
-        Some(scope) => Some(scope_ir_to_entry(&ir, scope)?),
-        None => None,
+    let ir = match entry_scope {
+        Some(scope) => scope_ir_to_entry(&ir, scope)?,
+        None => ir,
     };
-    let ir = scoped_ir.as_ref().unwrap_or(&ir);
-    executable_surface::validate_ir_module(ir)?;
+    executable_surface::validate_ir_module(&ir)?;
+    Ok((optimized_ast, ir))
+}
+
+fn compile_ast_with_build(
+    ast: &ast::Module,
+    options: &CompileOptions,
+    resolver: Option<(&ModuleResolver, &str)>,
+    build: Option<&BuildConfig>,
+    entry_scope: Option<&CompileEntryScope>,
+    executable_surface_policy: ExecutableSurfacePolicy,
+) -> Result<CompileResult> {
+    validate_compile_options(options)?;
+    let target_profile = TargetProfile::from_options(options, build)?;
+    target_profile.ensure_compile_supported()?;
+    let artifact_format = ArtifactFormat::from_target(resolve_target(options, build))?;
+    let (optimized_ast, ir) = prepare_compile_ir(ast, options, resolver, entry_scope)?;
+    let lowering_ast = optimized_ast.as_ref().unwrap_or(ast);
+    let ir = &ir;
 
     let mut metadata =
         compile_metadata_from_ir(ir, artifact_format, target_profile, options.edition, options.primitive_compat.as_deref());
@@ -6820,6 +6852,31 @@ pub fn compile_path_with_executable_surface_policy<P: AsRef<Utf8Path>>(
 ) -> Result<CompileResult> {
     let resolved = resolve_input_path(path)?;
     compile_file_with_entry_scope(&resolved, options, entry_scope, policy)
+}
+
+/// Select one explicit declaration from the entry package's `[[artifacts]]`.
+pub fn compile_path_with_artifact_name<P: AsRef<Utf8Path>>(
+    path: P,
+    options: CompileOptions,
+    name: &str,
+    policy: ExecutableSurfacePolicy,
+) -> Result<CompileResult> {
+    let resolved = resolve_input_path(path)?;
+    let declaration = resolve_named_artifact(&resolved, name)?;
+    compile_file_with_entry_scope(&resolved, options, Some(CompileEntryScope::Artifact(declaration)), policy)
+}
+
+fn resolve_named_artifact(path: &Utf8Path, name: &str) -> Result<artifact::ArtifactDeclaration> {
+    let package_root =
+        find_package_root(path)?.ok_or_else(|| CompileError::without_span("--artifact requires a package Cell.toml declaration"))?;
+    let manifest = load_manifest(&package_root)?;
+    artifact::validate_declarations(&manifest.artifacts)?;
+    let declaration = manifest
+        .artifacts
+        .iter()
+        .find(|declaration| declaration.name == name)
+        .ok_or_else(|| CompileError::without_span(format!("artifact '{name}' is not declared in Cell.toml")))?;
+    Ok(declaration.clone())
 }
 
 fn compile_file_with_entry_scope<P: AsRef<Utf8Path>>(
@@ -7358,6 +7415,7 @@ pub fn resolve_workspace_members(workspace_root: &Utf8Path) -> Result<Vec<Utf8Pa
     let member_patterns = if manifest_has_table(&manifest_path, "package")? {
         let manifest: PackageManifest = toml::from_str(&manifest_source)
             .map_err(|e| CompileError::new(format!("failed to parse manifest '{}': {}", manifest_path, e), error::Span::default()))?;
+        artifact::validate_declarations(&manifest.artifacts)?;
         manifest.workspace.map(|workspace| workspace.members).unwrap_or_default()
     } else {
         let manifest: WorkspaceManifest = toml::from_str(&manifest_source).map_err(|e| {
@@ -7778,6 +7836,7 @@ fn compile_metadata_from_ir(
             transaction_runtime_input_requirements,
             pool_primitives,
             fungible_type_group_entry: fungible_type_group_entry_metadata(ir),
+            policy_artifact: None,
         },
         constraints: ConstraintsMetadata::default(),
         molecule_schema_manifest,
@@ -8079,6 +8138,7 @@ fn compile_metadata_from_ir(
             .collect(),
         debug_info_sections: Vec::new(),
     };
+    artifact::bind_policy_metadata(&mut metadata, ir).expect("validated IR entry has canonical policy metadata");
     metadata.runtime.builder_assumptions = crate::assumptions::builder_assumptions_from_metadata(&metadata);
     metadata.runtime.proof_plan_soundness = crate::proof_plan::soundness::check_metadata(&metadata, false);
     metadata
@@ -8262,6 +8322,7 @@ fn scope_ir_to_fungible_type_group_v1(ir: &ir::IrModule, selected_type: Option<&
         state_transition_edges: Vec::new(),
         protocol_role_candidates: Vec::new(),
         body: ir::IrBody {
+            cell_bindings: Vec::new(),
             consume_set: Vec::new(),
             read_refs: Vec::new(),
             create_set: Vec::new(),
@@ -8295,6 +8356,7 @@ fn scope_ir_to_fungible_type_group_v1(ir: &ir::IrModule, selected_type: Option<&
     Ok(ir::IrModule {
         name: ir.name.clone(),
         items,
+        entry_selection: ir::IrEntrySelection::Action(FUNGIBLE_TYPE_GROUP_V1_ENTRY_ACTION.to_string()),
         external_type_defs: ir.external_type_defs.iter().filter(|type_def| type_def.name == candidate.type_name).cloned().collect(),
         external_callable_abis: Vec::new(),
         enum_fixed_sizes: HashMap::new(),
@@ -8304,6 +8366,7 @@ fn scope_ir_to_fungible_type_group_v1(ir: &ir::IrModule, selected_type: Option<&
 
 fn scope_ir_to_entry(ir: &ir::IrModule, scope: &CompileEntryScope) -> Result<ir::IrModule> {
     match scope {
+        CompileEntryScope::Artifact(declaration) => return artifact::scope_ir_to_artifact(ir, declaration),
         CompileEntryScope::FungibleTypeGroupV1 => return scope_ir_to_fungible_type_group_v1(ir, None),
         CompileEntryScope::FungibleTypeGroupV1For(type_name) => {
             return scope_ir_to_fungible_type_group_v1(ir, Some(type_name));
@@ -8322,6 +8385,7 @@ fn scope_ir_to_entry(ir: &ir::IrModule, scope: &CompileEntryScope) -> Result<ir:
         })
         .cloned()
         .ok_or_else(|| match scope {
+            CompileEntryScope::Artifact(_) => CompileError::without_span("policy entry unexpectedly reached single-entry lookup"),
             CompileEntryScope::Action(name) => CompileError::without_span(format!("entry action '{}' was not found", name)),
             CompileEntryScope::Lock(name) => CompileError::without_span(format!("entry lock '{}' was not found", name)),
             CompileEntryScope::FungibleTypeGroupV1 => {
@@ -8440,6 +8504,14 @@ fn scope_ir_to_entry(ir: &ir::IrModule, scope: &CompileEntryScope) -> Result<ir:
     Ok(ir::IrModule {
         name: ir.name.clone(),
         items,
+        entry_selection: match scope {
+            CompileEntryScope::Action(name) => ir::IrEntrySelection::Action(name.clone()),
+            CompileEntryScope::Lock(name) => ir::IrEntrySelection::Lock(name.clone()),
+            CompileEntryScope::Artifact(_) => unreachable!("policy entry scopes are handled before single-entry lookup"),
+            CompileEntryScope::FungibleTypeGroupV1 | CompileEntryScope::FungibleTypeGroupV1For(_) => {
+                unreachable!("fungible entry scopes are handled before ordinary entry lookup")
+            }
+        },
         external_type_defs: ir.external_type_defs.iter().filter(|type_def| used_types.contains(&type_def.name)).cloned().collect(),
         external_callable_abis: ir
             .external_callable_abis
@@ -14716,6 +14788,10 @@ fn body_fail_closed_runtime_features(
     for block in &body.blocks {
         for instruction in &block.instructions {
             match instruction {
+                ir::IrInstruction::Call { func, .. } if ir::IrDeferredRuntimeFeature::from_helper(func).is_some() => {
+                    let deferred = ir::IrDeferredRuntimeFeature::from_helper(func).expect("guarded deferred runtime feature");
+                    features.insert(deferred.feature().to_string());
+                }
                 ir::IrInstruction::FieldAccess { obj, field, .. } => {
                     if !is_executable_schema_field_access(obj, field, param_schema_vars, type_layouts)
                         && !is_executable_aggregate_field_access(obj, field, &prelude_availability, type_layouts)
@@ -16598,7 +16674,7 @@ fn body_ckb_runtime_features(
                     features.insert("ckb-witness-args".to_string());
                 }
                 ir::IrInstruction::Call { func, .. } if func == "__ckb_sighash_all" => {
-                    features.insert("ckb-sighash-all".to_string());
+                    features.insert(ir::IrDeferredRuntimeFeature::CkbSighashAll.feature().to_string());
                 }
                 ir::IrInstruction::Call { func, .. } if func == "__ckb_require_witness_size_at_least" => {
                     features.insert("ckb-witness-args".to_string());
@@ -17324,7 +17400,7 @@ fn ckb_v014_runtime_access(func: &str) -> Option<(&'static str, &'static str, &'
         "__ckb_require_witness_size_at_least" => {
             Some(("require-witness-size-at-least", "LOAD_WITNESS", "Witness", "ckb::require_witness_size_at_least"))
         }
-        "__ckb_sighash_all" => Some(("sighash-all", "CKB_SIGHASH_ALL", "GroupInput", "env::sighash_all")),
+        "__ckb_sighash_all" => Some(("sighash-all-deferred", "EXIT", "Process", "env::sighash_all")),
         "__ckb_require_maturity" => Some(("require-maturity", "LOAD_INPUT_BY_FIELD", "GroupInput", "require_maturity")),
         "__ckb_require_time" => Some(("require-time", "LOAD_INPUT_BY_FIELD", "GroupInput", "require_time")),
         "__ckb_require_epoch_after" => Some(("require-epoch-after", "LOAD_INPUT_BY_FIELD", "GroupInput", "require_epoch_after")),
@@ -18776,7 +18852,11 @@ fn param_metadata_for_body(
                 .iter()
                 .find(|operation| operation.collection_binding == param.name)
                 .and_then(|operation| operation.runtime_contract.clone());
-            param_metadata(param, &type_hash_param_ids, cell_type_kinds, enum_layouts, bounded_runtime_contract)
+            let mut metadata = param_metadata(param, &type_hash_param_ids, cell_type_kinds, enum_layouts, bounded_runtime_contract);
+            // Physical binding is authoritative even for read-only plain
+            // structs, which are not Cell-backed by their declaration kind.
+            metadata.cell_bound_abi |= body.cell_binding_for_local(param.binding.id).is_some();
+            metadata
         })
         .collect()
 }
@@ -19302,8 +19382,10 @@ fn load_manifest(package_root: &Utf8Path) -> Result<PackageManifest> {
             .with_file(manifest_path.clone())
             .with_source(e)
     })?;
-    toml::from_str(&manifest_source)
-        .map_err(|e| CompileError::new(format!("failed to parse manifest '{}': {}", manifest_path, e), error::Span::default()))
+    let manifest: PackageManifest = toml::from_str(&manifest_source)
+        .map_err(|e| CompileError::new(format!("failed to parse manifest '{}': {}", manifest_path, e), error::Span::default()))?;
+    artifact::validate_declarations(&manifest.artifacts)?;
+    Ok(manifest)
 }
 
 fn manifest_has_table(manifest_path: &Utf8Path, table: &str) -> Result<bool> {
@@ -27373,14 +27455,17 @@ action verify() -> u64 {
 "#;
 
         let mut trap_counts = Vec::new();
-        for opt_level in [0, 1] {
+        for opt_level in [0, 1, 2, 3] {
             let result = compile(source, CompileOptions { opt_level, ..CompileOptions::default() }).unwrap();
             let asm = String::from_utf8(result.artifact_bytes).unwrap();
-            let trap_count = asm.matches("# cellscript runtime error 49 aggregate-amount-mismatch").count();
+            // Fatal handlers are shared now. Count the retained overflow paths,
+            // not repeated copies of the same numeric-error constant.
+            let trap_count = asm.matches("j .Lverify_fail_49").count();
             assert!(trap_count >= 3, "-O{opt_level} must retain all three checked u128 overflow paths:\n{asm}");
+            assert!(asm.contains("li a0, 49\n    j __cellscript_abort"));
             trap_counts.push(trap_count);
         }
-        assert_eq!(trap_counts[0], trap_counts[1], "optimization must not erase checked u128 overflow traps");
+        assert!(trap_counts.iter().all(|count| *count == trap_counts[0]), "optimization must not erase checked u128 overflow traps");
     }
 
     #[test]

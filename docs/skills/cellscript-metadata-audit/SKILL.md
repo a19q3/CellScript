@@ -7,6 +7,7 @@ references:
   - docs/wiki/Tutorial-14-Verified-Artifacts-and-Executable-Tests.md
   - docs/CELLSCRIPT_GATE_POLICY.md
   - docs/CELLSCRIPT_VERIFIED_ARTIFACT_BOUNDARY.md
+  - docs/CELLSCRIPT_POLICY_WITNESS_ABI.md
 commands:
   - cellc metadata
   - cellc expand
@@ -25,10 +26,10 @@ constraints, ABI, and builder assumptions explain what the compiler emitted and
 what remains to be checked by builders or CKB nodes.
 
 For the 0.26 development line's experimental `0.26b` branch, inspect the
-current metadata schema 63 under Edition 2026 or the separately routed Edition
+current metadata schema 65 under Edition 2026 or the separately routed Edition
 2027 preview and the resolved
-compatibility profile, together with typed-semantics v4, semantic-foundation
-v1, lowering-record v5, and source-map v2 for CKB ELF builds. Use
+compatibility profile, together with typed-semantics v7, semantic-foundation
+v3, lowering-record v6, and source-map v2 for CKB ELF builds. Use
 `cellc expand` for the deterministic diagnostic rendering; do not hash that
 rendering or treat it as a source-equivalence proof. Typed transaction views, bounded
 quantifiers/collections, capability proofs, enum layouts, validity predicates,
@@ -43,6 +44,18 @@ semantic foundation's `entry-condition` claim together with its
 condition provenance node, ordered typed success/failure blocks, and exact
 fail-closed runtime error. Keep supporting `proof-plan:<name>` claims separate;
 neither claim kind is a complete source-equivalence proof.
+
+For `current-vm-process-exit-v1`, distinguish terminal `verifier_failure_exits`
+from diagnostic runtime statuses and ordinary callable values. The checker
+binds static error loads to an exact non-returning machine sink and rejects
+interior jump targets. It does not prove every implicit guard or arbitrary
+dynamic-status dataflow merely because the terminal sites validate.
+
+For a selected persistent Type policy, inspect the canonical tag map, full
+Script-hash selector, ordered common checks, group roles and parameter codec
+projection together. Consult `docs/CELLSCRIPT_POLICY_WITNESS_ABI.md` for the
+outer witness contract. These structural records do not prove machine dispatch
+dataflow, a deployed Script identity, or transaction authorization by themselves.
 
 Distinguish evidence states precisely: compile-only, metadata-only,
 runtime-required, helper-backed, builder-backed, node dry-run, tx-pool accepted,

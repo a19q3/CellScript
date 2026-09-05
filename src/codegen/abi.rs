@@ -1,5 +1,112 @@
 use super::*;
 
+/// Physical entry sources projected from the same layout rules as the wrapper.
+/// Witness ordinals count encoded, nonempty values, not optional host-side Unit
+/// placeholders accepted by the convenience encoder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(not(feature = "wasm"))]
+pub(crate) enum EntryParamAbiSource {
+    RuntimeBound,
+    Witness { ordinal: usize },
+    ScriptArgs { byte_range: Option<(usize, usize)> },
+    Unit,
+    Unsupported,
+}
+
+pub(super) fn param_is_runtime_bound(param: &IrParam, cell_types: &BTreeSet<String>) -> bool {
+    param.source == ParamSource::LockArgs || param.is_ref || named_type_name(&param.ty).is_some_and(|name| cell_types.contains(name))
+}
+
+pub(super) fn entry_abi_parameter_indices(
+    params: &[IrParam],
+    body: &IrBody,
+    cell_types: &BTreeSet<String>,
+) -> (BTreeSet<usize>, BTreeSet<usize>) {
+    let mut runtime_bound = params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| param_is_runtime_bound(param, cell_types).then_some(index))
+        .collect::<BTreeSet<_>>();
+    let mut bounded_plans = BTreeSet::new();
+    for (index, param) in params.iter().enumerate() {
+        if body.cell_binding_for_local(param.binding.id).is_some() {
+            runtime_bound.insert(index);
+        }
+    }
+    for operation in &body.bounded_collection_ops {
+        if operation.operation == "consume_each"
+            && operation.runtime_contract.as_deref() == Some(crate::ir::BOUNDED_TYPE_GROUP_INPUTS_V1)
+            && let Some(param) = params.iter().position(|param| param.name == operation.collection_binding)
+        {
+            runtime_bound.insert(param);
+        }
+        if operation.operation == "create_each"
+            && operation.runtime_contract.as_deref() == Some(crate::ir::BOUNDED_OUTPUT_PLAN_V1)
+            && let Some(param) = params.iter().position(|param| param.name == operation.collection_binding)
+        {
+            bounded_plans.insert(param);
+        }
+    }
+    (runtime_bound, bounded_plans)
+}
+
+struct LockArgsParamLayout {
+    width: usize,
+    pointer: bool,
+}
+
+fn lock_args_param_layout(ty: &IrType, enum_layouts: &HashMap<String, IrEnumLayout>) -> Option<LockArgsParamLayout> {
+    let enum_width = match ty {
+        IrType::Named(name) => enum_layouts.get(name).filter(|layout| layout.has_payload()).map(|layout| layout.encoded_size),
+        _ => None,
+    };
+    let fixed_byte_width =
+        enum_width.or_else(|| fixed_byte_pointer_param_width(ty).or_else(|| fixed_aggregate_pointer_param_width(ty)));
+    let width = fixed_byte_width.or_else(|| entry_witness_register_param_width(ty))?;
+    Some(LockArgsParamLayout { width, pointer: fixed_byte_width.is_some() })
+}
+
+#[cfg(not(feature = "wasm"))]
+pub(crate) fn entry_param_abi_sources(
+    params: &[IrParam],
+    body: &IrBody,
+    cell_types: &BTreeSet<String>,
+    enum_layouts: &HashMap<String, IrEnumLayout>,
+) -> Vec<EntryParamAbiSource> {
+    let (runtime_bound, bounded_plans) = entry_abi_parameter_indices(params, body, cell_types);
+    let payload = entry_witness_payload_layout(params, &runtime_bound, &bounded_plans, enum_layouts);
+    let mut script_offset = Some(0usize);
+    let mut witness_ordinal = 0usize;
+    params
+        .iter()
+        .enumerate()
+        .map(|(index, param)| {
+            if param.source == ParamSource::LockArgs {
+                let layout = lock_args_param_layout(&param.ty, enum_layouts);
+                let range = script_offset
+                    .zip(layout.as_ref())
+                    .and_then(|(start, layout)| start.checked_add(layout.width).map(|end| (start, end)));
+                script_offset = range.map(|(_, end)| end);
+                if layout.as_ref().is_some_and(|layout| layout.width == 0) && range.is_some() {
+                    EntryParamAbiSource::Unit
+                } else {
+                    EntryParamAbiSource::ScriptArgs { byte_range: range }
+                }
+            } else if !entry_param_consumes_witness_payload(param, index, &runtime_bound) {
+                EntryParamAbiSource::RuntimeBound
+            } else if payload[index].unsupported {
+                EntryParamAbiSource::Unsupported
+            } else if payload[index].width == 0 {
+                EntryParamAbiSource::Unit
+            } else {
+                let ordinal = witness_ordinal;
+                witness_ordinal += 1;
+                EntryParamAbiSource::Witness { ordinal }
+            }
+        })
+        .collect()
+}
+
 impl CodeGenerator {
     pub(super) fn emit_entry_abi_marker(&mut self, name: &str) {
         self.assembly.push(format!("# cellscript entry abi: {} requires-explicit-parameter-abi", name));
@@ -13,7 +120,20 @@ impl CodeGenerator {
     }
 
     pub(super) fn emit_entry_witness_wrapper(&mut self, target: &str, params: &[IrParam]) -> Result<()> {
-        self.entry_frame_sizes.insert(ENTRY_WITNESS_LABEL.to_string(), ENTRY_WITNESS_FRAME_SIZE as u32);
+        self.emit_entry_parameter_wrapper(target, params, None)
+    }
+
+    /// Policy dispatch has already validated the complete WitnessArgs and
+    /// selected a canonical record. Its private adapter receives a0=raw args
+    /// pointer, a1=length and reuses the positional decoder without reloading a
+    /// witness. A payload-free variant requires exactly zero argument bytes.
+    pub(super) fn emit_policy_action_adapter(&mut self, target: &str, params: &[IrParam], label: &str) -> Result<()> {
+        self.emit_entry_parameter_wrapper(target, params, Some(label))
+    }
+
+    fn emit_entry_parameter_wrapper(&mut self, target: &str, params: &[IrParam], policy_record_label: Option<&str>) -> Result<()> {
+        let wrapper_label = policy_record_label.unwrap_or(ENTRY_WITNESS_LABEL);
+        self.entry_frame_sizes.insert(wrapper_label.to_string(), ENTRY_WITNESS_FRAME_SIZE as u32);
         let callable_abi = self.callable_abis.get(target).cloned();
         let type_hash_param_indices = callable_abi.as_ref().map(|abi| abi.type_hash_param_indices.clone()).unwrap_or_default();
         let runtime_bound_param_indices = callable_abi.as_ref().map(|abi| abi.runtime_bound_param_indices.clone()).unwrap_or_default();
@@ -39,13 +159,17 @@ impl CodeGenerator {
         let bounded_collection_fail_label = self.fresh_label("entry_bounded_collection_fail");
         let done_label = self.fresh_label("entry_witness_done");
 
-        self.emit_global(ENTRY_WITNESS_LABEL);
-        self.emit_label(ENTRY_WITNESS_LABEL);
-        self.emit(format!(
-            "# cellscript entry abi: {} loads GroupInput#0 witness args for {} and falls back to GroupOutput#0",
-            ENTRY_WITNESS_LABEL, target
-        ));
-        self.emit("# cellscript entry abi: placement profile requires CSARGv1 inside WitnessArgs.input_type");
+        self.emit_global(wrapper_label);
+        self.emit_label(wrapper_label);
+        if policy_record_label.is_some() {
+            self.emit(format!("# cellscript policy adapter: {wrapper_label} decodes preloaded record args for {target}"));
+        } else {
+            self.emit(format!(
+                "# cellscript entry abi: {} loads GroupInput#0 witness args for {} and falls back to GroupOutput#0",
+                ENTRY_WITNESS_LABEL, target
+            ));
+            self.emit("# cellscript entry abi: placement profile requires CSARGv1 inside WitnessArgs.input_type");
+        }
         self.emit_large_addi("sp", "sp", -(ENTRY_WITNESS_FRAME_SIZE as i64));
         self.emit_stack_store("ra", ENTRY_WITNESS_RA_OFFSET);
         if has_unsupported_bounded_collection_param {
@@ -54,42 +178,62 @@ impl CodeGenerator {
             );
             self.emit(format!("j {}", bounded_collection_fail_label));
         }
+        if policy_record_label.is_some() {
+            self.emit_policy_preload_entry_args(has_witness_payload, &fail_label);
+        }
         if has_lock_args {
             self.emit_entry_load_script_args(&fail_label);
         }
         if has_witness_payload {
-            self.emit_load_witness_syscall_to_offsets(
-                "entry_args",
-                CKB_SOURCE_GROUP_INPUT,
-                0,
-                ENTRY_WITNESS_SIZE_OFFSET,
-                ENTRY_WITNESS_BUFFER_OFFSET,
-                ENTRY_WITNESS_BUFFER_SIZE,
-            );
-            self.emit(format!("beqz a0, {}", loaded_label));
-            self.emit(format!("j {}", try_group_output_label));
-            self.emit_label(&try_group_output_label);
-            self.emit_load_witness_syscall_to_offsets(
-                "entry_args_fallback_group_output",
-                CKB_SOURCE_GROUP_OUTPUT,
-                0,
-                ENTRY_WITNESS_SIZE_OFFSET,
-                ENTRY_WITNESS_BUFFER_OFFSET,
-                ENTRY_WITNESS_BUFFER_SIZE,
-            );
-            self.emit(format!("beqz a0, {}", loaded_label));
-            self.emit(format!("j {}", fail_label));
-            self.emit_label(&loaded_label);
+            if policy_record_label.is_none() {
+                self.emit_load_witness_syscall_to_offsets(
+                    "entry_args",
+                    CKB_SOURCE_GROUP_INPUT,
+                    0,
+                    ENTRY_WITNESS_SIZE_OFFSET,
+                    ENTRY_WITNESS_BUFFER_OFFSET,
+                    ENTRY_WITNESS_BUFFER_SIZE,
+                );
+                self.emit(format!("beqz a0, {}", loaded_label));
+                // A missing witness is not evidence that the input group is empty:
+                // GroupInput#0 may map to a transaction input past witnesses.len().
+                // Probe the mandatory capacity field before allowing output-only
+                // placement. No decoded arguments are live in this buffer yet.
+                self.emit_load_cell_by_field_syscall_to_offsets(
+                    "entry_args_input_group_presence",
+                    CKB_SOURCE_GROUP_INPUT,
+                    0,
+                    CKB_CELL_FIELD_CAPACITY,
+                    ENTRY_WITNESS_SIZE_OFFSET,
+                    ENTRY_WITNESS_BUFFER_OFFSET,
+                    8,
+                );
+                self.emit(format!("li t0, {}", CKB_INDEX_OUT_OF_BOUND));
+                self.emit(format!("beq a0, t0, {}", try_group_output_label));
+                self.emit(format!("j {}", fail_label));
+                self.emit_label(&try_group_output_label);
+                self.emit_load_witness_syscall_to_offsets(
+                    "entry_args_fallback_group_output",
+                    CKB_SOURCE_GROUP_OUTPUT,
+                    0,
+                    ENTRY_WITNESS_SIZE_OFFSET,
+                    ENTRY_WITNESS_BUFFER_OFFSET,
+                    ENTRY_WITNESS_BUFFER_SIZE,
+                );
+                self.emit(format!("beqz a0, {}", loaded_label));
+                self.emit(format!("j {}", fail_label));
+                self.emit_label(&loaded_label);
 
-            self.emit_stack_load("t0", ENTRY_WITNESS_SIZE_OFFSET);
-            self.emit("# cellscript entry abi: reject witnesses larger than the local entry buffer");
-            self.emit(format!("li t1, {}", ENTRY_WITNESS_BUFFER_SIZE + 1));
-            self.emit("sltu t2, t0, t1");
-            self.emit(format!("bnez t2, {}", buffer_ok_label));
-            self.emit(format!("j {}", fail_label));
-            self.emit_label(&buffer_ok_label);
+                self.emit_stack_load("t0", ENTRY_WITNESS_SIZE_OFFSET);
+                self.emit("# cellscript entry abi: reject witnesses larger than the local entry buffer");
+                self.emit(format!("li t1, {}", ENTRY_WITNESS_BUFFER_SIZE + 1));
+                self.emit("sltu t2, t0, t1");
+                self.emit(format!("bnez t2, {}", buffer_ok_label));
+                self.emit(format!("j {}", fail_label));
+                self.emit_label(&buffer_ok_label);
 
-            self.emit_entry_normalize_witness_args_input_type_v2(&fail_label);
+                self.emit_entry_normalize_witness_args_input_type_v2(&fail_label);
+            }
 
             self.emit_stack_load("t0", ENTRY_WITNESS_SIZE_OFFSET);
             self.emit(format!("li t1, {}", min_witness_len));
@@ -352,18 +496,45 @@ impl CodeGenerator {
 
         if has_unsupported_bounded_collection_param {
             self.emit_label(&bounded_collection_fail_label);
-            self.emit_runtime_error_comment(CellScriptRuntimeError::CollectionRuntimeUnsupported);
-            self.emit(format!("li a0, {}", CellScriptRuntimeError::CollectionRuntimeUnsupported.code()));
-            self.emit(format!("j {}", done_label));
+            self.emit_process_failure(CellScriptRuntimeError::CollectionRuntimeUnsupported);
         }
         self.emit_label(&fail_label);
-        self.emit_runtime_error_comment(CellScriptRuntimeError::EntryWitnessAbiInvalid);
-        self.emit(format!("li a0, {}", CellScriptRuntimeError::EntryWitnessAbiInvalid.code()));
+        self.emit_process_failure(CellScriptRuntimeError::EntryWitnessAbiInvalid);
         self.emit_label(&done_label);
         self.emit_stack_load("ra", ENTRY_WITNESS_RA_OFFSET);
         self.emit_large_addi("sp", "sp", ENTRY_WITNESS_FRAME_SIZE as i64);
         self.emit("ret");
         Ok(())
+    }
+
+    /// Copy caller-owned selected-record bytes before any syscall or positional
+    /// argument decoding can clobber a0/a1. The fixed child frame does not overlap
+    /// the parent policy frame. Only a0/a1 and t0..t4 are read or overwritten;
+    /// no outgoing ABI parameters are live yet.
+    fn emit_policy_preload_entry_args(&mut self, has_witness_payload: bool, fail: &str) {
+        if !has_witness_payload {
+            self.emit("# cellscript policy adapter: payload-free variants require exactly empty args");
+            self.emit(format!("bnez a1, {fail}"));
+            self.emit_stack_store("zero", ENTRY_WITNESS_SIZE_OFFSET);
+            return;
+        }
+        let copy = self.fresh_label("policy_args_copy");
+        let copied = self.fresh_label("policy_args_copied");
+        self.emit(format!("li t0, {ENTRY_WITNESS_BUFFER_SIZE}"));
+        self.emit(format!("bltu t0, a1, {fail}"));
+        self.emit_stack_store("a1", ENTRY_WITNESS_SIZE_OFFSET);
+        self.emit("addi t0, a0, 0");
+        self.emit_sp_addi("t1", ENTRY_WITNESS_BUFFER_OFFSET);
+        self.emit("li t2, 0");
+        self.emit_label(&copy);
+        self.emit(format!("bgeu t2, a1, {copied}"));
+        self.emit("add t3, t0, t2");
+        self.emit("lbu t4, 0(t3)");
+        self.emit("add t3, t1, t2");
+        self.emit("sb t4, 0(t3)");
+        self.emit("addi t2, t2, 1");
+        self.emit(format!("j {copy}"));
+        self.emit_label(&copied);
     }
 
     /// Normalize the selected entry placement ABI into the payload buffer
@@ -662,11 +833,7 @@ impl CodeGenerator {
         outgoing_stack_arg_bytes: usize,
         fail_label: &str,
     ) {
-        let fixed_byte_width = self
-            .payload_enum_width(&param.ty)
-            .or_else(|| fixed_byte_pointer_param_width(&param.ty).or_else(|| fixed_aggregate_pointer_param_width(&param.ty)));
-        let scalar_width = entry_witness_register_param_width(&param.ty);
-        let Some(width) = fixed_byte_width.or(scalar_width) else {
+        let Some(LockArgsParamLayout { width, pointer }) = lock_args_param_layout(&param.ty, &self.enum_layouts) else {
             self.emit(format!("# cellscript entry abi: unsupported lock_args param {} shape; fail closed", param.name));
             self.emit(format!("j {}", fail_label));
             return;
@@ -687,7 +854,7 @@ impl CodeGenerator {
         self.emit_sp_addi("t0", ENTRY_SCRIPT_BUFFER_OFFSET);
         self.emit("add t0, t0, t4");
 
-        if fixed_byte_width.is_some() {
+        if pointer {
             self.emit_entry_abi_reg_arg(*abi_index, "t0", outgoing_stack_arg_bytes);
             self.emit_entry_abi_immediate_arg(*abi_index + 1, width as u64, outgoing_stack_arg_bytes);
             *abi_index += 2;
