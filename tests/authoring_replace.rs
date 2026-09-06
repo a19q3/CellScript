@@ -188,17 +188,22 @@ fn exact_lock_relation_executes_and_rejects_in_the_real_vm() {
         let mut fixture = transfer_fixture(amount, output_amount);
         fixture.witnesses = vec![fixture_witness];
         let execution = execute_cellscript_script(strip_vm_abi_trailer(&result.artifact_bytes), &fixture);
-        (execution.exit_code, execution.captured_debug.clone())
+        (execution.exit_code, execution.captured_debug.clone(), execution.cycles)
     };
 
     let witness = transfer_witness(&result, recipient);
-    let (exit, debug) = run(witness.clone(), 7, 7);
+    let (exit, debug, cycles) = run(witness.clone(), 7, 7);
     assert_eq!(exit, 0, "preserving transfer must pass: {debug:?}");
+    // Regression budget: the compact layout and single-instruction small
+    // immediates brought this fixture from 10,772 down to 8,573 cycles.
+    // Headroom guards against accidental codegen regressions without
+    // pinning the exact optimization.
+    assert!(cycles <= 9_500, "relation transfer cycles regressed past budget: {cycles}");
 
-    let (exit, _) = run(witness.clone(), 0, 0);
+    let (exit, _, _) = run(witness.clone(), 0, 0);
     assert_ne!(exit, 0, "amount guard must reject zero");
 
-    let (exit, _) = run(witness.clone(), 7, 8);
+    let (exit, _, _) = run(witness.clone(), 7, 8);
     assert_ne!(exit, 0, "mutated successor data must reject");
 
     let wrong_recipient = {
@@ -206,7 +211,7 @@ fn exact_lock_relation_executes_and_rejects_in_the_real_vm() {
         hash[0] ^= 0xff;
         hash
     };
-    let (exit, _) = run(transfer_witness(&result, wrong_recipient), 7, 7);
+    let (exit, _, _) = run(transfer_witness(&result, wrong_recipient), 7, 7);
     assert_ne!(exit, 0, "a successor locked to another recipient must reject");
 }
 
