@@ -531,7 +531,10 @@ within budget before these tranches, gzips to 590,700 bytes (576 KB) and was
 left in place; the over-budget output was not committed. The growth is real
 surface: the policy, artifact, binding and authoring modules are reachable
 from the metadata-only compile path and cannot currently be dead-stripped
-from the wasm build. The `ci` website check does not rebuild the bundle,
+from the wasm build. Binaryen 131 metrics on the rebuilt module attribute it
+to aggregate compiler code (3,389 functions, ~690K wasm-opt units, ~190 KB
+of memory data) rather than a single outlier block, so the trim is a
+feature-gating and surface-reduction work item, not a one-line fix. The `ci` website check does not rebuild the bundle,
 which is why this stayed latent. Until the wasm path trims or gates the new
 surface, the release gate's `check_wasm_release_bundle` will fail; resolving
 it is part of the pending language-services/product row, not a budget
