@@ -486,6 +486,23 @@ entry contract with a real devnet extraction is therefore tracked work, and
 the backend gate's clean-source stateful stage remains blocked on it with
 this concrete diagnosis.
 
+### WASM playground bundle budget
+
+Rebuilding the canonical playground bundle in the pinned container
+(rust 1.97.1, wasm-bindgen 0.2.121, binaryen 131) after the 0.26b tranches
+produces a 1,730,601-byte module that gzips to 659,050 bytes (643 KB) —
+44,650 bytes over the 600 KB budget that `website/scripts/build-wasm.sh`
+enforces, so the script correctly refuses. The committed bundle, last built
+within budget before these tranches, gzips to 590,700 bytes (576 KB) and was
+left in place; the over-budget output was not committed. The growth is real
+surface: the policy, artifact, binding and authoring modules are reachable
+from the metadata-only compile path and cannot currently be dead-stripped
+from the wasm build. The `ci` website check does not rebuild the bundle,
+which is why this stayed latent. Until the wasm path trims or gates the new
+surface, the release gate's `check_wasm_release_bundle` will fail; resolving
+it is part of the pending language-services/product row, not a budget
+change.
+
 ## Verification workflow
 
 The policy tranche passed the complete `dev` gate on 2026-09-05. Its strict

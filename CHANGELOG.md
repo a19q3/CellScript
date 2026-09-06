@@ -2,6 +2,13 @@
 
 ## 0.26b - Experimental semantic-foundation branch
 
+- Record a WASM playground budget blocker: the canonical container rebuild
+  after the 0.26b tranches produces a 643 KB gzip bundle, 44,650 bytes over
+  the enforced 600 KB budget. The previously committed 576 KB bundle is kept;
+  the policy/artifact/binding/authoring surface reachable from the
+  metadata-only path must be trimmed or gated before the release gate's
+  WASM bundle check can pass.
+
 - Rebind the audited CKB acceptance recipes to the current artifact
   identities (sixty case hashes, the dependency table, embedded code-hash
   references and the checker's pinned timelock identities) following the
