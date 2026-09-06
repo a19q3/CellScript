@@ -2333,6 +2333,42 @@ mod tests {
     }
 
     #[test]
+    fn internal_assembler_encodes_small_li_forms_and_boundaries() {
+        // ADDI form: signed 12-bit range, one instruction.
+        for (imm, size) in [(0i128, 4), (1, 4), (2047, 4), (-2048, 4)] {
+            assert_eq!(li_sequence_size(imm), size, "imm {imm}");
+            assert_eq!(li_form(imm), LiForm::Addi, "imm {imm}");
+        }
+        // LUI form: low 12 bits zero, 20-bit signed high part. +2^31 is
+        // deliberately absent: a single LUI sign-extends its 20-bit operand,
+        // so it cannot produce the positive value (the classifier correctly
+        // routes it to the wide construction).
+        for imm in [4096i128, -4096, -(1i128 << 31), 0x7ffff000] {
+            assert_eq!(li_form(imm), LiForm::Lui, "imm {imm}");
+            assert_eq!(li_sequence_size(imm), 4, "imm {imm}");
+        }
+        // Just outside both single forms: two instructions.
+        for imm in [2048i128, -2049, 4097] {
+            assert_eq!(li_form(imm), LiForm::LuiAddi, "imm {imm}");
+            assert_eq!(li_sequence_size(imm), 8, "imm {imm}");
+        }
+        // The encoding and the size model agree on every form.
+        for imm in [-2049i128, -2048, -1, 0, 1, 2047, 2048, 4095, 4096, 6144, 1 << 31, -(1 << 31), 0x7fffffff, -(1i128 << 31)] {
+            let mut encoded = Vec::new();
+            encode_li_sequence(&mut encoded, 10, imm).expect("encode li");
+            assert_eq!(encoded.len(), li_sequence_size(imm), "size model diverges for imm {imm}");
+        }
+        // Exact ADDI word for the canonical small constant.
+        let mut encoded = Vec::new();
+        encode_li_sequence(&mut encoded, 10, 5).unwrap();
+        assert_eq!(encoded, 0x00500513u32.to_le_bytes().to_vec());
+        // Exact LUI word for 4096: lui a0, 1.
+        let mut encoded = Vec::new();
+        encode_li_sequence(&mut encoded, 10, 4096).unwrap();
+        assert_eq!(encoded, 0x00001537u32.to_le_bytes().to_vec());
+    }
+
+    #[test]
     fn internal_assembler_encodes_full_width_li_literals() {
         let lines = vec![
             ".section .text".to_string(),

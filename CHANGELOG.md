@@ -3,21 +3,23 @@
 ## 0.26b - Experimental semantic-foundation branch
 
 - Compact the deployed ELF layout and use optimal small-immediate encoding.
-  The load segment previously started at file offset 4,096, inserting 3,976
-  zero bytes into every artifact (51% of the audited transfer sample); it
-  now starts at offset 128 with `p_vaddr ≡ p_offset (mod 128)`, keeping the
-  lld-style congruence contract. `li` constants that fit a signed 12-bit
-  immediate encode as one ADDI and 4 KiB-aligned constants as one LUI,
-  sharing one size model between layout and encoding; the fixed-size start
-  trampoline keeps its ABI shape. The audited relation artifact shrinks from
-  7,824 to 3,392 bytes (-57%), below the 5,840-byte matched Rust reference;
-  the token-transfer example is now 2,576 bytes versus 2,624 stripped Rust.
-  All 37 measured iCKB positive transactions also get faster, using 2,132
-  to 4,578 fewer cycles each (-96,037 total). Real CKB-VM behavior is
-  unchanged across the differential corpus (218 rows keep their outcomes;
-  two wrong-XUDT negatives again swap which Script group reports first, the
-  documented qualified-diagnostic class). The artifact-size test no longer
-  requires Rust to stay smaller, per the cost audit's recommendation.
+  Move the `.text` payload from file offset 4,096 to 128; the LOAD segment
+  still starts at file offset 0 and preserves virtual/file-offset congruence.
+  Padding falls from 3,976 to eight bytes. A shared size/encoding classifier
+  selects single ADDI or representable LUI forms for `li`; the 20-byte entry
+  trampoline retains its fixed encoding. The audited relation ELF falls from
+  7,824 to 3,392 bytes (-56.65%): 3,968 bytes saved in layout plus 464 in
+  instructions, 41.92% below the matched 5,840-byte Rust sample. The measured
+  relation and explicit expansion remain byte-identical at O0–O3. All 187
+  committed iCKB differential matrix rows retain their acceptance outcomes;
+  the separately reported suite has 218 tests. The 37 positive matrix rows save
+  96,037 transaction cycles in total, including shared auxiliary Script
+  improvements; two rejecting rows change their first reported exit code.
+  Replace the size test's requirement that Rust remain smaller with an
+  absolute CellScript byte budget. See the
+  [0.26 release notes](docs/releases/CELLSCRIPT_0_26_RELEASE_NOTES.md#major-backend-optimization-compact-elf-and-immediate-encoding)
+  for the mechanism, matched-comparison scope, multi-action measurements,
+  and artifact-rebuild requirements.
 
 - Make `lock = same` executable and unlock branch-local successors. Resource
   conservation now recognizes the updated-successor shape — verbatim field
@@ -32,7 +34,7 @@
   the defining context does not dominate, and a `replace` relation in each
   branch of an `if` compiles and validates. Existing generated code is
   unchanged (892 unit tests, the full regression batch and all 218 iCKB
-  differential rows pass without drift); only `exact_hash` stays reserved
+  differential-suite tests pass without drift); only `exact_hash` stays reserved
   pending the Script-hash value contract.
 
 - Add branch-local successor relations to the authoring route:
@@ -183,6 +185,13 @@
   separate preview selector and bundle publication are approved.
 
 ## 0.26.0 - Unreleased
+
+- Record the major ELF-size optimization implemented on the `0.26b` branch:
+  compact payload alignment and shorter `li` encodings cut the audited
+  relation artifact by 56.65%, without changing its source or witness ABI.
+  The [0.26 release notes](docs/releases/CELLSCRIPT_0_26_RELEASE_NOTES.md)
+  explain the byte savings and evidence limits. This is branch implementation
+  evidence, not a stable-release or `nightly-0.26` availability claim.
 
 - Implement the first bounded consensus-runtime contracts. Fixed-width
   `BoundedCellSet<Resource, N>` now scans the exact current Type Script

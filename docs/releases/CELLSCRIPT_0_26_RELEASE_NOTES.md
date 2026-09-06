@@ -1,11 +1,209 @@
 # CellScript 0.26 Release Notes
 
-**Status**: active 0.26 implementation record for `nightly-0.26`.
+**Status**: unreleased 0.26 implementation record. The bounded-runtime baseline
+comes from `nightly-0.26`; the major assembler optimization below is implemented
+on `0.26b` at `38d4b844459d6bc26ea668aeacb977114e42fe80`. This document does
+not claim that the experimental branch is a stable or production-ready release.
 
 0.26 turns the narrow fixed-width bounded Cell lifecycle shape from a 0.25
 fail-closed placeholder into an executable CKB Type Script contract. This is
 not generic Cell collection support: source selection, encoding, ordering,
 identity, and resource bounds are deliberately closed.
+
+On `0.26b`, the shared assembler also makes deployed contracts substantially
+smaller without requiring source rewrites or a new witness ABI. The audited
+transfer relation shrinks from **7,824 to 3,392 bytes (-56.65%)**. Its tested
+high-level relation syntax still produces exactly the same ELF as its explicit
+consume/create expansion.
+
+## Major Backend Optimization: Compact ELF and Immediate Encoding
+
+This is an assembler-layer improvement shared by Edition 2026 and the
+experimental authoring route. It removes file padding and unnecessary
+constant-materialization instructions; it does not remove verification checks,
+weaken policy, or depend on 16-bit compressed instructions.
+
+### Compact ELF layout: save 3,968 bytes before the first instruction
+
+The ELF header is 64 bytes and its one program header is 56 bytes, so the
+headers end at byte 120. Previously the assembler rounded the `.text` payload
+start up to a 4,096-byte boundary:
+
+```text
+Before: align_up(64 + 56, 4096) = 4096 -> 3976 zero-padding bytes
+After:  align_up(64 + 56,  128) =  128 ->    8 zero-padding bytes
+Saved: 3976 - 8 = 3968 bytes per generated ELF
+```
+
+Those zero bytes were part of both the deployed file and the file-backed LOAD
+range. They were not business data, metadata, or useful instructions. In the
+7,824-byte relation sample, this padding alone occupied 50.82% of the file.
+
+The payload offset must not be confused with the program header's `p_offset`:
+the LOAD segment starts at file offset **0 before and after** this change. The
+assembler adjusts the mapped segment base while preserving the entry address:
+
+| ELF layout property | Before | After |
+| --- | ---: | ---: |
+| `.text` file offset | 4,096 | 128 |
+| LOAD `p_offset` | 0 | 0 |
+| LOAD `p_vaddr` | `0xf000` | `0xff80` |
+| LOAD `p_align` | 4,096 | 128 |
+| Entry / `.text` virtual address | `0x10000` | `0x10000` |
+
+The mapping remains consistent: `p_vaddr + text_file_offset = 0x10000`, and
+`p_vaddr % p_align = p_offset % p_align`. Section offsets and LOAD sizes are
+rebuilt from the new layout, rather than deleting bytes from an existing ELF.
+The compact artifact executes in the real CKB-VM fixtures.
+
+### Shorter `li` encoding: save another 464 bytes in the relation sample
+
+`li` remains the same assembler pseudo-instruction. One shared `LiForm`
+classifier chooses the first matching form below for both its layout size and
+its emitted machine encoding:
+
+| Immediate shape | Encoding | Bytes |
+| --- | --- | ---: |
+| Signed 12-bit value (`-2048..=2047`) | `addi rd, zero, imm` | 4 |
+| Low 12 bits zero, with a signed 20-bit upper value | `lui rd, imm >> 12` | 4 |
+| Other value representable by the existing RV64 two-instruction form | `lui` + `addi` | 8 |
+| Wider supported value | Existing byte-by-byte construction | 60 |
+
+For example, `li a0, 5` no longer needs a LUI followed by ADDI; one
+`addi a0, zero, 5` produces the value. Similarly, `li a0, 4096` can use one
+`lui a0, 1`. The upper-value range check matters: not every multiple of 4,096
+is representable by one RV64 LUI.
+
+The audited relation contains 114 signed-12-bit literals and two additional
+LUI-only literals. Removing one four-byte instruction at each site saves
+`(114 + 2) * 4 = 464` bytes. Its `.text` falls from 3,412 to 2,948 bytes,
+or 853 to 737 instructions, all still 32-bit.
+
+Sharing the classifier matters because label addresses, branch offsets, and
+machine evidence depend on the encoded size. A shorter encoder with the old
+size model would make those addresses inconsistent. The startup trampoline is
+an explicit exception: its size is an existing **20-byte entry ABI contract**,
+so its immediate loads retain their fixed two-instruction encoding.
+
+### Measured deployment benefit
+
+The 2026-09-06 audit replay at the compiler commit above measured these complete
+ELFs. The primary samples have the same sizes at O0, O1, O2, and O3.
+
+| Sample | Before | After | Reduction |
+| --- | ---: | ---: | ---: |
+| Transfer relation / explicit consume-create expansion | 7,824 B | 3,392 B | 56.65% |
+| Legacy `std::lifecycle::transfer` comparison | 8,176 B | 3,720 B | 54.50% |
+| Note update: non-empty `same except` / exhaustive fields | 8,224 B | 3,744 B | 54.47% |
+| Repository `transfer_token` example | 6,856 B | 2,576 B | 62.43% |
+| Shared policy: mint | 8,712 B | 4,240 B | 51.33% |
+| Shared policy: mint + transfer | 10,856 B | 6,128 B | 43.55% |
+| Shared policy: mint + transfer + merge + burn | 15,880 B | 10,640 B | 33.00% |
+
+For the relation, the complete 4,432-byte reduction is exactly 3,968 bytes of
+layout savings plus 464 instruction bytes. Headers, its 20-byte runtime
+descriptor, inter-section alignment, and the 292 bytes after LOAD do not
+shrink. LOAD bytes fall from 7,532 to 3,100; LOAD size is not instruction size.
+
+The corresponding relation and explicit expansion are whole-file
+byte-identical at every tested optimization level. The empty `same except`
+spelling and the non-empty Note expansion likewise add no ELF bytes over their
+explicit counterparts. The legacy helper is a different lowering and remains
+328 bytes larger; equality of obligation sets is not a machine-byte claim.
+
+The matched Rust reference remains **5,840 stripped bytes**, making the
+3,392-byte CellScript relation **41.92% smaller in this comparison**. Both
+check a positive unchanged eight-byte amount, input/output 0, destination Lock
+hash, Type hash, capacity, and the current canonical witness envelope. They
+allow extra outputs and do not implement owner signatures or issuance policy.
+The reference uses Rust 1.97.1, `ckb-std` 1.1.0, the
+`riscv64imac-unknown-none-elf` target, size optimization, thin LTO, one codegen
+unit, and `llvm-strip`; its rebuilt SHA-256 is unchanged:
+`3f1bde5a2a32f2f733dcca3c3e7d4c0540463cb88efaf46837cb52a595212910`.
+This is a measured implementation comparison, not a Rust lower bound or a
+claim that every CellScript contract is smaller than Rust.
+
+The separate historical Rust fixture used by `artifact_size` is 2,624 stripped
+bytes. The repository example is now 48 whole-file bytes smaller, but that
+fixture uses a different witness/source-selection contract. It must not be
+substituted for the matched reference above. The size test now imposes a
+3,072-byte absolute CellScript budget instead of requiring Rust to win; it
+does not assert that CellScript must beat the actual Rust measurement.
+
+### Runtime measurements and evidence limits
+
+The audit's valid-transfer transaction falls from 10,772 to **8,573 cycles**.
+Its unchanged Rust ELF's transaction also falls from 14,938 to **13,939**,
+because both fixtures recompile and execute a shared auxiliary Lock. The
+observed common 999-cycle reduction must not be attributed to the principal
+CellScript contract. Subtracting it leaves a 1,200-cycle additional improvement
+for the relation; this is not a direct isolated Script-group measurement.
+The combined change does not separately attribute ELF-loading and instruction
+execution costs. All 17 matched VM cases retain their outcomes: three accept
+and fourteen reject. Failed-case zero cycles are unavailable-accounting
+placeholders, not measured zero-cost rejection.
+
+The committed iCKB matrix comparison, from benchmark pin `48a20271` to
+`2133dd06`, confirms 37 positive transaction savings of 2,132–4,578 cycles
+each, **96,037 total**. The original side also saves 42,504 cycles across those
+transactions; auxiliary Script changes affect both sides. All **187
+differential rows** (37 accepting, 150 rejecting) retain their acceptance and
+failure-mode labels. Two wrong-xUDT-args negatives report -52 instead of 48;
+they still reject. The **218-test suite** and the 187-row differential matrix
+are distinct counts. These are bounded runtime results, not a claim of
+identical error ordering or a substitute for the release gate.
+
+Multi-action economics also change after removing per-file padding: the four
+scoped action ELFs now sum to **9,568 bytes**, versus **10,640** for the shared
+policy. Sharing is no longer a size win in this sample. Separate action Scripts
+and one persistent policy do not provide interchangeable identity/dispatch
+semantics, so this is not a recommendation to replace the policy deployment.
+
+This optimization does not change witness encoding: the measured 32-byte
+recipient still occupies 60 bytes in single-entry WitnessArgs versus 137 in
+policy WitnessArgs, a 77-byte protocol increment. Compile metadata remains a
+sidecar; the measured ELF artifacts have no ABI trailer. This work does not
+introduce compressed instructions, shared-policy adapters, or a WASM compiler
+bundle reduction.
+
+### Compatibility, validation, and rebuild requirements
+
+No source migration or witness-ABI change is required. Artifact bytes, code
+hashes, internal instruction addresses, and machine-range evidence do change.
+Rebuild the ELF, metadata, lowering record, and source map together; refresh
+dependent deployment bindings and acceptance recipes against that exact
+artifact. Old sidecars and code hashes must not be reused with the new ELF.
+Unchanged source semantics do not make deployment identities interchangeable.
+
+The implementation keeps the fixed trampoline and checker contracts. The
+checker mutation fixture now targets the shorter failure sequence correctly:
+an invalid failure constant still rejects as V2414, while a damaged ECALL can
+reject earlier through the instruction allowlist as V2413.
+
+Implementation and in-tree evidence:
+
+- [Assembler layout, immediate classifier, and regression tests](../../src/codegen/assembler.rs)
+- [Artifact byte-budget regression](../../tests/artifact_size.rs)
+- [Independent checker mutation tests](../../tests/artifact_checker.rs)
+- [Successor-relation semantic and VM tests](../../tests/authoring_replace.rs)
+- [Committed iCKB matrix](../../tests/benchmarks/ickb_diff/matrix.json)
+- [Authoring implementation and release blockers](../CELLSCRIPT_AUTHORING_IMPLEMENTATION.md)
+
+The separate cost replay passed three audit tests and `artifact_size`;
+its 17 VM cases and byte comparisons are sample evidence, not added claims
+about the in-tree relation test's obligation-set checks. The matrix figures
+above were cross-checked from committed records, not freshly executed by the
+cost replay. The replay used the existing local SDK checkout with pre-existing
+edits; it is not clean-tag release provenance. Focused repository checks are:
+
+```bash
+cargo test --locked -p cellscript --test artifact_size -- --nocapture
+cargo test --locked -p cellscript --test artifact_checker --test authoring_replace
+```
+
+These checks do not replace the `backend`, `dev`, `ci`, or `release` gates.
+The documented stateful-recipe and WASM release blockers remain separate;
+smaller on-chain ELF files do not close them.
 
 ## Dynamic Group Input Consumption
 
@@ -77,11 +275,17 @@ rejected before ASM/ELF generation with E2105 under `--production` or
 
 ## Versioned Evidence
 
-This line advances compile metadata to schema 62 and constraints metadata to
-schema 3. The independently checked boundary is
+The inherited `nightly-0.26` bounded-runtime baseline advances compile metadata
+to schema 62 and constraints metadata to schema 3. Its independently checked
+boundary is
 `cellscript-verified-lowering-record-v4` with
 `cellscript-typed-semantics-v3`, including dedicated bounded Cell load, plan
 load, output verification, and output-end operations.
+
+The experimental `0.26b` branch separately advances metadata to schema 65,
+lowering records to v6, typed semantics to v7, and source maps to v2; see the
+[branch evidence policy](../CELLSCRIPT_GATE_POLICY.md#026b-semantic-foundation-evidence).
+The assembler optimization does not itself introduce those schema changes.
 
 Merge readiness requires:
 

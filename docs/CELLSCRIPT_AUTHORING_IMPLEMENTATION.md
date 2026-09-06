@@ -522,17 +522,22 @@ this concrete diagnosis.
 
 ### Compact deployed ELF layout and immediate encoding
 
-The cost audit measured that 51% of the audited transfer artifact was zero
-padding: the load segment started at file offset 4,096. The segment now
-starts at offset 128 with `p_vaddr ≡ p_offset (mod 128)`, preserving the
-congruence contract of lld-emitted CKB contracts, and `li` uses single ADDI
-or LUI forms for small immediates behind one shared size model. The audited
-relation artifact drops from 7,824 to 3,392 bytes and the token-transfer
-example to 2,576 bytes, below its stripped Rust reference; every measured
-iCKB positive transaction also runs 2,132-4,578 cycles cheaper. The start
-trampoline keeps its fixed ABI shape, the independent checker's exit-site
-decoder already understood both immediate forms, and its mutation corpus was
-updated for the new sink layout (corrupting the ECALL itself now trips the
+The cost audit measured that 50.82% of the audited transfer ELF was zero
+padding before `.text`: its payload started at file offset 4,096. The payload
+now starts at 128, while the LOAD segment still starts at file offset 0 with
+`p_vaddr = 0xff80`, `p_align = 128`, and entry `0x10000`. This preserves
+`p_vaddr % p_align = p_offset % p_align` and saves 3,968 padding bytes.
+A shared size/encoding classifier selects single ADDI or representable LUI
+forms for `li`, saving another 464 bytes in the audited relation. Its ELF
+drops from 7,824 to 3,392 bytes; the token-transfer example drops to 2,576.
+All 37 recorded positive iCKB transactions use 2,132–4,578 fewer cycles,
+including shared auxiliary Script improvements; these are transaction-level
+measurements, not isolated principal-script savings. The
+[0.26 release notes](releases/CELLSCRIPT_0_26_RELEASE_NOTES.md#major-backend-optimization-compact-elf-and-immediate-encoding)
+give the byte decomposition, matched Rust scope, and multi-action comparison.
+The start trampoline keeps its fixed 20-byte ABI shape; the independent
+checker's exit-site decoder already understood both immediate forms, and its
+mutation corpus was updated for the new sink layout (corrupting the ECALL itself now trips the
 instruction allowlist). Remaining size work from the audit — redundant
 schema-size checks, large stack-offset materialization, and compressed
 16-bit encodings — is tracked separately.
