@@ -36,12 +36,12 @@ are not implementation of a required supported feature.
 
 | Requirement | Required implementation and evidence | Current disposition |
 |---|---|---|
-| Complete authoring language | Shared declarations, expressions, statements, types, and full callable bodies; meaningful edits and readable diagnostics on the adopted corpus. | Shared kernel and optional marker implemented; final relations and corpus evaluation pending. |
+| Complete authoring language | Shared declarations, expressions, statements, types, and full callable bodies; meaningful edits and readable diagnostics on the adopted corpus. | Shared kernel, optional marker and `replace` successor relations implemented; formatter prints relations; corpus evaluation pending. |
 | No 2026 feature regression | Positive and negative cross-edition source, typed obligation, format, artifact, and runtime checks for the feature families below. | Dedicated differential tests and cross-edition syntax matrix being established; complete gates pending. |
 | Direct semantic elaboration | Structured relation nodes with spans, typed schema resolution, and checked lowering; no generated preview4 text reparsing. | Existing AST path reused; new relation nodes and elaboration pending. |
-| Path-sensitive successor relations | Assigned/preserved fields, identity, lock, capacity and output correspondence compose inside ordinary `if`/`match`; every accepting path accounts for roles. | Pending; flat native disposition lists are insufficient. |
-| `same except` and upgrades | Concrete schema identity, exhaustive expansion, reproducible focused acknowledgement, changed/stale/missing acknowledgement rejection, no implicit repin. | Pending. |
-| Constructor defaults | A1-A6 policies are total under resolved context; lock omission, capacity alternatives, identity, group coverage, alias rejection and pool domains have one checked meaning. | Pending. |
+| Path-sensitive successor relations | Assigned/preserved fields, identity, lock, capacity and output correspondence compose inside ordinary `if`/`match`; every accepting path accounts for roles. | Source-level completeness enforced for authoring relations (conditional skip, double disposal and loop disposal rejected with real VM positives/negatives); a successor in each `if` arm still meets the existing single-create entry contract, which remains the tracked boundary. |
+| `same except` and upgrades | Concrete schema identity, exhaustive expansion, reproducible focused acknowledgement, changed/stale/missing acknowledgement rejection, no implicit repin. | `data = same except` expands against the resolved concrete schema with unknown/duplicate-field rejection; the schema acknowledgement workflow remains pending. |
+| Constructor defaults | A1-A6 policies are total under resolved context; lock omission, capacity alternatives, identity, group coverage, alias rejection and pool domains have one checked meaning. | Relations require explicit data, lock, capacity and identity treatments (omission is rejected, not defaulted); `lock = exact(address)` is executable, `lock = same` and `exact_hash` are reserved fail-closed; other constructors pending. |
 | Exact artifact entry | Codegen, semantic metadata, CLI execution and explicit entry scoping agree, including selected actions calling other retained actions. | Shared selection, terminal scalar/Unit helper failure and VM regressions implemented; policy Cell-bearing and complex-ABI callee closure remains pending. |
 | Resolved physical bindings | One typed per-binding source/ordinal/identity plan drives codegen, provenance, roles and independent checks; mixed Cell/read/witness/Script.args layouts cannot disagree. | Fixed-Cell runtime plan and typed projection checks implemented; full ABI and machine-dataflow closure remain pending. |
 | One deployed multi-action policy | Declared action set and explicit versioned dispatch bind selectors, payloads, common checks, artifact identity and builders. | Bounded fixed-role Type policy implemented in compiler/VM, metadata/expansion and package/builders; full consumer and deployment closure remains pending. |
@@ -89,6 +89,35 @@ cases. `tests/syntax_combo/matrix.toml` drives the generated cross-edition
 combination audit. Neither corpus by itself proves the whole table: imported
 packages, runtime ABI, deployment and product evidence need their matching
 integration suites and gates.
+
+## Authoring successor relations
+
+The authoring route now accepts `replace before -> after { ... }` as a
+statement inside ordinary actions. The declaration is the sole authority for
+its checks: `data { f = same | f = expr }` and `data = same except { f = expr }`
+resolve against the concrete schema of the bound predecessor (exhaustive
+coverage, unknown and duplicate fields rejected), `capacity = same` and
+`identity = same` lower to the canonical capacity and type-identity
+preservation checks, and `lock = exact(address)` binds the successor through
+the create kernel exactly like `std::lifecycle::transfer`. Elaboration stays
+at the structured AST/IR level — no preview4 text is generated or reparsed —
+and `tests/authoring_replace.rs` holds the relation to the spelled-out
+Edition 2026 form (identical obligation set, formatter round-trip) plus real
+CKB-VM positives and negatives. The 2026 grammar keeps `replace` as an
+ordinary identifier.
+
+Three boundaries are deliberate and tested. `lock = same` is reserved:
+executing a successor without an explicit lock target has no conservation
+enforcement today (the spelled-out create-without-lock form fails the same
+way), so executable artifacts fail closed with that remediation.
+`exact_hash(...)` is rejected until the authoring target freezes its
+Script-hash value contract. And a relation in each branch of an `if`
+satisfies the new path-sensitive completeness check but still meets the
+existing single-create entry contract, which is the tracked branch-local
+successor limitation shared with Edition 2026. Source-level successor
+completeness is now enforced for the authoring route: a role disposed
+anywhere must be disposed exactly once on every accepting path, and disposal
+inside loops is rejected.
 
 ## Binding correctness found during parity work
 

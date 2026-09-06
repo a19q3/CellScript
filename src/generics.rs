@@ -1191,6 +1191,7 @@ impl Monomorphizer {
                 Ok(Expr::RequireBlock(value))
             }
             Expr::Preserve(_) => Ok(expr),
+            Expr::ReplaceRelation(_) => Ok(expr),
             Expr::Block(stmts) => Ok(Expr::Block(
                 stmts.into_iter().map(|stmt| self.rewrite_stmt(stmt, substitution, context)).collect::<Result<Vec<_>>>()?,
             )),

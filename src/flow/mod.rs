@@ -317,6 +317,7 @@ fn collect_state_context_from_expr(specs: &HashMap<String, FlowSpec>, context: &
             }
         }
         Expr::Preserve(_) => {}
+        Expr::ReplaceRelation(_) => {}
         Expr::Block(stmts) => collect_state_context_from_stmts(specs, context, stmts),
         Expr::Tuple(items) | Expr::Array(items) => {
             for item in items {
@@ -468,6 +469,7 @@ fn validate_state_transition_expr(specs: &HashMap<String, FlowSpec>, context: &A
             Ok(())
         }
         Expr::Preserve(_) => Ok(()),
+        Expr::ReplaceRelation(_) => Ok(()),
         Expr::Block(stmts) => validate_stmt_list(specs, context, stmts),
         Expr::Tuple(items) | Expr::Array(items) => {
             for item in items {

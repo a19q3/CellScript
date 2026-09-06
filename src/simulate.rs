@@ -519,6 +519,13 @@ impl SimulateInterpreter {
                 });
                 Ok(SimValue::Bool(true))
             }
+            Expr::ReplaceRelation(relation) => {
+                self.trace.push(TraceEvent::Assert {
+                    condition: SimValue::Bool(true),
+                    message: format!("replace {} -> {}", relation.before, relation.after),
+                });
+                Ok(SimValue::Bool(true))
+            }
             Expr::StdlibCall(call) => {
                 let qualified = format!("std::{}::{}", call.namespace, call.name);
                 self.trace.push(TraceEvent::Assert { condition: SimValue::Bool(true), message: format!("stdlib: {}", qualified) });

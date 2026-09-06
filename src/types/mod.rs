@@ -1091,6 +1091,7 @@ impl<'a> TypeChecker<'a> {
             | Expr::Require(_)
             | Expr::RequireBlock(_)
             | Expr::Preserve(_)
+            | Expr::ReplaceRelation(_)
             | Expr::StdlibCall(_) => {
                 return Err(CompileError::new(
                     "validity predicates must be pure expressions without lifecycle, verifier-boundary, or control-flow syntax",
@@ -1914,6 +1915,20 @@ impl<'a> TypeChecker<'a> {
                 }
                 Ok(guaranteed)
             }
+            Expr::ReplaceRelation(relation) => {
+                // Explicitly preserved fields are guaranteed on this path. A
+                // `same except` expansion is resolved against the concrete
+                // schema during inference; without the type environment here
+                // the conservative result keeps nothing guaranteed.
+                if let ReplaceDataTreatment::Fields(treatments) = &relation.data {
+                    for treatment in treatments {
+                        if let ReplaceFieldTreatment::Same(field) = treatment {
+                            guaranteed.insert(field.clone());
+                        }
+                    }
+                }
+                Ok(guaranteed)
+            }
         }
     }
 
@@ -1981,6 +1996,19 @@ impl<'a> TypeChecker<'a> {
 
     fn validate_create_targets_in_expr(&self, expr: &Expr, outputs: &HashMap<String, ActionOutputBinding>) -> Result<()> {
         match expr {
+            Expr::ReplaceRelation(relation) => {
+                // Every relation binds its successor through the create
+                // kernel, so the successor must be an action output binding.
+                if !outputs.contains_key(&relation.after) {
+                    return Err(CompileError::new(
+                        format!("replace relation successor '{}' must be declared as an action output binding", relation.after),
+                        relation.span,
+                    ));
+                }
+                for value in relation.value_exprs() {
+                    self.validate_create_targets_in_expr(value, outputs)?;
+                }
+            }
             Expr::Create(create) => {
                 if let Some(target) = &create.target {
                     let Some(binding) = outputs.get(target) else {
@@ -3228,6 +3256,25 @@ impl<'a> TypeChecker<'a> {
             | Expr::ByteString(_)
             | Expr::Identifier(_)
             | Expr::ReadRef(_) => {}
+            Expr::ReplaceRelation(relation) => {
+                if let ReplaceLockTreatment::Exact(lock) = &relation.lock {
+                    self.validate_spawn_ipc_fd_usage_expr(lock, state)?;
+                }
+                match &relation.data {
+                    ReplaceDataTreatment::Fields(treatments) => {
+                        for treatment in treatments {
+                            if let ReplaceFieldTreatment::Assign(_, value) = treatment {
+                                self.validate_spawn_ipc_fd_usage_expr(value, state)?;
+                            }
+                        }
+                    }
+                    ReplaceDataTreatment::SameExcept(assigned) => {
+                        for (_, value) in assigned {
+                            self.validate_spawn_ipc_fd_usage_expr(value, state)?;
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -4147,6 +4194,83 @@ impl<'a> TypeChecker<'a> {
                 }
                 Ok(Type::Unit)
             }
+            Expr::ReplaceRelation(relation) => {
+                let before_ty = env.lookup(&relation.before).cloned().ok_or_else(|| {
+                    CompileError::new(format!("replace: undefined predecessor binding '{}'", relation.before), relation.span)
+                })?;
+                let after_ty = env.lookup(&relation.after).cloned().ok_or_else(|| {
+                    CompileError::new(format!("replace: undefined successor binding '{}'", relation.after), relation.span)
+                })?;
+                let (Type::Named(before_name), Type::Named(after_name)) = (&before_ty, &after_ty) else {
+                    return Err(CompileError::new(
+                        "replace relations need concrete resource bindings for both the predecessor and the successor",
+                        relation.span,
+                    ));
+                };
+                if before_name != after_name {
+                    return Err(CompileError::new(
+                        format!("replace relation type mismatch: predecessor has {before_name}, successor has {after_name}"),
+                        relation.span,
+                    ));
+                }
+                let schema_fields = self
+                    .resolve_named_type_fields(before_name.split('<').next().unwrap_or(before_name.as_str()))
+                    .map(|fields| fields.keys().cloned().collect::<Vec<_>>())
+                    .ok_or_else(|| {
+                        CompileError::new(
+                            format!("replace relation predecessor '{before_name}' does not resolve to a concrete schema"),
+                            relation.span,
+                        )
+                    })?;
+                let mut covered: Vec<String> = Vec::new();
+                let exhaustive;
+                match &relation.data {
+                    ReplaceDataTreatment::Fields(treatments) => {
+                        exhaustive = true;
+                        for treatment in treatments {
+                            let (field, value) = match treatment {
+                                ReplaceFieldTreatment::Same(field) => (field, None),
+                                ReplaceFieldTreatment::Assign(field, value) => (field, Some(value)),
+                            };
+                            note_replace_field(&schema_fields, &mut covered, field, relation.span)?;
+                            if let Some(value) = value {
+                                check_replace_assigned_field(self, env, &before_ty, field, value, relation.span)?;
+                            }
+                        }
+                    }
+                    // `same except` expands against the concrete schema: every
+                    // unlisted field is preserved, so only the listed
+                    // assignments need to exist and type-check.
+                    ReplaceDataTreatment::SameExcept(assigned) => {
+                        exhaustive = false;
+                        for (field, value) in assigned {
+                            note_replace_field(&schema_fields, &mut covered, field, relation.span)?;
+                            check_replace_assigned_field(self, env, &before_ty, field, value, relation.span)?;
+                        }
+                    }
+                }
+                if exhaustive && covered.len() != schema_fields.len() {
+                    let missing =
+                        schema_fields.iter().filter(|field| !covered.contains(field)).cloned().collect::<Vec<_>>().join(", ");
+                    return Err(CompileError::new(
+                        format!(
+                            "replace relation data treatment must cover every field of resource '{before_name}' exactly once; missing {missing}"
+                        ),
+                        relation.span,
+                    ));
+                }
+                env.consume(&relation.before).map_err(|error| CompileError::new(error.to_string(), relation.span))?;
+                if let ReplaceLockTreatment::Exact(lock) = &relation.lock {
+                    let lock_ty = self.infer_expr(env, lock)?;
+                    if lock_ty != Type::Address {
+                        return Err(CompileError::new(
+                            format!("replace relation lock expects an Address, found {}", type_repr(&lock_ty)),
+                            relation.span,
+                        ));
+                    }
+                }
+                Ok(Type::Bool)
+            }
             Expr::Preserve(preserve) => {
                 let output_ty = env.lookup(&preserve.output_name).cloned().ok_or_else(|| {
                     CompileError::new(format!("preserve: undefined output binding '{}'", preserve.output_name), preserve.span)
@@ -4189,6 +4313,7 @@ impl<'a> TypeChecker<'a> {
         match expr {
             Expr::Create(_)
             | Expr::Consume(_)
+            | Expr::ReplaceRelation(_)
             | Expr::Destroy(_)
             | Expr::ReadRef(_)
             | Expr::Claim(_)
@@ -5261,6 +5386,11 @@ impl<'a> TypeChecker<'a> {
         }
         if matches!(expr, Expr::Preserve(_)) && !matches!(self.current_callable, Some(CallableKind::Action | CallableKind::Lock)) {
             return Err(CompileError::new("preserve is verifier-boundary syntax for actions and locks", expr_span(expr)));
+        }
+        if matches!(expr, Expr::ReplaceRelation(_))
+            && !matches!(self.current_callable, Some(CallableKind::Action | CallableKind::Lock))
+        {
+            return Err(CompileError::new("replace relations are verifier-boundary syntax for actions and locks", expr_span(expr)));
         }
 
         let operation = match expr {
@@ -8150,6 +8280,38 @@ fn push_diagnostic(diagnostics: &mut Vec<CompileError>, result: Result<()>) {
     }
 }
 
+fn note_replace_field(schema_fields: &[String], covered: &mut Vec<String>, field: &str, span: crate::error::Span) -> Result<()> {
+    if !schema_fields.iter().any(|candidate| candidate == field) {
+        return Err(CompileError::new(format!("replace relation field '{field}' does not exist on the relation's resource"), span)
+            .with_code("E1002"));
+    }
+    if covered.iter().any(|candidate| candidate == field) {
+        return Err(CompileError::new(format!("replace relation states field '{field}' more than once"), span));
+    }
+    covered.push(field.to_string());
+    Ok(())
+}
+
+fn check_replace_assigned_field(
+    checker: &mut TypeChecker,
+    env: &mut TypeEnv,
+    resource_ty: &Type,
+    field: &str,
+    value: &Expr,
+    span: crate::error::Span,
+) -> Result<()> {
+    let expected = checker.lookup_field_type(resource_ty, field, span)?;
+    let actual = checker.infer_expr(env, value)?;
+    if !checker.types_equal(&expected, &actual) {
+        return Err(CompileError::new(
+            format!("replace relation field '{field}' expects {}, found {}", type_repr(&expected), type_repr(&actual)),
+            span,
+        )
+        .with_code("E1004"));
+    }
+    Ok(())
+}
+
 fn expr_span(expr: &Expr) -> Span {
     match expr {
         Expr::Integer(_) | Expr::Bool(_) | Expr::String(_) | Expr::ByteString(_) | Expr::Identifier(_) => Span::default(),
@@ -8179,6 +8341,7 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Match(match_expr) => match_expr.span,
         Expr::RequireBlock(require_block) => require_block.span,
         Expr::Preserve(preserve) => preserve.span,
+        Expr::ReplaceRelation(relation) => relation.span,
     }
 }
 
@@ -8233,6 +8396,23 @@ fn expr_uses_identifier(expr: &Expr, expected: &str) -> bool {
         }
         Expr::RequireBlock(require_block) => require_block.expressions.iter().any(|expr| expr_uses_identifier(expr, expected)),
         Expr::Preserve(preserve) => preserve.output_name == expected || preserve.input_name == expected,
+        Expr::ReplaceRelation(relation) => {
+            relation.before == expected
+                || relation.after == expected
+                || match &relation.lock {
+                    ReplaceLockTreatment::Exact(lock) => expr_uses_identifier(lock, expected),
+                    ReplaceLockTreatment::Same => false,
+                }
+                || match &relation.data {
+                    ReplaceDataTreatment::Fields(treatments) => treatments.iter().any(|treatment| match treatment {
+                        ReplaceFieldTreatment::Same(_) => false,
+                        ReplaceFieldTreatment::Assign(_, value) => expr_uses_identifier(value, expected),
+                    }),
+                    ReplaceDataTreatment::SameExcept(assigned) => {
+                        assigned.iter().any(|(_, value)| expr_uses_identifier(value, expected))
+                    }
+                }
+        }
         Expr::StdlibCall(call) => call.args.iter().any(|arg| expr_uses_identifier(arg, expected)),
         Expr::Integer(_) | Expr::Bool(_) | Expr::String(_) | Expr::ByteString(_) => false,
     }
@@ -8241,6 +8421,7 @@ fn expr_uses_identifier(expr: &Expr, expected: &str) -> bool {
 fn expr_contains_borrow_marker(expr: &Expr, binding: &str) -> bool {
     match expr {
         Expr::Identifier(name) => name == binding,
+        Expr::ReplaceRelation(relation) => relation.value_exprs().iter().any(|value| expr_contains_borrow_marker(value, binding)),
         Expr::Tuple(items) | Expr::Array(items) => items.iter().any(|item| expr_contains_borrow_marker(item, binding)),
         Expr::StructInit(init) => init.fields.iter().any(|(_, value)| expr_contains_borrow_marker(value, binding)),
         Expr::Cast(cast) => expr_contains_borrow_marker(&cast.expr, binding),
@@ -8413,6 +8594,23 @@ fn collect_required_output_fields(expr: &Expr, outputs: &HashSet<String>, fields
             for field in &preserve.fields {
                 if outputs.contains(field) {
                     fields.insert(field.clone());
+                }
+            }
+        }
+        Expr::ReplaceRelation(relation) => {
+            let relation_fields: Vec<String> = match &relation.data {
+                ReplaceDataTreatment::Fields(treatments) => treatments
+                    .iter()
+                    .map(|treatment| match treatment {
+                        ReplaceFieldTreatment::Same(field) => field.clone(),
+                        ReplaceFieldTreatment::Assign(field, _) => field.clone(),
+                    })
+                    .collect(),
+                ReplaceDataTreatment::SameExcept(_) => Vec::new(),
+            };
+            for field in relation_fields {
+                if outputs.contains(&field) {
+                    fields.insert(field);
                 }
             }
         }
@@ -8792,6 +8990,9 @@ fn collect_consumed_bindings_from_expr(expr: &Expr, bindings: &mut HashSet<Strin
             }
         }
         Expr::Preserve(_) => {}
+        Expr::ReplaceRelation(relation) => {
+            bindings.insert(relation.before.clone());
+        }
     }
 }
 

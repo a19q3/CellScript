@@ -1,0 +1,15 @@
+// audit:edition=2027
+// audit:phase=accept
+module cellscript::audit::authoring_replace
+
+resource Token has store, replace, relock { amount: u64 }
+
+action transfer(input token: Token, witness recipient: Address) -> next: Token {
+    require token.amount > 0
+    replace token -> next {
+        data = same except { }
+        lock = exact(recipient)
+        capacity = same
+        identity = same
+    }
+}

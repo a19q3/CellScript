@@ -2,6 +2,23 @@
 
 ## 0.26b - Experimental semantic-foundation branch
 
+- Add branch-local successor relations to the authoring route:
+  `replace before -> after { data … lock = exact(address) capacity = same
+  identity = same }` inside ordinary actions. `data { f = same, f = expr }`
+  and `data = same except { f = expr }` expand against the resolved concrete
+  schema with exhaustive-coverage, unknown-field and duplicate-field checks;
+  the relation elaborates through the same consume/create, type-identity and
+  capacity-preservation instructions as the spelled-out Edition 2026 forms,
+  carries the identical obligation set, and executes in the real CKB-VM.
+  Path-sensitive successor completeness is enforced at the source level: once
+  a Cell role is disposed anywhere, every accepting path must dispose of it
+  exactly once, loops reject disposal, and double disposal is rejected.
+  `lock = same` and `exact_hash(...)` are reserved with precise remediation
+  (unconstrained-lock successors have no conservation enforcement yet, and
+  the Script-hash value contract is not frozen); successors written in both
+  branches of an `if` still meet the existing single-create entry contract.
+  The formatter prints the relation and its output recompiles identically.
+
 - Record a WASM playground budget blocker: the canonical container rebuild
   after the 0.26b tranches produces a 643 KB gzip bundle, 44,650 bytes over
   the enforced 600 KB budget. The previously committed 576 KB bundle is kept;

@@ -2508,6 +2508,27 @@ impl IrGenerator {
             Expr::Preserve(_) => {
                 // preserve is pure sugar; desugared requires carry no side effects beyond verification
             }
+            Expr::ReplaceRelation(relation) => {
+                footprint.has_consume = true;
+                if let ReplaceLockTreatment::Exact(lock) = &relation.lock {
+                    footprint.has_create = true;
+                    self.check_expr_effects(lock, footprint);
+                }
+                match &relation.data {
+                    ReplaceDataTreatment::Fields(treatments) => {
+                        for treatment in treatments {
+                            if let ReplaceFieldTreatment::Assign(_, value) = treatment {
+                                self.check_expr_effects(value, footprint);
+                            }
+                        }
+                    }
+                    ReplaceDataTreatment::SameExcept(assigned) => {
+                        for (_, value) in assigned {
+                            self.check_expr_effects(value, footprint);
+                        }
+                    }
+                }
+            }
             Expr::StdlibCall(call) => {
                 let qualified = format!("std::{}::{}", call.namespace, call.name);
                 match qualified.as_str() {
@@ -3550,6 +3571,7 @@ impl IrGenerator {
             Expr::Require(require_expr) => self.lower_require_expr(require_expr, current, blocks, vars),
             Expr::RequireBlock(require_block) => self.lower_require_block_expr(require_block, current, blocks, vars),
             Expr::Preserve(preserve_expr) => self.lower_preserve_expr(preserve_expr, current, blocks, vars),
+            Expr::ReplaceRelation(relation) => self.lower_replace_relation(relation, current, blocks, vars),
             Expr::StructInit(init) => self.lower_struct_init(init, current, blocks, vars),
             Expr::FieldAccess(field) => self.lower_field_access(field, current, blocks, vars),
             Expr::Index(index) => self.lower_index_expr(index, current, blocks, vars),
@@ -4438,6 +4460,145 @@ impl IrGenerator {
             };
             active = next;
         }
+        LoweredExpr { operand: IrOperand::Const(IrConst::Bool(true)), current: Some(active) }
+    }
+
+    /// Elaborate an authoring successor relation into the same checked
+    /// instructions as the spelled-out Edition 2026 forms: the predecessor is
+    /// consumed exactly once, every concrete schema field becomes an explicit
+    /// successor equality (or is bound by the create in the exact-lock form),
+    /// and the identity, capacity and lock treatments lower to the canonical
+    /// type-hash, capacity and lock-hash preservation checks.
+    fn lower_replace_relation(
+        &mut self,
+        relation: &ReplaceRelation,
+        current: BlockId,
+        blocks: &mut Vec<IrBlock>,
+        vars: &mut HashMap<String, IrVar>,
+    ) -> LoweredExpr {
+        let span = relation.span;
+        let mut active = current;
+
+        let resource_ty = vars
+            .get(&relation.after)
+            .and_then(|var| Self::named_type_name_from_ir_type(&var.ty).map(str::to_string))
+            .unwrap_or_else(|| relation.after.clone());
+
+        // 1. Account the predecessor through the ordinary consume kernel.
+        let consume = ConsumeExpr { expr: Box::new(Expr::Identifier(relation.before.clone())), span };
+        let lowered = self.lower_consume_expr(&consume, active, blocks, vars);
+        let Some(next) = lowered.current else {
+            return lowered;
+        };
+        active = next;
+
+        // 2. Resolve the data treatment into explicit successor field values.
+        let before_expr = Expr::Identifier(relation.before.clone());
+        let after_expr = Expr::Identifier(relation.after.clone());
+        let mut field_values: Vec<(String, Expr)> = Vec::new();
+        match &relation.data {
+            ReplaceDataTreatment::Fields(treatments) => {
+                for treatment in treatments {
+                    match treatment {
+                        ReplaceFieldTreatment::Same(field) => field_values.push((
+                            field.clone(),
+                            Expr::FieldAccess(FieldAccessExpr { expr: Box::new(before_expr.clone()), field: field.clone(), span }),
+                        )),
+                        ReplaceFieldTreatment::Assign(field, value) => {
+                            field_values.push((field.clone(), value.clone()));
+                        }
+                    }
+                }
+            }
+            ReplaceDataTreatment::SameExcept(assigned) => {
+                // Sorted for deterministic expansion regardless of the
+                // field map's iteration order.
+                let mut schema_fields =
+                    self.type_fields.get(&resource_ty).map(|fields| fields.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+                schema_fields.sort();
+                for field in schema_fields {
+                    if let Some((_, value)) = assigned.iter().find(|(name, _)| name == &field) {
+                        field_values.push((field, value.clone()));
+                    } else {
+                        field_values.push((
+                            field.clone(),
+                            Expr::FieldAccess(FieldAccessExpr { expr: Box::new(before_expr.clone()), field, span }),
+                        ));
+                    }
+                }
+                for (field, _) in assigned {
+                    if !field_values.iter().any(|(name, _)| name == field) {
+                        self.record_error(
+                            format!("replace relation `same except` field '{field}' does not exist on resource '{resource_ty}'"),
+                            span,
+                        );
+                    }
+                }
+            }
+        }
+
+        // 3. Bind the successor. Both lock treatments go through the create
+        //    kernel so resource conservation is enforced the same way: the
+        //    exact form binds the lock target, the same form leaves the lock
+        //    unconstrained by create and pins it with the lock-hash
+        //    preservation check instead.
+        let create = CreateExpr {
+            target: Some(relation.after.clone()),
+            ty: resource_ty.clone(),
+            fields: field_values.clone(),
+            lock: match &relation.lock {
+                ReplaceLockTreatment::Exact(lock) => Some(lock.clone()),
+                ReplaceLockTreatment::Same => None,
+            },
+            span,
+        };
+        let lowered = self.lower_create_expr(&create, active, blocks, vars);
+        let Some(next) = lowered.current else {
+            return lowered;
+        };
+        active = next;
+
+        if let ReplaceLockTreatment::Same = &relation.lock {
+            // Reserved: the create kernel needs an explicit lock target for
+            // executable resource conservation, and no unconstrained-lock
+            // successor enforcement exists yet. The relation parses and type
+            // checks, but executable artifacts fail closed instead of
+            // silently weakening the successor's lock constraint.
+            self.record_error(
+                "replace relation `lock = same` is reserved: executable successors require an explicit lock target for resource conservation; use `lock = exact(address)` until lock-preserving successors gain their own conservation enforcement",
+                span,
+            );
+            return LoweredExpr { operand: IrOperand::Const(IrConst::Bool(false)), current: Some(active) };
+        }
+
+        // 4. Identity: the successor keeps the predecessor's Type identity.
+        let same_type = StdlibCallExpr {
+            namespace: "cell".to_string(),
+            name: "same_type".to_string(),
+            args: vec![after_expr.clone(), before_expr.clone()],
+            preserve_fields: Vec::new(),
+            span,
+        };
+        let lowered = self.lower_stdlib_call(&same_type, active, blocks, vars);
+        let Some(next) = lowered.current else {
+            return lowered;
+        };
+        active = next;
+
+        // 5. Capacity: exact equality with the predecessor.
+        let preserve_capacity = StdlibCallExpr {
+            namespace: "cell".to_string(),
+            name: "preserve_capacity".to_string(),
+            args: vec![after_expr, before_expr],
+            preserve_fields: Vec::new(),
+            span,
+        };
+        let lowered = self.lower_stdlib_call(&preserve_capacity, active, blocks, vars);
+        let Some(next) = lowered.current else {
+            return lowered;
+        };
+        active = next;
+
         LoweredExpr { operand: IrOperand::Const(IrConst::Bool(true)), current: Some(active) }
     }
 
@@ -8559,8 +8720,37 @@ fn ir_validity_predicates_with_constants(
     predicates
 }
 
+fn replace_relation_inner_exprs(relation: &ReplaceRelation) -> Vec<&Expr> {
+    let mut inner = Vec::new();
+    if let ReplaceLockTreatment::Exact(lock) = &relation.lock {
+        inner.push(lock.as_ref());
+    }
+    match &relation.data {
+        ReplaceDataTreatment::Fields(treatments) => {
+            for treatment in treatments {
+                if let ReplaceFieldTreatment::Assign(_, value) = treatment {
+                    inner.push(value);
+                }
+            }
+        }
+        ReplaceDataTreatment::SameExcept(assigned) => {
+            for (_, value) in assigned {
+                inner.push(value);
+            }
+        }
+    }
+    inner
+}
+
 fn collect_validity_constant_dependencies(expr: &Expr, constants: &HashSet<&str>, dependencies: &mut BTreeSet<String>) {
     match expr {
+        // Relations are lifecycle syntax and are rejected in validity
+        // predicates before lowering; recurse defensively into their values.
+        Expr::ReplaceRelation(relation) => {
+            for value in replace_relation_inner_exprs(relation) {
+                collect_validity_constant_dependencies(value, constants, dependencies);
+            }
+        }
         Expr::Identifier(name) => {
             if constants.contains(name.as_str()) {
                 dependencies.insert(format!("constant:{name}"));
@@ -8622,6 +8812,9 @@ fn collect_validity_constant_dependencies(expr: &Expr, constants: &HashSet<&str>
 
 fn validity_expr_uses_block_number(expr: &Expr) -> bool {
     match expr {
+        Expr::ReplaceRelation(relation) => {
+            replace_relation_inner_exprs(relation).iter().any(|value| validity_expr_uses_block_number(value))
+        }
         Expr::Call(call) => {
             matches!(call.func.as_ref(), Expr::Identifier(name) if name == "env::block_number")
                 || validity_expr_uses_block_number(&call.func)
@@ -8662,6 +8855,11 @@ fn validity_expr_uses_block_number(expr: &Expr) -> bool {
 
 fn collect_validity_dependencies(expr: &Expr, fields: &HashSet<&str>, dependencies: &mut BTreeSet<String>) {
     match expr {
+        Expr::ReplaceRelation(relation) => {
+            for value in replace_relation_inner_exprs(relation) {
+                collect_validity_dependencies(value, fields, dependencies);
+            }
+        }
         Expr::Identifier(name) => {
             if fields.contains(name.as_str()) {
                 dependencies.insert(format!("field:{name}"));
@@ -8750,6 +8948,18 @@ fn qualify_validity_dependencies(
     constant_dependencies: &mut BTreeSet<String>,
 ) {
     match expr {
+        Expr::ReplaceRelation(relation) => {
+            if let ReplaceLockTreatment::Exact(lock) = &mut relation.lock {
+                qualify_validity_dependencies(lock, owner_module, resolver, fields, constant_dependencies);
+            }
+            if let ReplaceDataTreatment::Fields(treatments) = &mut relation.data {
+                for treatment in treatments {
+                    if let ReplaceFieldTreatment::Assign(_, value) = treatment {
+                        qualify_validity_dependencies(value, owner_module, resolver, fields, constant_dependencies);
+                    }
+                }
+            }
+        }
         Expr::Call(call) => {
             if let Expr::Identifier(name) = call.func.as_mut()
                 && let Some((callee_module, function)) = resolver.resolve_function_with_module(owner_module, name)
@@ -9442,6 +9652,11 @@ fn collect_call_names_from_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
 
 fn collect_call_names_from_expr(expr: &Expr, names: &mut HashSet<String>) {
     match expr {
+        Expr::ReplaceRelation(relation) => {
+            for value in replace_relation_inner_exprs(relation) {
+                collect_call_names_from_expr(value, names);
+            }
+        }
         Expr::Call(call) => {
             if let Expr::Identifier(name) = call.func.as_ref() {
                 names.insert(name.clone());
@@ -9705,6 +9920,15 @@ fn collect_ast_stmt_effects(stmt: &Stmt, footprint: &mut EffectFootprint) {
 
 fn collect_ast_expr_effects(expr: &Expr, footprint: &mut EffectFootprint) {
     match expr {
+        Expr::ReplaceRelation(relation) => {
+            footprint.has_consume = true;
+            if let ReplaceLockTreatment::Exact(_) = &relation.lock {
+                footprint.has_create = true;
+            }
+            for value in replace_relation_inner_exprs(relation) {
+                collect_ast_expr_effects(value, footprint);
+            }
+        }
         Expr::Consume(consume) => {
             footprint.has_consume = true;
             collect_ast_expr_effects(&consume.expr, footprint);
@@ -10168,6 +10392,9 @@ fn collect_consumed_bindings_from_stmts(stmts: &[Stmt], bindings: &mut HashSet<S
 
 fn collect_consumed_bindings_from_expr(expr: &Expr, bindings: &mut HashSet<String>) {
     match expr {
+        Expr::ReplaceRelation(relation) => {
+            bindings.insert(relation.before.clone());
+        }
         Expr::Consume(consume) => {
             if let Expr::Identifier(name) = consume.expr.as_ref() {
                 bindings.insert(name.clone());

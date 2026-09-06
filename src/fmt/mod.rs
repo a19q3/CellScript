@@ -905,6 +905,39 @@ impl Formatter {
                 let fields = preserve.fields.join("\n");
                 format!("preserve {} from {} {{\n{}\n}}", preserve.output_name, preserve.input_name, fields)
             }
+            Expr::ReplaceRelation(relation) => {
+                let data = match &relation.data {
+                    ReplaceDataTreatment::Fields(treatments) => {
+                        let entries = treatments
+                            .iter()
+                            .map(|treatment| match treatment {
+                                ReplaceFieldTreatment::Same(field) => format!("{field} = same"),
+                                ReplaceFieldTreatment::Assign(field, value) => {
+                                    format!("{field} = {}", self.format_expr(value))
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        format!("data {{\n{entries}\n}}")
+                    }
+                    ReplaceDataTreatment::SameExcept(assigned) => {
+                        let entries = assigned
+                            .iter()
+                            .map(|(field, value)| format!("{field} = {}", self.format_expr(value)))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        format!("data = same except {{\n{entries}\n}}")
+                    }
+                };
+                let lock = match &relation.lock {
+                    ReplaceLockTreatment::Same => "lock = same".to_string(),
+                    ReplaceLockTreatment::Exact(lock) => format!("lock = exact({})", self.format_expr(lock)),
+                };
+                format!(
+                    "replace {} -> {} {{\n{}\n{}\ncapacity = same\nidentity = same\n}}",
+                    relation.before, relation.after, data, lock
+                )
+            }
             Expr::Block(stmts) => format!("{{ {} }}", self.format_expr_block_body(stmts)),
             Expr::Tuple(items) => format!("({})", items.iter().map(|item| self.format_expr(item)).collect::<Vec<_>>().join(", ")),
             Expr::Array(items) => format!("[{}]", items.iter().map(|item| self.format_expr(item)).collect::<Vec<_>>().join(", ")),

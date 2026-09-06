@@ -8,8 +8,11 @@ role, disposition, claim, entry-selection, source-map, and layered-identity
 records plus a separately routed Edition 2027 preview frontend and
 `cellc expand`. The `cellscript-source-semantics-2027-authoring1` route now
 shares the complete 2026 declaration/value/statement grammar, accepts ordinary
-multi-entry source modules, and makes the action/lock `verification` marker
-optional. A separate bounded Type-policy artifact path now dispatches explicitly
+multi-entry source modules, makes the action/lock `verification` marker
+optional, and accepts branch-local `replace before -> after` successor
+relations with schema-resolved `same except` expansion, explicit
+lock/capacity/identity treatments and source-level path completeness
+(`lock = same` and `exact_hash` stay reserved fail-closed). A separate bounded Type-policy artifact path now dispatches explicitly
 tagged actions from full Script-hash keyed witness records. Complete product and
 authenticated lifecycle support, independent machine dispatch proof and concise
 relations remain implementation work, not implied by grammar reuse. The branch retains the bounded native

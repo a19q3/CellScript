@@ -924,6 +924,7 @@ pub enum Expr {
     Require(RequireExpr),
     RequireBlock(RequireBlockExpr),
     Preserve(PreserveExpr),
+    ReplaceRelation(ReplaceRelation),
     Block(Vec<Stmt>),
     Tuple(Vec<Expr>),
     Array(Vec<Expr>),
@@ -962,6 +963,7 @@ impl Expr {
             Expr::Require(e) => e.span,
             Expr::RequireBlock(e) => e.span,
             Expr::Preserve(e) => e.span,
+            Expr::ReplaceRelation(e) => e.span,
             Expr::Block(_) => Span::default(),
             Expr::Tuple(_) => Span::default(),
             Expr::Array(_) => Span::default(),
@@ -1163,6 +1165,99 @@ pub struct PreserveExpr {
     pub input_name: String,
     pub fields: Vec<String>,
     pub span: Span,
+}
+
+/// Authoring successor relation: `replace before -> after { ... }`.
+///
+/// A relation-local one-to-one successor over two bound Cell parameters. The
+/// declaration is the sole authority for its checks: data treatments expand
+/// exhaustively against the resolved concrete schema, and the lock, capacity
+/// and identity treatments map onto the checked cell-metadata equalities.
+/// IR lowering elaborates the relation into the same consume, equality and
+/// output-binding instructions as the spelled-out Edition 2026 forms; the
+/// node itself is retained for formatting, diagnostics and relation records.
+#[derive(Debug, Clone)]
+pub struct ReplaceRelation {
+    pub before: String,
+    pub after: String,
+    pub data: ReplaceDataTreatment,
+    pub lock: ReplaceLockTreatment,
+    pub capacity: ReplaceCapacityTreatment,
+    pub identity: ReplaceIdentityTreatment,
+    pub span: Span,
+}
+
+/// Every field of the concrete schema must appear in exactly one treatment.
+#[derive(Debug, Clone)]
+pub enum ReplaceDataTreatment {
+    /// `data { same { f, ... } f = expr ... }` — explicit exhaustive list.
+    Fields(Vec<ReplaceFieldTreatment>),
+    /// `data = same except { f = expr ... }` — expanded against the schema.
+    SameExcept(Vec<(String, Expr)>),
+}
+
+#[derive(Debug, Clone)]
+pub enum ReplaceFieldTreatment {
+    /// `f = same` / `same { f, ... }` — the field is preserved verbatim.
+    Same(String),
+    /// `f = expr` — the listed field must equal the expression.
+    Assign(String, Expr),
+}
+
+/// Omission cannot silently release the lock constraint, so a treatment is
+/// required. `exact_hash(...)` is rejected until the authoring target freezes
+/// its Script-hash value contract.
+#[derive(Debug, Clone)]
+pub enum ReplaceLockTreatment {
+    /// `lock = same` — the complete output Lock Script hash is preserved.
+    Same,
+    /// `lock = exact(expr)` — the successor is created with this lock.
+    Exact(Box<Expr>),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ReplaceCapacityTreatment {
+    /// `capacity = same` — exact capacity equality.
+    Same,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ReplaceIdentityTreatment {
+    /// `identity = same` — the successor keeps the predecessor's Type identity.
+    Same,
+}
+
+impl ReplaceRelation {
+    /// The lock target expression, when the successor is created explicitly.
+    pub fn lock_expr(&self) -> Option<&Expr> {
+        match &self.lock {
+            ReplaceLockTreatment::Exact(lock) => Some(lock),
+            ReplaceLockTreatment::Same => None,
+        }
+    }
+
+    /// Every value expression inside the data and lock treatments.
+    pub fn value_exprs(&self) -> Vec<&Expr> {
+        let mut inner = Vec::new();
+        if let Some(lock) = self.lock_expr() {
+            inner.push(lock);
+        }
+        match &self.data {
+            ReplaceDataTreatment::Fields(treatments) => {
+                for treatment in treatments {
+                    if let ReplaceFieldTreatment::Assign(_, value) = treatment {
+                        inner.push(value);
+                    }
+                }
+            }
+            ReplaceDataTreatment::SameExcept(assigned) => {
+                for (_, value) in assigned {
+                    inner.push(value);
+                }
+            }
+        }
+        inner
+    }
 }
 
 #[derive(Debug, Clone)]

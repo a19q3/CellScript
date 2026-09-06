@@ -11,13 +11,14 @@ editions = ["2026", "2027"]
 
 [mode.quick]
 budget = 64
-min_cases = 23
-min_accept = 13
+min_cases = 24
+min_accept = 14
 min_reject = 10
 required_origins = [
     "generated",
     "tests/syntax_combo/seeds/authoring-action.cell",
     "tests/syntax_combo/seeds/authoring-lock.cell",
+    "tests/syntax_combo/seeds/authoring-replace-relation.cell",
     "tests/syntax_combo/seeds/bitwise-shift.cell",
     "tests/syntax_combo/seeds/bitwise-shift-range-reject.cell",
     "tests/syntax_combo/seeds/bounded-quantifier.cell",
@@ -61,13 +62,14 @@ description = "Local smoke: deterministic generated cases and regression seeds i
 
 [mode.ci]
 budget = 1000
-min_cases = 45
-min_accept = 27
+min_cases = 46
+min_accept = 28
 min_reject = 18
 required_origins = [
     "generated",
     "tests/syntax_combo/seeds/authoring-action.cell",
     "tests/syntax_combo/seeds/authoring-lock.cell",
+    "tests/syntax_combo/seeds/authoring-replace-relation.cell",
     "tests/syntax_combo/seeds/bitwise-shift.cell",
     "tests/syntax_combo/seeds/bitwise-shift-range-reject.cell",
     "tests/syntax_combo/seeds/bounded-quantifier.cell",
@@ -121,13 +123,14 @@ description = "PR gate: pairwise generated cases and regression seeds in both au
 
 [mode.deep]
 budget = 5000
-min_cases = 48
-min_accept = 27
+min_cases = 49
+min_accept = 28
 min_reject = 21
 required_origins = [
     "generated",
     "tests/syntax_combo/seeds/authoring-action.cell",
     "tests/syntax_combo/seeds/authoring-lock.cell",
+    "tests/syntax_combo/seeds/authoring-replace-relation.cell",
     "tests/syntax_combo/seeds/bitwise-shift.cell",
     "tests/syntax_combo/seeds/bitwise-shift-range-reject.cell",
     "tests/syntax_combo/seeds/bounded-quantifier.cell",

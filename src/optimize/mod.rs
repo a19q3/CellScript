@@ -290,6 +290,7 @@ impl Optimizer {
                 Ok(Expr::RequireBlock(RequireBlockExpr { expressions: optimized, span: require_block.span }))
             }
             Expr::Preserve(preserve) => Ok(Expr::Preserve(preserve.clone())),
+            Expr::ReplaceRelation(relation) => Ok(Expr::ReplaceRelation(relation.clone())),
             Expr::Block(stmts) => Ok(Expr::Block(self.with_child_scope(|this| this.optimize_stmts(stmts))?)),
             Expr::Tuple(items) => {
                 let mut optimized = Vec::with_capacity(items.len());
@@ -761,6 +762,11 @@ fn collect_call_names_from_expr(expr: &Expr, names: &mut Vec<String>) {
 
 fn walk_expr_children_for_calls(expr: &Expr, names: &mut Vec<String>) {
     match expr {
+        Expr::ReplaceRelation(relation) => {
+            for value in relation.value_exprs() {
+                walk_expr_children_for_calls(value, names);
+            }
+        }
         Expr::Assign(assign) => {
             collect_call_names_from_expr(&assign.target, names);
             collect_call_names_from_expr(&assign.value, names);
@@ -890,6 +896,13 @@ fn collect_used_names_from_expr(expr: &Expr, names: &mut HashSet<String>) {
 
 fn collect_names_by_walking_expr(expr: &Expr, names: &mut HashSet<String>) {
     match expr {
+        Expr::ReplaceRelation(relation) => {
+            names.insert(relation.before.clone());
+            names.insert(relation.after.clone());
+            for value in relation.value_exprs() {
+                collect_names_by_walking_expr(value, names);
+            }
+        }
         Expr::Identifier(name) => {
             names.insert(name.clone());
         }
@@ -985,6 +998,9 @@ fn expr_is_pure_inlineable(expr: &Expr, pure_functions: &HashSet<String>) -> boo
     let pure = |expr: &Expr| expr_is_pure_inlineable(expr, pure_functions);
     match expr {
         Expr::Integer(_) | Expr::Bool(_) | Expr::String(_) | Expr::ByteString(_) | Expr::Identifier(_) => true,
+        // A relation consumes its predecessor and binds its successor; it is
+        // never pure-inlineable even when its value is discarded.
+        Expr::ReplaceRelation(_) => false,
         Expr::Binary(binary) => {
             matches!(
                 binary.op,
@@ -1133,6 +1149,37 @@ fn substitute_expr(expr: &Expr, substitutions: &HashMap<String, Expr>) -> Expr {
             fields: preserve.fields.clone(),
             span: preserve.span,
         }),
+        Expr::ReplaceRelation(relation) => {
+            let lock = match &relation.lock {
+                ReplaceLockTreatment::Same => ReplaceLockTreatment::Same,
+                ReplaceLockTreatment::Exact(lock) => ReplaceLockTreatment::Exact(Box::new(substitute_expr(lock, substitutions))),
+            };
+            let data = match &relation.data {
+                ReplaceDataTreatment::Fields(treatments) => ReplaceDataTreatment::Fields(
+                    treatments
+                        .iter()
+                        .map(|treatment| match treatment {
+                            ReplaceFieldTreatment::Same(field) => ReplaceFieldTreatment::Same(field.clone()),
+                            ReplaceFieldTreatment::Assign(field, value) => {
+                                ReplaceFieldTreatment::Assign(field.clone(), substitute_expr(value, substitutions))
+                            }
+                        })
+                        .collect(),
+                ),
+                ReplaceDataTreatment::SameExcept(assigned) => ReplaceDataTreatment::SameExcept(
+                    assigned.iter().map(|(field, value)| (field.clone(), substitute_expr(value, substitutions))).collect(),
+                ),
+            };
+            Expr::ReplaceRelation(ReplaceRelation {
+                before: relation.before.clone(),
+                after: relation.after.clone(),
+                data,
+                lock,
+                capacity: relation.capacity,
+                identity: relation.identity,
+                span: relation.span,
+            })
+        }
         Expr::Create(_)
         | Expr::Consume(_)
         | Expr::Destroy(_)
