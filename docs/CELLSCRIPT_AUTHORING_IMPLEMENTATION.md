@@ -40,9 +40,9 @@ are not implementation of a required supported feature.
 | Complete authoring language | Shared declarations, expressions, statements, types, and full callable bodies; meaningful edits and readable diagnostics on the adopted corpus. | Shared kernel, optional marker and ordinary-action `replace` successor relations are implemented; remaining relation forms, acknowledgements and corpus evaluation are pending. |
 | No 2026 feature regression | Positive and negative cross-edition source, typed obligation, format, artifact, and runtime checks for the feature families below. | Dedicated differential tests, the cross-edition syntax matrix and the 2026 `replace`-as-identifier boundary pass the 2026-09-06 `dev` gate; `ci`, full `backend` and release evidence remain pending. |
 | Direct semantic elaboration | Structured relation nodes with spans, typed schema resolution, and checked lowering; no generated preview4 text reparsing. | Implemented for `replace`: parser, AST, type checking and IR elaborate the relation directly, including concrete-schema `same except`; other constructor forms remain pending. |
-| Path-sensitive successor relations | Assigned/preserved fields, identity, lock, capacity and output correspondence compose inside ordinary `if`/`match`; every accepting path accounts for roles. | Source-level completeness enforced for authoring relations (conditional skip, double disposal and loop disposal rejected with real VM positives/negatives); a successor in each `if` arm still meets the existing single-create entry contract, which remains the tracked boundary. |
+| Path-sensitive successor relations | Assigned/preserved fields, identity, lock, capacity and output correspondence compose inside ordinary `if`/`match`; every accepting path accounts for roles. | Implemented for authoring relations: source-level completeness (conditional skip, double disposal and loop disposal rejected) and relations in each branch of an `if` compile and validate after sibling arms stopped reusing non-dominating schema-field materializations. |
 | `same except` and upgrades | Concrete schema identity, exhaustive expansion, reproducible focused acknowledgement, changed/stale/missing acknowledgement rejection, no implicit repin. | `data = same except` expands against the resolved concrete schema with unknown/duplicate-field rejection; the schema acknowledgement workflow remains pending. |
-| Constructor defaults | A1-A6 policies are total under resolved context; lock omission, capacity alternatives, identity, group coverage, alias rejection and pool domains have one checked meaning. | Relations require explicit data, lock, capacity and identity treatments (omission is rejected, not defaulted); `lock = exact(address)` is executable, `lock = same` and `exact_hash` are reserved fail-closed; other constructors pending. |
+| Constructor defaults | A1-A6 policies are total under resolved context; lock omission, capacity alternatives, identity, group coverage, alias rejection and pool domains have one checked meaning. | Relations require explicit data, lock, capacity and identity treatments (omission is rejected, not defaulted); `lock = exact(address)` and `lock = same` are executable with checked conservation; `exact_hash` stays reserved pending the Script-hash value contract; other constructors pending. |
 | Exact artifact entry | Codegen, semantic metadata, CLI execution and explicit entry scoping agree, including selected actions calling other retained actions. | Shared selection, terminal scalar/Unit helper failure and VM regressions implemented; policy Cell-bearing and complex-ABI callee closure remains pending. |
 | Resolved physical bindings | One typed per-binding source/ordinal/identity plan drives codegen, provenance, roles and independent checks; mixed Cell/read/witness/Script.args layouts cannot disagree. | Fixed-Cell runtime plan and typed projection checks implemented; full ABI and machine-dataflow closure remain pending. |
 | One deployed multi-action policy | Declared action set and explicit versioned dispatch bind selectors, payloads, common checks, artifact identity and builders. | Bounded fixed-role Type policy implemented in compiler/VM, metadata/expansion and package/builders; full consumer and deployment closure remains pending. |
@@ -107,18 +107,22 @@ Edition 2026 form (identical obligation set, formatter round-trip) plus real
 CKB-VM positives and negatives. The 2026 grammar keeps `replace` as an
 ordinary identifier.
 
-Three boundaries are deliberate and tested. `lock = same` is reserved:
-executing a successor without an explicit lock target has no conservation
-enforcement today (the spelled-out create-without-lock form fails the same
-way), so executable artifacts fail closed with that remediation.
-`exact_hash(...)` is rejected until the authoring target freezes its
-Script-hash value contract. And a relation in each branch of an `if`
-satisfies the new path-sensitive completeness check but still meets the
-existing single-create entry contract, which is the tracked branch-local
-successor limitation shared with Edition 2026. Source-level successor
-completeness is now enforced for the authoring route: a role disposed
-anywhere must be disposed exactly once on every accepting path, and disposal
-inside loops is rejected.
+Two boundaries are deliberate and tested. `exact_hash(...)` is rejected
+until the authoring target freezes its Script-hash value contract. And a
+relation whose successor would need to bind more than the relation states is
+rejected rather than defaulted. Source-level successor completeness is
+enforced for the authoring route: a role disposed anywhere must be disposed
+exactly once on every accepting path, and disposal inside loops is rejected.
+
+`lock = same` is executable: conservation recognizes the updated-successor
+shape, where every field is either a verbatim alias of the consumed input or
+a verifier-checked u64 update whose provenance roots in it (constant offsets
+keep field provenance, mirroring subtraction). Branch-local relations work
+in both `if` arms: cached schema-field reads now carry a branch depth and
+epoch, and sibling arms or loop bodies re-materialize when the defining
+context does not dominate, which removes an unsound cross-arm reuse that
+previously failed the typed-record dataflow check. Existing generated code
+is unchanged; only the previously invalid branch-local shapes differ.
 
 ## Binding correctness found during parity work
 

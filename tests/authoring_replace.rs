@@ -119,26 +119,47 @@ fn exact_lock_relation_is_checked_sugar_over_the_legacy_transfer() {
 }
 
 #[test]
-fn same_except_expands_the_schema_while_lock_same_stays_reserved() {
-    // The `same except` form parses, resolves against the concrete schema and
-    // type checks; `lock = same` is reserved until successors without an
-    // explicit lock target gain their own conservation enforcement, so the
-    // executable surface fails closed with that precise remediation.
-    let error = errors_2027(SAME_LOCK_RELATION);
-    assert!(error.contains("`lock = same` is reserved"), "{error}");
-    // The spelled-out Edition 2026 form (create without an explicit lock)
-    // hits the same boundary from the other side: conservation enforcement
-    // is a runtime gap there too, so neither edition silently weakens it.
-    let legacy_error = compile_with_executable_surface_policy(
-        SAME_LOCK_LEGACY,
-        options(CellScriptEdition::Edition2026),
-        ExecutableSurfacePolicy::DenyFailClosed,
-    )
-    .expect_err("unlocked successor must stay non-executable")
-    .to_string();
-    assert!(legacy_error.contains("resource-conservation"), "{legacy_error}");
+fn same_except_and_lock_same_execute_with_checked_field_updates() {
+    // The `same except` form expands against the concrete schema and the
+    // `lock = same` treatment pins the successor's complete Lock Script hash
+    // to the predecessor's: conservation recognizes the updated-successor
+    // shape (verbatim aliases plus verifier-checked u64 updates rooted in the
+    // consumed input), so both spellings stay executable under
+    // DenyFailClosed.
+    let relation = compile_2027(SAME_LOCK_RELATION);
+    let legacy = compile_2026(SAME_LOCK_LEGACY);
+    assert_identical_machine_code(&relation, &legacy);
+    assert!(
+        relation.metadata.actions[0]
+            .proof_plan
+            .iter()
+            .any(|proof| { proof.feature == "resource-conservation:Note" && proof.on_chain_checked }),
+        "the updated successor must carry checked conservation evidence"
+    );
 
-    // Field validation still runs before the reserved boundary is reported.
+    // Note's layout is owner (32-byte Address) followed by amount (u64).
+    let owner = deterministic_always_success_lock_hash();
+    let note_data = |amount: u64| -> Bytes {
+        let mut data = owner.to_vec();
+        data.extend_from_slice(&amount.to_le_bytes());
+        Bytes::from(data)
+    };
+    let run = |input_amount: u64, output_amount: u64| {
+        let mut fixture = build_simple_fixture(Bytes::default(), 1, 1);
+        fixture.current_type_script_input_indices = vec![0];
+        fixture.inputs[0].data = note_data(input_amount);
+        fixture.outputs[0].data = note_data(output_amount);
+        let execution = execute_cellscript_script(strip_vm_abi_trailer(&relation.artifact_bytes), &fixture);
+        (execution.exit_code, execution.captured_debug.clone())
+    };
+    let (exit, debug) = run(7, 8);
+    assert_eq!(exit, 0, "a verifier-checked amount update must pass: {debug:?}");
+    let (exit, _) = run(7, 7);
+    assert_ne!(exit, 0, "skipping the declared update must reject");
+    let (exit, _) = run(7, 9);
+    assert_ne!(exit, 0, "an off-by-more update must reject");
+
+    // Field validation still fails closed on unknown fields.
     let unknown_field = SAME_LOCK_RELATION.replace("amount = note.amount + 1", "ghost = note.amount + 1");
     let message = errors_2027(&unknown_field);
     assert!(message.contains("does not exist on the relation's resource"), "{message}");
@@ -258,16 +279,12 @@ action greedy(input token: Token, witness recipient: Address) -> next: Token {
 #[test]
 fn path_sensitive_successor_completeness_rejects_partial_and_double_disposal() {
     assert!(errors_2027(CONDITIONAL_DISPOSAL).contains("every accepting path must dispose"), "a branch that skips disposal must fail");
-    // Both branches covering the role satisfies the path-sensitive check,
-    // but a successor in each branch still trips the existing single-create
-    // entry contract ("local not defined on every incoming path"). That
-    // boundary is the tracked branch-local successor limitation of the
-    // shared entry contract, identical in both editions.
-    let complete_error = errors_2027(COMPLETE_DISPOSAL);
-    assert!(
-        complete_error.contains("not defined on every incoming path"),
-        "branch-local successors are blocked by the single-create entry contract: {complete_error}"
-    );
+    // Both branches covering the role satisfies the path-sensitive check and
+    // now compiles: sibling branch arms re-materialize schema fields instead
+    // of reusing a predecessor-only definition, so each arm's create stands
+    // on its own and the typed record validates.
+    let complete = compile_2027(COMPLETE_DISPOSAL);
+    assert_eq!(complete.metadata.actions.len(), 1, "both branches covering the role must compile");
     assert!(errors_2027(DOUBLE_DISPOSAL).contains("disposed of twice"), "two disposals on one path must fail");
 }
 

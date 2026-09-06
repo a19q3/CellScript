@@ -10823,6 +10823,13 @@ fn resource_conservation_checked_detail(
         ));
     }
 
+    if resource_conservation_updated_successor_is_checked(body, type_layouts, availability, consumed, created) {
+        return Some(format!(
+            "Compiler-emitted runtime verifier checks one consumed '{}' Input is preserved into one created Output with verifier-checked field updates derived from the consumed Input; resource-conservation=checked-runtime; fields: {}",
+            type_name, fields
+        ));
+    }
+
     if resource_conservation_pairs_are_checked(body, type_layouts, availability, consumed, created) {
         return Some(format!(
             "Compiler-emitted runtime verifier checks {} consumed '{}' Inputs are preserved into {} paired Outputs; resource-conservation=checked-runtime; fields: {}",
@@ -10884,6 +10891,50 @@ fn resource_conservation_pair_is_checked(
             return false;
         };
         aliases.get(&var.id).is_some_and(|alias| alias.root_id == consumed.id && alias.field == field.as_str())
+    })
+}
+
+fn resource_conservation_updated_successor_is_checked(
+    body: &ir::IrBody,
+    type_layouts: &MetadataTypeLayouts,
+    availability: &MetadataPreludeAvailability,
+    consumed: &[ir::IrVar],
+    created: &[ir::CreatePattern],
+) -> bool {
+    if consumed.len() != 1 || created.len() != 1 {
+        return false;
+    }
+    let created = &created[0];
+    if !metadata_can_verify_create_output_fields(created, type_layouts, availability)
+        || !metadata_can_verify_output_lock(created, availability)
+    {
+        return false;
+    }
+    let aliases = metadata_field_aliases(body);
+    let sources = metadata_u64_sources(body);
+    let consumed_id = consumed[0].id;
+    created.fields.iter().all(|(field, operand)| {
+        let ir::IrOperand::Var(var) = operand else {
+            return false;
+        };
+        // Preserved verbatim: a pure alias of the same field on the consumed
+        // input.
+        if aliases.get(&var.id).is_some_and(|alias| alias.root_id == consumed_id && alias.field == *field) {
+            return true;
+        }
+        // Updated: a u64 value whose field provenance still roots entirely in
+        // the consumed input (for example `note.amount + 1`), so the create's
+        // field check verifies the update against the consumed input.
+        if var.ty != ir::IrType::U64 {
+            return false;
+        }
+        let Some(source) = sources.get(&var.id) else {
+            return false;
+        };
+        let mut roots = Vec::new();
+        metadata_u64_source_collect_field_roots(source, field, &mut roots)
+            && !roots.is_empty()
+            && roots.iter().all(|root| *root == consumed_id)
     })
 }
 
@@ -11268,10 +11319,22 @@ fn metadata_u64_sources(body: &ir::IrBody) -> HashMap<usize, MetadataU64Source> 
                     sources.insert(dest.id, MetadataU64Source::Field(alias));
                 }
                 ir::IrInstruction::Binary { dest, op: ast::BinaryOp::Add, left, right } if dest.ty == ir::IrType::U64 => {
-                    if let (Some(left), Some(right)) =
-                        (metadata_u64_source_for_operand(left, &sources), metadata_u64_source_for_operand(right, &sources))
-                    {
-                        sources.insert(dest.id, MetadataU64Source::Add(Box::new(left), Box::new(right)));
+                    let left_source = metadata_u64_source_for_operand(left, &sources);
+                    let right_source = metadata_u64_source_for_operand(right, &sources);
+                    // A constant offset does not change field provenance, so it
+                    // propagates the other side's source exactly like the
+                    // opaque subtrahend of a subtraction.
+                    match (left_source, right_source) {
+                        (Some(left), Some(right)) => {
+                            sources.insert(dest.id, MetadataU64Source::Add(Box::new(left), Box::new(right)));
+                        }
+                        (Some(left), None) if matches!(right, ir::IrOperand::Const(_)) => {
+                            sources.insert(dest.id, left);
+                        }
+                        (None, Some(right)) if matches!(left, ir::IrOperand::Const(_)) => {
+                            sources.insert(dest.id, right);
+                        }
+                        _ => {}
                     }
                 }
                 ir::IrInstruction::Binary { dest, op: ast::BinaryOp::Sub, left, right } if dest.ty == ir::IrType::U64 => {

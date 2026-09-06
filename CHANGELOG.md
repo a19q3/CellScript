@@ -2,6 +2,22 @@
 
 ## 0.26b - Experimental semantic-foundation branch
 
+- Make `lock = same` executable and unlock branch-local successors. Resource
+  conservation now recognizes the updated-successor shape — verbatim field
+  aliases plus verifier-checked u64 updates whose provenance roots in the
+  consumed input (constant offsets keep field provenance, mirroring
+  subtraction) — so a relation without an explicit lock target carries
+  checked conservation evidence, executes in the real CKB-VM with positive
+  and negative amount-update cases, and matches the spelled-out Edition 2026
+  form. Separately, sibling branch arms no longer reuse a schema-field
+  materialization defined only in the other arm: cached field reads now
+  carry a branch depth and epoch, arms and loop bodies re-materialize when
+  the defining context does not dominate, and a `replace` relation in each
+  branch of an `if` compiles and validates. Existing generated code is
+  unchanged (892 unit tests, the full regression batch and all 218 iCKB
+  differential rows pass without drift); only `exact_hash` stays reserved
+  pending the Script-hash value contract.
+
 - Add branch-local successor relations to the authoring route:
   `replace before -> after { data … lock = exact(address) capacity = same
   identity = same }` inside ordinary actions. `data { f = same, f = expr }`

@@ -11,8 +11,9 @@ shares the complete 2026 declaration/value/statement grammar, accepts ordinary
 multi-entry source modules, makes the action/lock `verification` marker
 optional, and accepts branch-local `replace before -> after` successor
 relations with schema-resolved `same except` expansion, explicit
-lock/capacity/identity treatments and source-level path completeness
-(`lock = same` and `exact_hash` stay reserved fail-closed). A separate bounded
+lock/capacity/identity treatments and source-level path completeness,
+including relations in each branch of an `if` (`exact_hash` stays reserved
+fail-closed pending the Script-hash value contract). A separate bounded
 Type-policy artifact path now dispatches explicitly tagged actions from full
 Script-hash keyed witness records. An authenticated issuer lifecycle now
 executes locally in CKB-VM under one persistent policy; complete product and

@@ -1004,6 +1004,12 @@ pub struct IrGenerator {
     block_counter: usize,
     aggregate_fields: HashMap<usize, HashMap<String, IrVar>>,
     schema_field_roots: HashMap<usize, (usize, String)>,
+    /// (branch depth, branch epoch) in which a materialized schema field
+    /// became reusable. A cached read is only reused when its defining
+    /// context dominates the current one; sibling branch arms re-materialize.
+    aggregate_field_contexts: HashMap<usize, (u32, u32)>,
+    branch_depth: u32,
+    branch_epoch: u32,
     aggregate_elements: HashMap<usize, Vec<IrVar>>,
     mutated_fields: HashMap<usize, BTreeSet<String>>,
     mutated_field_transitions: HashMap<usize, BTreeMap<String, MutateFieldTransition>>,
@@ -1247,6 +1253,9 @@ impl IrGenerator {
             block_counter: 0,
             aggregate_fields: HashMap::new(),
             schema_field_roots: HashMap::new(),
+            aggregate_field_contexts: HashMap::new(),
+            branch_depth: 0,
+            branch_epoch: 0,
             aggregate_elements: HashMap::new(),
             mutated_fields: HashMap::new(),
             mutated_field_transitions: HashMap::new(),
@@ -2510,8 +2519,8 @@ impl IrGenerator {
             }
             Expr::ReplaceRelation(relation) => {
                 footprint.has_consume = true;
+                footprint.has_create = true;
                 if let ReplaceLockTreatment::Exact(lock) = &relation.lock {
-                    footprint.has_create = true;
                     self.check_expr_effects(lock, footprint);
                 }
                 match &relation.data {
@@ -3798,12 +3807,20 @@ impl IrGenerator {
         self.block_mut(blocks, current).terminator = IrTerminator::Branch { cond, then_block, else_block };
 
         let mut then_vars = vars.clone();
+        self.branch_depth += 1;
+        self.branch_epoch += 1;
         let then_exit = self.lower_stmts(&if_stmt.then_branch, then_block, blocks, &mut then_vars, return_type, tail_expr_returns);
+        self.branch_depth -= 1;
 
         let mut else_vars = vars.clone();
+        self.branch_epoch += 1;
+        self.branch_depth += 1;
         let else_exit = if let Some(else_branch) = &if_stmt.else_branch {
-            self.lower_stmts(else_branch, else_block, blocks, &mut else_vars, return_type, tail_expr_returns)
+            let exit = self.lower_stmts(else_branch, else_block, blocks, &mut else_vars, return_type, tail_expr_returns);
+            self.branch_depth -= 1;
+            exit
         } else {
+            self.branch_depth -= 1;
             Some(else_block)
         };
 
@@ -3843,9 +3860,15 @@ impl IrGenerator {
         self.block_mut(blocks, current).terminator = IrTerminator::Branch { cond, then_block, else_block };
 
         let mut then_vars = vars.clone();
+        self.branch_depth += 1;
+        self.branch_epoch += 1;
         let then_lowered = self.lower_tail_block_value(&if_stmt.then_branch, then_block, blocks, &mut then_vars);
+        self.branch_depth -= 1;
         let mut else_vars = vars.clone();
+        self.branch_epoch += 1;
+        self.branch_depth += 1;
         let else_lowered = self.lower_tail_block_value(else_branch, else_block, blocks, &mut else_vars);
+        self.branch_depth -= 1;
 
         if then_lowered.current.is_none() && else_lowered.current.is_none() {
             return LoweredExpr { operand: IrOperand::Const(IrConst::Unit), current: None };
@@ -3897,11 +3920,17 @@ impl IrGenerator {
         self.block_mut(blocks, current).terminator = IrTerminator::Branch { cond, then_block, else_block };
 
         let mut then_vars = vars.clone();
+        self.branch_depth += 1;
+        self.branch_epoch += 1;
         let then_lowered =
             self.lower_tail_block_value_with_expected_type(&if_stmt.then_branch, expected_ty, then_block, blocks, &mut then_vars);
+        self.branch_depth -= 1;
         let mut else_vars = vars.clone();
+        self.branch_epoch += 1;
+        self.branch_depth += 1;
         let else_lowered =
             self.lower_tail_block_value_with_expected_type(else_branch, expected_ty, else_block, blocks, &mut else_vars);
+        self.branch_depth -= 1;
 
         if then_lowered.current.is_none() && else_lowered.current.is_none() {
             return LoweredExpr { operand: IrOperand::Const(IrConst::Unit), current: None };
@@ -3945,9 +3974,12 @@ impl IrGenerator {
         self.block_mut(blocks, cond_exit).terminator = IrTerminator::Branch { cond, then_block: body_block, else_block: exit_block };
 
         let mut body_vars = vars.clone();
+        self.branch_depth += 1;
+        self.branch_epoch += 1;
         self.loop_targets.push(LoopTarget { label: while_stmt.label.clone(), break_block: exit_block, continue_block: cond_entry });
         let body_exit = self.lower_stmts(&while_stmt.body, body_block, blocks, &mut body_vars, return_type, false);
         self.loop_targets.pop();
+        self.branch_depth -= 1;
         if let Some(exit) = body_exit {
             self.block_mut(blocks, exit).terminator = IrTerminator::Jump(cond_entry);
         }
@@ -4034,11 +4066,14 @@ impl IrGenerator {
         });
 
         let mut body_vars = vars.clone();
+        self.branch_depth += 1;
+        self.branch_epoch += 1;
         self.bind_pattern(&for_stmt.pattern, IrOperand::Var(item_var), self.block_mut(blocks, body_block), &mut body_vars);
         if let Some(step_block) = step_block {
             self.loop_targets.push(LoopTarget { label: for_stmt.label.clone(), break_block: exit_block, continue_block: step_block });
         }
         let body_exit = self.lower_stmts(&for_stmt.body, body_block, blocks, &mut body_vars, return_type, false);
+        self.branch_depth -= 1;
         if step_block.is_some() {
             self.loop_targets.pop();
         }
@@ -4559,16 +4594,23 @@ impl IrGenerator {
         active = next;
 
         if let ReplaceLockTreatment::Same = &relation.lock {
-            // Reserved: the create kernel needs an explicit lock target for
-            // executable resource conservation, and no unconstrained-lock
-            // successor enforcement exists yet. The relation parses and type
-            // checks, but executable artifacts fail closed instead of
-            // silently weakening the successor's lock constraint.
-            self.record_error(
-                "replace relation `lock = same` is reserved: executable successors require an explicit lock target for resource conservation; use `lock = exact(address)` until lock-preserving successors gain their own conservation enforcement",
+            // The lock is not bound by the create; pin it to the
+            // predecessor's complete Lock Script hash instead. Conservation
+            // now recognizes the updated-successor shape (verbatim aliases
+            // plus verifier-checked u64 updates rooted in the consumed
+            // input), so this stays executable under DenyFailClosed.
+            let same_lock = StdlibCallExpr {
+                namespace: "cell".to_string(),
+                name: "same_lock".to_string(),
+                args: vec![after_expr.clone(), before_expr.clone()],
+                preserve_fields: Vec::new(),
                 span,
-            );
-            return LoweredExpr { operand: IrOperand::Const(IrConst::Bool(false)), current: Some(active) };
+            };
+            let lowered = self.lower_stdlib_call(&same_lock, active, blocks, vars);
+            let Some(next) = lowered.current else {
+                return lowered;
+            };
+            active = next;
         }
 
         // 4. Identity: the successor keeps the predecessor's Type identity.
@@ -5821,6 +5863,7 @@ impl IrGenerator {
 
             if let Some(fields) = self.aggregate_fields.get(&base_var.id)
                 && let Some(field_var) = fields.get(&field.field)
+                && self.aggregate_field_read_dominates(field_var.id)
             {
                 return LoweredExpr { operand: IrOperand::Var(field_var.clone()), current: Some(active) };
             }
@@ -6196,10 +6239,14 @@ impl IrGenerator {
             }
 
             let mut arm_vars = vars.clone();
+            self.branch_depth += 1;
+            self.branch_epoch += 1;
             if !self.bind_match_pattern(&arm.pattern, lowered_scrutinee.operand.clone(), arm_entry, blocks, &mut arm_vars, arm.span) {
+                self.branch_depth -= 1;
                 return LoweredExpr { operand: IrOperand::Const(IrConst::U64(0)), current: Some(arm_entry) };
             }
             let lowered_value = self.lower_expr(&arm.value, arm_entry, blocks, &mut arm_vars);
+            self.branch_depth -= 1;
             let Some(arm_exit) = lowered_value.current else {
                 continue;
             };
@@ -8450,6 +8497,17 @@ impl IrGenerator {
             .cloned()
     }
 
+    /// A cached field read is reusable only when the context that defined it
+    /// dominates the current lowering position: a strictly shallower branch
+    /// depth always dominates, an equal depth dominates only within the same
+    /// arm epoch. Entries without a recorded context keep the legacy reuse.
+    fn aggregate_field_read_dominates(&self, field_var_id: usize) -> bool {
+        match self.aggregate_field_contexts.get(&field_var_id) {
+            None => true,
+            Some((depth, epoch)) => *depth < self.branch_depth || (*depth == self.branch_depth && *epoch == self.branch_epoch),
+        }
+    }
+
     fn materialize_schema_field(&mut self, base_var: &IrVar, field: &str, current: BlockId, blocks: &mut [IrBlock]) -> Option<IrVar> {
         let field_ty = self.lookup_field_ir_type(&base_var.ty, field)?;
         let field_var = self.new_var(format!("{}_{}", base_var.name, field), field_ty);
@@ -8460,6 +8518,7 @@ impl IrGenerator {
         });
         self.aggregate_fields.entry(base_var.id).or_default().insert(field.to_string(), field_var.clone());
         self.schema_field_roots.insert(field_var.id, (base_var.id, field.to_string()));
+        self.aggregate_field_contexts.insert(field_var.id, (self.branch_depth, self.branch_epoch));
         Some(field_var)
     }
 
@@ -8472,6 +8531,9 @@ impl IrGenerator {
         }
         if let Some(root) = self.schema_field_roots.get(&source_var.id).cloned() {
             self.schema_field_roots.insert(dest_id, root);
+        }
+        if let Some(context) = self.aggregate_field_contexts.get(&source_var.id).copied() {
+            self.aggregate_field_contexts.insert(dest_id, context);
         }
         if let Some(elements) = self.aggregate_elements.get(&source_var.id).cloned() {
             self.aggregate_elements.insert(dest_id, elements);
@@ -9922,9 +9984,7 @@ fn collect_ast_expr_effects(expr: &Expr, footprint: &mut EffectFootprint) {
     match expr {
         Expr::ReplaceRelation(relation) => {
             footprint.has_consume = true;
-            if let ReplaceLockTreatment::Exact(_) = &relation.lock {
-                footprint.has_create = true;
-            }
+            footprint.has_create = true;
             for value in replace_relation_inner_exprs(relation) {
                 collect_ast_expr_effects(value, footprint);
             }
