@@ -2,6 +2,23 @@
 
 ## 0.26b - Experimental semantic-foundation branch
 
+- Compact the deployed ELF layout and use optimal small-immediate encoding.
+  The load segment previously started at file offset 4,096, inserting 3,976
+  zero bytes into every artifact (51% of the audited transfer sample); it
+  now starts at offset 128 with `p_vaddr ≡ p_offset (mod 128)`, keeping the
+  lld-style congruence contract. `li` constants that fit a signed 12-bit
+  immediate encode as one ADDI and 4 KiB-aligned constants as one LUI,
+  sharing one size model between layout and encoding; the fixed-size start
+  trampoline keeps its ABI shape. The audited relation artifact shrinks from
+  7,824 to 3,392 bytes (-57%), below the 5,840-byte matched Rust reference;
+  the token-transfer example is now 2,576 bytes versus 2,624 stripped Rust.
+  All 37 measured iCKB positive transactions also get faster, using 2,132
+  to 4,578 fewer cycles each (-96,037 total). Real CKB-VM behavior is
+  unchanged across the differential corpus (218 rows keep their outcomes;
+  two wrong-XUDT negatives again swap which Script group reports first, the
+  documented qualified-diagnostic class). The artifact-size test no longer
+  requires Rust to stay smaller, per the cost audit's recommendation.
+
 - Make `lock = same` executable and unlock branch-local successors. Resource
   conservation now recognizes the updated-successor shape — verbatim field
   aliases plus verifier-checked u64 updates whose provenance roots in the

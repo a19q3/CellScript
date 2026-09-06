@@ -12,6 +12,11 @@ const RUST_REFERENCE_PACKAGE: &str = "rust-ckb-token-transfer";
 const TOKEN_TRANSFER_MAX_CELLSCRIPT_LOAD_BYTES: usize = 7 * 1024;
 const TOKEN_TRANSFER_MAX_VERIFIED_ELF_OVERHEAD_BYTES: usize = 320;
 const TOKEN_TRANSFER_MAX_RUST_STRIPPED_BYTES: usize = 3 * 1024;
+/// Regression budget after the compact ELF layout and optimal `li` encoding:
+/// the CellScript artifact is no longer required to lose to the stripped Rust
+/// reference (the old assertion rejected a successful optimization). It must
+/// simply stay within the same stripped-Rust byte budget.
+const TOKEN_TRANSFER_MAX_CELLSCRIPT_BYTES: usize = TOKEN_TRANSFER_MAX_RUST_STRIPPED_BYTES;
 
 #[test]
 fn token_transfer_cellscript_artifact_is_compared_against_equivalent_rust_ckb_contract() {
@@ -78,8 +83,10 @@ fn token_transfer_cellscript_artifact_is_compared_against_equivalent_rust_ckb_co
         TOKEN_TRANSFER_MAX_RUST_STRIPPED_BYTES
     );
     assert!(
-        rust_stripped_bytes < cellscript_bytes,
-        "the hand-written Rust lower-bound should remain smaller than CellScript's metadata-backed entry artifact"
+        cellscript_bytes <= TOKEN_TRANSFER_MAX_CELLSCRIPT_BYTES,
+        "CellScript transfer_token artifact grew past the stripped-Rust byte budget: {} > {} bytes",
+        cellscript_bytes,
+        TOKEN_TRANSFER_MAX_CELLSCRIPT_BYTES
     );
     assert!(
         cellscript_bytes * 100 <= rust_stripped_bytes * 300,

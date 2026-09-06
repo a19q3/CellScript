@@ -120,20 +120,25 @@ fn terminal_verifier_failures_reject_hash_rebound_machine_and_record_mutations()
         );
         let failure = valid.record.verifier_failure_exits.iter().find(|exit| exit.code == 5).unwrap().clone();
         let elf = parse_elf(&valid.artifact, CheckerBudgets::default().instructions).unwrap();
-        let constant_last = elf.instructions.iter().find(|instruction| instruction.address == failure.address + 4).unwrap();
-        assert_eq!(constant_last.word >> 20, 5, "fixture uses the assembler's LUI+ADDI materialization");
+        // Small failure codes now materialize with a single ADDI, so the
+        // recorded failure address points directly at the constant.
+        let constant_last = elf.instructions.iter().find(|instruction| instruction.address == failure.address).unwrap();
+        assert_eq!(constant_last.word >> 20, 5, "fixture uses the assembler's single-ADDI materialization");
         let sink = valid.record.entries.iter().find(|entry| entry.name == "__cellscript_abort").unwrap();
         let sink_block = valid.record.blocks.iter().find(|block| block.id == sink.entry_block).unwrap();
         let sink_start = sink_block.range.start;
 
         let mut changed = valid.clone();
-        changed.replace_machine_word(failure.address + 4, constant_last.word & 0x000f_ffff);
+        changed.replace_machine_word(failure.address, constant_last.word & 0x000f_ffff);
         assert_code(&changed, CheckerRejectionCode::V2414ControlFlowInvalid);
 
         let mut changed = valid.clone();
+        // The sink's exit-code constant is a single ADDI now, so the ECALL
+        // sits directly at sink_start + 4: corrupting it trips the
+        // instruction allowlist (V2413) instead of the constant check.
         let syscall_word = elf.instructions.iter().find(|instruction| instruction.address == sink_start + 4).unwrap().word;
         changed.replace_machine_word(sink_start + 4, syscall_word ^ (1 << 20));
-        assert_code(&changed, CheckerRejectionCode::V2414ControlFlowInvalid);
+        assert_code(&changed, CheckerRejectionCode::V2413InstructionInvalid);
 
         let mut changed = valid.clone();
         changed.replace_machine_word(sink_start + 8, 0x0000_8067); // ret instead of EXIT

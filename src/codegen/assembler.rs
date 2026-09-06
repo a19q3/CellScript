@@ -3,7 +3,11 @@ use super::*;
 const ELF_HEADER_SIZE: usize = 64;
 const ELF_PROGRAM_HEADER_SIZE: usize = 56;
 const ELF_SECTION_HEADER_SIZE: usize = 64;
-const ELF_SEGMENT_ALIGN: usize = 0x1000;
+/// The load segment keeps `p_vaddr ≡ p_offset (mod align)` like lld-emitted
+/// CKB contracts, but only needs enough room for the payload start: the
+/// headers end at byte 120 and the payload begins at 128. The previous 4 KiB
+/// alignment inserted 3,976 zero bytes into every deployed artifact.
+const ELF_SEGMENT_ALIGN: usize = 0x80;
 const ELF_PF_X: u32 = 1;
 #[cfg(test)]
 const ELF_PF_W: u32 = 2;
@@ -248,13 +252,16 @@ fn assemble_elf_internal(lines: &[String]) -> Result<Vec<u8>> {
     let rodata_size = plan.metrics.rodata_size;
     let rodata_offset = layout.rodata_offset()?;
     let mut text_bytes = Vec::with_capacity(START_TRAMPOLINE_SIZE + text_user_size);
+    // The trampoline is a fixed-size ABI surface: both paths must encode to
+    // exactly START_TRAMPOLINE_SIZE, so its `li` keeps the two-instruction
+    // form regardless of the immediates. User code uses the optimal forms.
     if entry_requires_explicit_parameter_abi(lines, entry_label) {
-        encode_li_sequence(&mut text_bytes, 10, 25)?;
+        encode_fixed_li_sequence(&mut text_bytes, 10, 25)?;
     } else {
         let entry_addr = parsed.symbol_address(entry_label, &layout)?;
         encode_call_sequence(&mut text_bytes, layout.text_base, entry_addr)?;
     }
-    encode_li_sequence(&mut text_bytes, 17, i128::from(EXIT_SYSCALL_NUMBER))?;
+    encode_fixed_li_sequence(&mut text_bytes, 17, i128::from(EXIT_SYSCALL_NUMBER))?;
     text_bytes.extend_from_slice(&encode_ecall().to_le_bytes());
     debug_assert_eq!(text_bytes.len(), START_TRAMPOLINE_SIZE);
     parsed
@@ -1348,7 +1355,9 @@ fn encode_instruction(
     Ok(())
 }
 
-fn encode_li_sequence(out: &mut Vec<u8>, rd: u8, imm: i128) -> Result<()> {
+/// Fixed two-instruction form for the start trampoline, whose size is part
+/// of the entry ABI contract.
+fn encode_fixed_li_sequence(out: &mut Vec<u8>, rd: u8, imm: i128) -> Result<()> {
     if let Some(signed) = li_signed_i64(imm)
         && li_fits_lui_addi_rv64(signed)
     {
@@ -1358,6 +1367,27 @@ fn encode_li_sequence(out: &mut Vec<u8>, rd: u8, imm: i128) -> Result<()> {
         return Ok(());
     }
     encode_large_li_sequence(out, rd, li_bits(imm)?)
+}
+
+fn encode_li_sequence(out: &mut Vec<u8>, rd: u8, imm: i128) -> Result<()> {
+    match li_form(imm) {
+        LiForm::Addi => {
+            let signed = li_signed_i64(imm).expect("addi form implies an i64 immediate");
+            out.extend_from_slice(&encode_i_type(0x13, rd, 0b000, 0, signed)?.to_le_bytes());
+        }
+        LiForm::Lui => {
+            let signed = li_signed_i64(imm).expect("lui form implies an i64 immediate");
+            out.extend_from_slice(&encode_u_type(0x37, rd, signed >> 12).to_le_bytes());
+        }
+        LiForm::LuiAddi => {
+            let signed = li_signed_i64(imm).expect("lui+addi form implies an i64 immediate");
+            let (hi, lo) = split_hi_lo(signed)?;
+            out.extend_from_slice(&encode_u_type(0x37, rd, hi).to_le_bytes());
+            out.extend_from_slice(&encode_i_type(0x13, rd, 0b000, rd, lo)?.to_le_bytes());
+        }
+        LiForm::Large => encode_large_li_sequence(out, rd, li_bits(imm)?)?,
+    }
+    Ok(())
 }
 
 fn encode_large_li_sequence(out: &mut Vec<u8>, rd: u8, bits: u64) -> Result<()> {
@@ -1427,11 +1457,43 @@ fn op_size(op: &AsmOp, current_offset: usize, section: SectionKind, op_index: us
     }
 }
 
-fn li_sequence_size(imm: i128) -> usize {
-    if li_signed_i64(imm).is_some_and(li_fits_lui_addi_rv64) {
-        8
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiForm {
+    /// `addi rd, zero, imm` for a signed 12-bit immediate.
+    Addi,
+    /// `lui rd, imm >> 12` when the low 12 bits are zero.
+    Lui,
+    /// `lui` + `addi`.
+    LuiAddi,
+    /// Byte-by-byte construction for wide immediates.
+    Large,
+}
+
+fn li_form(imm: i128) -> LiForm {
+    let Some(signed) = li_signed_i64(imm) else {
+        return LiForm::Large;
+    };
+    if (-2048..=2047).contains(&signed) {
+        return LiForm::Addi;
+    }
+    if signed & 0xfff == 0 {
+        let hi = signed >> 12;
+        if (-0x80000..=0x7ffff).contains(&hi) {
+            return LiForm::Lui;
+        }
+    }
+    if li_fits_lui_addi_rv64(signed) {
+        LiForm::LuiAddi
     } else {
-        60
+        LiForm::Large
+    }
+}
+
+fn li_sequence_size(imm: i128) -> usize {
+    match li_form(imm) {
+        LiForm::Addi | LiForm::Lui => 4,
+        LiForm::LuiAddi => 8,
+        LiForm::Large => 60,
     }
 }
 
