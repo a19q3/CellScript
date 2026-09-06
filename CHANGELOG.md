@@ -2,6 +2,18 @@
 
 ## 0.26b - Experimental semantic-foundation branch
 
+- Add a matched cost corpus (`tests/cost_corpus.rs` plus Rust references in
+  `tests/fixtures/cost_corpus/`): three scenarios — a two-input pool merge
+  with a checked sum and output lock binding, a two-field schema-roll
+  successor with one updated field, and an ownership-claim Lock — each
+  compiled on both sides with VM accept/reject parity, byte sizes, cycles
+  and a growth budget. Hand-written Rust references built with the audited
+  profile stay smaller on bytes (1.01-1.41x) while CellScript consistently
+  uses fewer cycles (13-24% less on the measured positives). Deployed sizes
+  of the real DAO, secp256k1, secp-data and xUDT system scripts are printed
+  as context with their different feature scopes called out; they are not
+  matched comparisons.
+
 - Compact the deployed ELF layout and use optimal small-immediate encoding.
   Move the `.text` payload from file offset 4,096 to 128; the LOAD segment
   still starts at file offset 0 and preserves virtual/file-offset congruence.

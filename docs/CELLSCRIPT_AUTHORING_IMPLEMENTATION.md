@@ -542,6 +542,32 @@ instruction allowlist). Remaining size work from the audit — redundant
 schema-size checks, large stack-offset materialization, and compressed
 16-bit encodings — is tracked separately.
 
+### Matched cost corpus
+
+`tests/cost_corpus.rs` compares three named CellScript scenarios against
+hand-written Rust CKB references with the same checked scope, built under
+the audited profile (no_std, ckb-std 1.1.0, opt-level z, thin LTO, one
+codegen unit, aborting panics, llvm-strip). Both sides run on the same VM
+fixtures and must agree on every accept/reject outcome.
+
+| Scenario | CellScript | stripped Rust | ratio | cycles CS / Rust |
+| --- | ---: | ---: | ---: | ---: |
+| Pool merge (2-in, checked sum, lock binding) | 3,984 B | 2,816 B | 1.41x | 6,993 / 9,232 |
+| Schema roll (2 fields, one updated) | 3,760 B | 2,760 B | 1.36x | 9,019 / 10,350 |
+| Ownership-claim Lock | 2,328 B | 2,304 B | 1.01x | - |
+
+Reading: against tight hand-written references, CellScript currently costs
+1.0-1.4x the deployed bytes but consistently fewer cycles (13-24% less on
+the measured positives). The earlier audited transfer sample against an
+ordinary Rust reference was smaller on bytes as well; the corpus shows that
+byte advantage is not universal, while the cycle advantage held everywhere
+measured so far. Real system-script deployments for context: DAO 7,896 B,
+secp256k1 sighash 52,048 B, secp-data 1,048,576 B, xUDT (iCKB original)
+33,696 B — different feature scopes, not matched comparisons. The corpus is
+cost evidence for named samples, not an equivalence claim; the audit's
+remaining size work (redundant checks, stack-offset materialization,
+compressed encodings) is the path to closing the byte gap.
+
 ### WASM playground bundle budget
 
 Rebuilding the canonical playground bundle in the pinned container

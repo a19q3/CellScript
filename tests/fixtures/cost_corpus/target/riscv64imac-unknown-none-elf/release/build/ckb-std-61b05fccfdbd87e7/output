@@ -1,0 +1,2 @@
+cargo:rerun-if-changed=c/dlopen.c
+cargo:rerun-if-changed=c/libc.c
