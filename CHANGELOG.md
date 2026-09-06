@@ -52,9 +52,10 @@
   counts are checked at runtime. Add independent host/adapter codecs,
   pre-signing placement and typed policy/builder projection validation.
   Focused VM tests cover four action cardinalities and malformed requests.
-  Complete authenticated lifecycle, independent machine dispatch proof,
-  branch-local relations, schema acknowledgements and full product support
-  remain implementation work.
+  Chain/deployment closure for the authenticated lifecycle, independent
+  machine dispatch proof, executable branch-alternative successors, remaining
+  relation policies, schema acknowledgements and full product support remain
+  implementation work.
 
 - Correct the unsupported `env::sighash_all` boundary. Classify canonical
   digest construction as `ckb-sighash-all-deferred`, reject it under
@@ -69,9 +70,9 @@
   source, and existing default/read provenance and lifecycle meanings remain
   available. Keep the bounded native preview4 grammar as a reference surface
   and advance source/cache identities without changing the existing witness
-  ABI. Full shared-policy support, concise successor relations and schema
-  acknowledgement remain tracked implementation work, not claims supplied by
-  this authoring baseline.
+  ABI. Full shared-policy product closure, executable branch alternatives,
+  remaining successor-relation policies and schema acknowledgement remain
+  tracked implementation work, not claims supplied by this authoring baseline.
 
 - Resolve fixed Cell locations once in IR and emit them in typed semantics v5.
   Native Type ports now load the actual current Script group; `protected`

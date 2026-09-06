@@ -12,10 +12,13 @@ multi-entry source modules, makes the action/lock `verification` marker
 optional, and accepts branch-local `replace before -> after` successor
 relations with schema-resolved `same except` expansion, explicit
 lock/capacity/identity treatments and source-level path completeness
-(`lock = same` and `exact_hash` stay reserved fail-closed). A separate bounded Type-policy artifact path now dispatches explicitly
-tagged actions from full Script-hash keyed witness records. Complete product and
-authenticated lifecycle support, independent machine dispatch proof and concise
-relations remain implementation work, not implied by grammar reuse. The branch retains the bounded native
+(`lock = same` and `exact_hash` stay reserved fail-closed). A separate bounded
+Type-policy artifact path now dispatches explicitly tagged actions from full
+Script-hash keyed witness records. An authenticated issuer lifecycle now
+executes locally in CKB-VM under one persistent policy; complete product and
+chain closure, independent machine dispatch proof, executable
+branch-alternative successors, remaining relation policies and schema
+acknowledgement remain implementation work. The branch retains the bounded native
 `type_script` and
 `lock_script` surfaces specified in
 `docs/CELLSCRIPT_2027_PREVIEW_GRAMMAR.md`, including fixed-role checked pools,

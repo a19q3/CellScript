@@ -23,9 +23,10 @@ retirement or pooled-accounting guarantee.
 
 The bounded native preview4 grammar remains accepted as an implementation
 reference. It is not the final authoring surface. Complete shared-policy product
-support, concise branch-local relations, and schema acknowledgement are still required.
-Neither reuse of the 2026 parser kernel nor successful scoped action ELFs
-satisfies those requirements.
+support, executable branch-alternative successors, the remaining relation
+policies, and schema acknowledgement are still required. Neither reuse of the
+2026 parser kernel nor successful scoped action ELFs satisfies those
+requirements.
 
 ## Completion requirements
 
@@ -36,9 +37,9 @@ are not implementation of a required supported feature.
 
 | Requirement | Required implementation and evidence | Current disposition |
 |---|---|---|
-| Complete authoring language | Shared declarations, expressions, statements, types, and full callable bodies; meaningful edits and readable diagnostics on the adopted corpus. | Shared kernel, optional marker and `replace` successor relations implemented; formatter prints relations; corpus evaluation pending. |
-| No 2026 feature regression | Positive and negative cross-edition source, typed obligation, format, artifact, and runtime checks for the feature families below. | Dedicated differential tests and cross-edition syntax matrix being established; complete gates pending. |
-| Direct semantic elaboration | Structured relation nodes with spans, typed schema resolution, and checked lowering; no generated preview4 text reparsing. | Existing AST path reused; new relation nodes and elaboration pending. |
+| Complete authoring language | Shared declarations, expressions, statements, types, and full callable bodies; meaningful edits and readable diagnostics on the adopted corpus. | Shared kernel, optional marker and ordinary-action `replace` successor relations are implemented; remaining relation forms, acknowledgements and corpus evaluation are pending. |
+| No 2026 feature regression | Positive and negative cross-edition source, typed obligation, format, artifact, and runtime checks for the feature families below. | Dedicated differential tests, the cross-edition syntax matrix and the 2026 `replace`-as-identifier boundary pass the 2026-09-06 `dev` gate; `ci`, full `backend` and release evidence remain pending. |
+| Direct semantic elaboration | Structured relation nodes with spans, typed schema resolution, and checked lowering; no generated preview4 text reparsing. | Implemented for `replace`: parser, AST, type checking and IR elaborate the relation directly, including concrete-schema `same except`; other constructor forms remain pending. |
 | Path-sensitive successor relations | Assigned/preserved fields, identity, lock, capacity and output correspondence compose inside ordinary `if`/`match`; every accepting path accounts for roles. | Source-level completeness enforced for authoring relations (conditional skip, double disposal and loop disposal rejected with real VM positives/negatives); a successor in each `if` arm still meets the existing single-create entry contract, which remains the tracked boundary. |
 | `same except` and upgrades | Concrete schema identity, exhaustive expansion, reproducible focused acknowledgement, changed/stale/missing acknowledgement rejection, no implicit repin. | `data = same except` expands against the resolved concrete schema with unknown/duplicate-field rejection; the schema acknowledgement workflow remains pending. |
 | Constructor defaults | A1-A6 policies are total under resolved context; lock omission, capacity alternatives, identity, group coverage, alias rejection and pool domains have one checked meaning. | Relations require explicit data, lock, capacity and identity treatments (omission is rejected, not defaulted); `lock = exact(address)` is executable, `lock = same` and `exact_hash` are reserved fail-closed; other constructors pending. |
@@ -46,17 +47,17 @@ are not implementation of a required supported feature.
 | Resolved physical bindings | One typed per-binding source/ordinal/identity plan drives codegen, provenance, roles and independent checks; mixed Cell/read/witness/Script.args layouts cannot disagree. | Fixed-Cell runtime plan and typed projection checks implemented; full ABI and machine-dataflow closure remain pending. |
 | One deployed multi-action policy | Declared action set and explicit versioned dispatch bind selectors, payloads, common checks, artifact identity and builders. | Bounded fixed-role Type policy implemented in compiler/VM, metadata/expansion and package/builders; full consumer and deployment closure remains pending. |
 | Dispatch rejection | Reject unknown/duplicate/ambiguous tags, wrong versions, malformed/oversized/trailing payload, branch confusion and missing policy checks. | Focused real VM negatives implemented for the bounded envelope and all four fixed cardinalities; independent machine dispatch verification remains pending. |
-| Lock authorization | Actual transaction-bound credential proof; reject copied owner values, missing/invalid proof and signed-transaction tampering. | Real multisig policy spending tests implemented for transfer/burn; complete issuer-authorized lifecycle and the precise author API remain pending. |
+| Lock authorization | Actual transaction-bound credential proof; reject copied owner values, missing/invalid proof and signed-transaction tampering. | Real multisig spending and the issuer-authorized mint/transfer/merge/burn VM lifecycle are implemented with credential and post-signing tamper negatives; the precise source-level Script identity/authorization API and chain evidence remain pending. |
 | Script identity API | Distinguish address decoding, full Script construction/hash comparison and signature verification; wrong-domain values fail typing or checked conversion. | Pending. |
-| Orthogonal obligations | Compose lifecycle, identity, asset accounting, capacity and authorization without double counting; scope and authenticated external guarantees remain distinct. | Existing dimensions retained; new relation composition pending. |
+| Orthogonal obligations | Compose lifecycle, identity, asset accounting, capacity and authorization without double counting; scope and authenticated external guarantees remain distinct. | Executable relation sugar produces the same typed obligation set as its spelled-out 2026 form for data, capacity, identity and exact-lock treatment; broader constructor and external-guarantee composition remains pending. |
 | Witness ABI contexts | Type input/output-only entries, Lock entries and shared witnesses have bounded, non-overlapping ownership; preserve old ABI bytes where compatible. | Empty-group fallback, canonical bounded multi-record Type envelope, independent host/adapter codecs and pre-signing placement implemented; full signed shared-policy integration remains pending. |
-| Token lifecycle | Execute generated Token Type Script under one persistent policy through authorized mint, transfer, merge and burn, with positive/negative VM and chain evidence. | Pending; no `always_success` resource substitute. |
+| Token lifecycle | Execute generated Token Type Script under one persistent policy through authorized mint, transfer, merge and burn, with positive/negative VM and chain evidence. | Real CKB-VM coverage executes the complete issuer-authorized lifecycle under identical policy bytes, using earlier verified outputs as later inputs, across both editions and optimization levels 0-3; node admission, chain confirmation and deployment evidence remain pending. |
 | Schema-change lifecycle | Add `approval_nonce`, require reviewed reset on transfer, reject unchanged preservation and stale acknowledgement; retain old deployed-byte meaning. | Pending. |
 | Remaining business corpus | NFT capacity adjustment, fungible splits/merges, partial order, authenticated dependencies and interacting Script groups. | Pending. |
 | Independent artifact checking | Version and validate any new records, recompute identities, bind selected entries/relations/dispatch to machine evidence, and add adversarial mutations. | Typed policy, declaration/ABI and builder parameter projection checks implemented; independent selector/adapter machine proof remains pending. |
-| Language services and products | Parser, recovering diagnostics, formatter, LSP, editor, native CLI, WASM, package loading, public interfaces and builders agree. | Authoring route wired through existing consumers; complete new-surface coverage pending. |
+| Language services and products | Parser, recovering diagnostics, formatter, LSP, editor, native CLI, WASM, package loading, public interfaces and builders agree. | Shared parser diagnostics, formatter round-trip, syntax matrix and VS Code snippet cover `replace`; the fresh WASM bundle exceeds its enforced budget, and complete browser/public-interface closure remains pending. |
 | Reproducibility and compatibility | Source/cache/profile versions, package locks, mixed editions, interfaces and deployment changes are explicit and reproducible. | Source/cache identity advanced; later ABI/dispatch/schema migration pending. |
-| Production acceptance | Applicable `dev`, `ci`, `backend` and clean-source release evidence, exact artifacts, runtime negatives, cycle/size/capacity measurements and required independent review. | Pending for the complete target. |
+| Production acceptance | Applicable `dev`, `ci`, `backend` and clean-source release evidence, exact artifacts, runtime negatives, cycle/size/capacity measurements and required independent review. | The 2026-09-06 `dev` gate passes for the relation tranche. Full `backend` remains blocked at the documented stateful NFT recipe boundary, the release WASM rebuild exceeds budget, and `ci`, release and independent-review evidence remain pending. |
 
 The target includes all A1-A6 contracts, all acceptance fixtures in the authoring
 target, and the applicable RFC gates. This checklist does not remove their
@@ -533,6 +534,17 @@ it is part of the pending language-services/product row, not a budget
 change.
 
 ## Verification workflow
+
+The successor-relation tranche passed the complete `dev` gate on 2026-09-06.
+Current evidence includes all 892 compiler unit tests, the six-case
+`authoring_replace` suite, authoring parity, entry selection, both policy
+suites, the artifact checker and clippy with warnings denied. The registered
+syntax seed is included in the passing quick matrix: 67 accepted and 56
+rejected cases out of 123 generated, with zero failures. The strict quick
+report is
+`target/cellscript-strict-backend-audit/strict-backend-audit-quick-20260906-162715.json`.
+This is current development evidence; it does not promote the documented
+WASM, full-backend, chain or release boundaries.
 
 The policy tranche passed the complete `dev` gate on 2026-09-05. Its strict
 quick audit report is
